@@ -15,7 +15,9 @@ export interface QualityConfig {
   maxParticles: number;
   bloomQuality: number;
   aa: "none" | "fxaa" | "smaa";
+  msaaSamples: 0 | 4;
   maxDpr: number;
+  minDprScale: number;
 }
 
 export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
@@ -26,8 +28,10 @@ export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
     terrainSegments: [96, 72],
     maxParticles: 384,
     bloomQuality: 0.5,
-    aa: "none",
+    aa: "fxaa",
+    msaaSamples: 0,
     maxDpr: 1.25,
+    minDprScale: 0.7,
   },
   1: {
     shadows: true,
@@ -37,7 +41,9 @@ export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
     maxParticles: 768,
     bloomQuality: 0.75,
     aa: "fxaa",
+    msaaSamples: 0,
     maxDpr: 1.75,
+    minDprScale: 0.75,
   },
   2: {
     shadows: true,
@@ -47,7 +53,9 @@ export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
     maxParticles: 1280,
     bloomQuality: 1,
     aa: "smaa",
+    msaaSamples: 4,
     maxDpr: 2,
+    minDprScale: 0.85,
   },
 };
 

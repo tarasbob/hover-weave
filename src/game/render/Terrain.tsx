@@ -7,6 +7,7 @@ import {
   abs,
   float,
   fract,
+  fwidth,
   hash,
   floor,
   max,
@@ -86,9 +87,14 @@ export function Terrain({ segments }: { segments: [number, number] }) {
     mat.emissiveNode = Fn(() => {
       // Neon grid, strongest near the track.
       const gridScale = float(4);
-      const gx = abs(fract(worldX.div(gridScale)).sub(0.5)).mul(2);
-      const gz = abs(fract(sCoord.div(gridScale)).sub(0.5)).mul(2);
-      const line = max(smoothstep(0.93, 1, gx), smoothstep(0.93, 1, gz));
+      const gridCoord = vec2(worldX, sCoord).div(gridScale);
+      const edgeDistance = vec2(0.5).sub(abs(fract(gridCoord).sub(0.5)));
+      const pixelWidth = max(fwidth(gridCoord), vec2(0.001)).mul(0.75);
+      const lineWidth = vec2(0.035);
+      const coverage = vec2(1).sub(
+        smoothstep(lineWidth.sub(pixelWidth), lineWidth.add(pixelWidth), edgeDistance),
+      );
+      const line = max(coverage.x, coverage.y);
       const trackFade = smoothstep(150, 20, abs(worldX));
       const grid = line.mul(trackFade).mul(env.uGridIntensity);
 

@@ -35,6 +35,11 @@ export function GameScene() {
   const fpsEma = useRef(16.7);
   const drs = useRef({ scale: 1, cooldown: 0 });
 
+  useEffect(() => {
+    drs.current = { scale: 1, cooldown: 2 };
+    setDpr(Math.min(quality.maxDpr, window.devicePixelRatio));
+  }, [quality.maxDpr, setDpr, tier]);
+
   // Height-aware exponential fog from env uniforms (denser near the ground,
   // thinning overhead so the sky stays crisp — but never so thin that tall
   // obstacles escape the fog and pop in at the generation horizon).
@@ -128,14 +133,15 @@ export function GameScene() {
       const d = drs.current;
       d.cooldown -= HUD_INTERVAL;
       if (d.cooldown <= 0) {
-        if (fpsEma.current > 20 && d.scale > 0.6) {
-          d.scale = Math.max(0.6, d.scale - 0.1);
+        const baseDpr = Math.min(quality.maxDpr, window.devicePixelRatio);
+        if (fpsEma.current > 20 && d.scale > quality.minDprScale) {
+          d.scale = Math.max(quality.minDprScale, d.scale - 0.1);
           d.cooldown = 1.5;
-          setDpr(Math.min(quality.maxDpr, window.devicePixelRatio) * d.scale);
-        } else if (fpsEma.current < 13.5 && d.scale < 1) {
+          setDpr(baseDpr * d.scale);
+        } else if (fpsEma.current < 18 && d.scale < 1) {
           d.scale = Math.min(1, d.scale + 0.1);
           d.cooldown = 2.5;
-          setDpr(Math.min(quality.maxDpr, window.devicePixelRatio) * d.scale);
+          setDpr(baseDpr * d.scale);
         }
       }
     }
@@ -155,7 +161,11 @@ export function GameScene() {
       <Craft />
       <Particles max={quality.maxParticles} />
       <CameraRig />
-      <PostFX aa={quality.aa} bloomQuality={quality.bloomQuality} />
+      <PostFX
+        aa={quality.aa}
+        bloomQuality={quality.bloomQuality}
+        msaaSamples={quality.msaaSamples}
+      />
     </>
   );
 }

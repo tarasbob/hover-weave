@@ -27,10 +27,18 @@ import { useSettings } from "../state/settings";
 
 /**
  * WebGPU-native post chain: bloom, speed-driven chromatic aberration,
- * vignette, film grain, then FXAA/SMAA in output space.
+ * vignette, tiered FXAA/SMAA, then film grain.
  * Takes over the R3F render loop (priority 1).
  */
-export function PostFX({ aa, bloomQuality }: { aa: "none" | "fxaa" | "smaa"; bloomQuality: number }) {
+export function PostFX({
+  aa,
+  bloomQuality,
+  msaaSamples,
+}: {
+  aa: "none" | "fxaa" | "smaa";
+  bloomQuality: number;
+  msaaSamples: 0 | 4;
+}) {
   const { world, env } = useGameBundle();
   const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
   const scene = useThree((s) => s.scene);
@@ -53,6 +61,7 @@ export function PostFX({ aa, bloomQuality }: { aa: "none" | "fxaa" | "smaa"; blo
     const scenePass = pass(scene, camera, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
+      samples: msaaSamples,
     });
     const color = scenePass.getTextureNode("output");
 
@@ -71,16 +80,22 @@ export function PostFX({ aa, bloomQuality }: { aa: "none" | "fxaa" | "smaa"; blo
       .mul(mix(vec3(0.3, 0.28, 0.4), vec3(1), vig))
       .add(env.uAccent.mul(env.uBoost).mul(smoothstep(0.4, 0.9, d)).mul(0.12));
 
-    const withGrain = nodeObject(film(graded, float(0.07)));
-
-    // Tone map + sRGB first, then AA in display space.
-    const output = renderOutput(withGrain, renderer.toneMapping, renderer.outputColorSpace);
-    post.outputNode =
-      aa === "smaa" ? smaa(output) : aa === "fxaa" ? fxaa(output) : output;
+    if (aa === "smaa") {
+      // SMAA expects tone-mapped linear input, before conversion to sRGB.
+      const toneMapped = renderOutput(graded, renderer.toneMapping, THREE.NoColorSpace);
+      const antialiased = smaa(toneMapped);
+      const withGrain = nodeObject(film(antialiased, float(0.07)));
+      post.outputNode = renderOutput(withGrain, THREE.NoToneMapping, renderer.outputColorSpace);
+    } else {
+      // FXAA expects display-space (sRGB) input.
+      const output = renderOutput(graded, renderer.toneMapping, renderer.outputColorSpace);
+      const antialiased = aa === "fxaa" ? fxaa(output) : output;
+      post.outputNode = nodeObject(film(antialiased, float(0.07)));
+    }
 
     return { post, bloomNode };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderer, scene, camera, aa, bloomQuality, env, uCA, uVignette]);
+  }, [renderer, scene, camera, aa, bloomQuality, msaaSamples, env, uCA, uVignette]);
 
   useEffect(() => {
     return () => setup.post.dispose();
