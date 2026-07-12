@@ -1,0 +1,269 @@
+"use client";
+
+import { useFrame, useThree } from "@react-three/fiber";
+import { useEffect, useMemo } from "react";
+import * as THREE from "three/webgpu";
+import { attribute, float, vec4 } from "three/tsl";
+import { useGameBundle } from "../GameController";
+import { createRng } from "../core/rng";
+import { CRAFT } from "../core/constants";
+import { TRAILS, useMeta } from "../state/meta";
+
+interface Particle {
+  alive: boolean;
+  /** Track-space coordinates (s converts to z each frame). */
+  x: number; y: number; s: number;
+  vx: number; vy: number; vs: number;
+  drag: number; grav: number;
+  age: number; life: number;
+  size0: number; size1: number;
+  r: number; g: number; b: number; a: number;
+  /** 0 = billboard spark, 1 = z-stretched streak. */
+  kind: 0 | 1;
+  stretch: number;
+}
+
+const rng = createRng("particles-visual");
+
+/**
+ * One pooled CPU particle system for every effect: near-miss sparks, shard
+ * bursts, crash shatter, boost embers, speed streaks, ambient motes.
+ * Instanced quads, additive, colored per instance. Backend-agnostic.
+ */
+export function Particles({ max }: { max: number }) {
+  const { world, env } = useGameBundle();
+  const camera = useThree((s) => s.camera);
+  const trailId = useMeta((s) => s.selectedTrail);
+  const trailColor = useMemo(
+    () => new THREE.Color((TRAILS.find((t) => t.id === trailId) ?? TRAILS[0]).color),
+    [trailId],
+  );
+
+  const sys = useMemo(() => {
+    const pool: Particle[] = Array.from({ length: max }, () => ({
+      alive: false, x: 0, y: 0, s: 0, vx: 0, vy: 0, vs: 0,
+      drag: 0, grav: 0, age: 0, life: 1, size0: 1, size1: 1,
+      r: 1, g: 1, b: 1, a: 1, kind: 0 as const, stretch: 1,
+    }));
+    let cursor = 0;
+
+    const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(max * 4), 4);
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.setAttribute("aColor", colorAttr);
+    const mat = new THREE.MeshBasicNodeMaterial();
+    mat.blending = THREE.AdditiveBlending;
+    mat.transparent = true;
+    mat.depthWrite = false;
+    mat.side = THREE.DoubleSide;
+    const aColor = attribute<"vec4">("aColor", "vec4");
+    mat.colorNode = vec4(aColor.xyz, float(1));
+    mat.opacityNode = aColor.w;
+
+    const mesh = new THREE.InstancedMesh(geo, mat, max);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 10;
+
+    const spawn = (p: Partial<Particle>): void => {
+      const it = pool[cursor];
+      cursor = (cursor + 1) % pool.length;
+      Object.assign(it, {
+        alive: true, age: 0, drag: 0, grav: 0, vx: 0, vy: 0, vs: 0,
+        kind: 0, stretch: 1, a: 1, size1: 0,
+      }, p);
+    };
+
+    return { pool, mesh, colorAttr, spawn };
+  }, [max]);
+
+  // --- Event-driven bursts -------------------------------------------------
+  useEffect(() => {
+    const c = new THREE.Color();
+    const offs = [
+      world.events.on("nearMiss", (e) => {
+        c.copy(env.uWarn.value);
+        for (let i = 0; i < 10; i++) {
+          sys.spawn({
+            x: e.x + (world.x - e.x) * 0.5, y: CRAFT.HOVER_HEIGHT + rng.range(-0.4, 0.6), s: e.s,
+            vx: rng.range(-6, 6), vy: rng.range(2, 9), vs: rng.range(-4, 4),
+            grav: -14, drag: 1.4, life: rng.range(0.3, 0.65),
+            size0: rng.range(0.1, 0.24), size1: 0.02,
+            r: c.r * 2, g: c.g * 2, b: c.b * 2,
+          });
+        }
+      }),
+      world.events.on("shard", (e) => {
+        c.copy(env.uAccent.value);
+        for (let i = 0; i < 14; i++) {
+          const ang = rng.range(0, Math.PI * 2);
+          sys.spawn({
+            x: e.x, y: e.y, s: world.distance + 1,
+            vx: Math.cos(ang) * rng.range(2, 7), vy: Math.sin(ang) * rng.range(2, 7) + 2,
+            vs: rng.range(-2, 2),
+            grav: -6, drag: 2.2, life: rng.range(0.35, 0.7),
+            size0: rng.range(0.08, 0.2), size1: 0.01,
+            r: c.r * 2.4, g: c.g * 2.4, b: c.b * 2.4,
+          });
+        }
+      }),
+      world.events.on("shieldBreak", () => {
+        c.copy(env.uWarn.value);
+        for (let i = 0; i < 26; i++) {
+          const ang = rng.range(0, Math.PI * 2);
+          sys.spawn({
+            x: world.x, y: CRAFT.HOVER_HEIGHT, s: world.distance,
+            vx: Math.cos(ang) * rng.range(4, 13), vy: rng.range(1, 10),
+            vs: rng.range(-6, 6),
+            grav: -10, drag: 1.6, life: rng.range(0.4, 0.9),
+            size0: rng.range(0.12, 0.3), size1: 0.02,
+            r: c.r * 2.2, g: c.g * 2.2, b: c.b * 2.2,
+          });
+        }
+      }),
+      world.events.on("death", () => {
+        for (let i = 0; i < 70; i++) {
+          const hot = rng.chance(0.45);
+          c.copy(hot ? env.uWarn.value : env.uPrimary.value);
+          const ang = rng.range(0, Math.PI * 2);
+          const sp = rng.range(3, 18);
+          sys.spawn({
+            x: world.x, y: CRAFT.HOVER_HEIGHT + rng.range(-0.3, 0.5), s: world.distance,
+            vx: Math.cos(ang) * sp, vy: rng.range(2, 14),
+            vs: rng.range(-8, 14),
+            grav: -18, drag: 1.1, life: rng.range(0.6, 1.7),
+            size0: rng.range(0.1, 0.42), size1: 0.02,
+            r: c.r * 2.4, g: c.g * 2.4, b: c.b * 2.4,
+          });
+        }
+      }),
+      world.events.on("slabFall", (e) => {
+        c.copy(env.uDim.value);
+        for (let i = 0; i < 8; i++) {
+          sys.spawn({
+            x: e.x + rng.range(-2, 2), y: 0.3, s: e.s + rng.range(-1.5, 1.5),
+            vx: rng.range(-5, 5), vy: rng.range(1, 5), vs: rng.range(-3, 3),
+            grav: -4, drag: 2.4, life: rng.range(0.5, 1),
+            size0: rng.range(0.3, 0.7), size1: 0.9,
+            r: c.r * 0.9, g: c.g * 0.9, b: c.b * 0.9, a: 0.5,
+          });
+        }
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [world, env, sys]);
+
+  // --- Per-frame: continuous emitters + simulation --------------------------
+  const emit = useMemo(() => ({ ember: 0, streak: 0, mote: 0 }), []);
+  const _q = new THREE.Quaternion();
+  const _m = new THREE.Matrix4();
+  const _p = new THREE.Vector3();
+  const _s = new THREE.Vector3();
+  const _e = new THREE.Euler();
+
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.08);
+    const running = world.status === "running";
+    const dist = world.status === "idle" ? 0 : world.renderDistance;
+
+    // Boost embers.
+    if (running && world.boostCharge > 0.15) {
+      emit.ember += dt * 90 * world.boostCharge;
+      while (emit.ember >= 1) {
+        emit.ember -= 1;
+        const side = rng.sign();
+        sys.spawn({
+          x: world.x + side * 0.42, y: CRAFT.HOVER_HEIGHT - 0.05, s: dist - 0.8,
+          vx: rng.range(-1.5, 1.5) - world.latVel * 0.15, vy: rng.range(-0.5, 1.2),
+          vs: rng.range(-26, -14),
+          drag: 0.6, life: rng.range(0.25, 0.6),
+          size0: rng.range(0.06, 0.16), size1: 0.01,
+          r: trailColor.r * 2.6, g: trailColor.g * 2.6, b: trailColor.b * 2.6,
+        });
+      }
+    }
+
+    // Speed streaks (stronger with speed/flow/boost).
+    if (running) {
+      const rate = 6 + world.speedNorm * 26 + world.boostCharge * 60 + world.flowTier * 4;
+      emit.streak += dt * rate;
+      while (emit.streak >= 1) {
+        emit.streak -= 1;
+        const side = rng.sign();
+        sys.spawn({
+          x: world.x + side * rng.range(4, 16), y: rng.range(0.6, 7), s: dist + rng.range(50, 110),
+          vs: 0, kind: 1, stretch: rng.range(6, 16),
+          life: rng.range(0.8, 1.6),
+          size0: rng.range(0.02, 0.05), size1: 0.02,
+          r: 0.6, g: 0.75, b: 1, a: 0.5 + world.boostCharge * 0.5,
+        });
+      }
+    }
+
+    // Ambient motes drifting near the ground.
+    emit.mote += dt * 10;
+    while (emit.mote >= 1) {
+      emit.mote -= 1;
+      const c = env.uAccent.value;
+      sys.spawn({
+        x: rng.range(-30, 30), y: rng.range(0.4, 5), s: dist + rng.range(20, 90),
+        vx: rng.range(-0.5, 0.5), vy: rng.range(0.1, 0.7), vs: 0,
+        life: rng.range(1.5, 3), size0: rng.range(0.03, 0.09), size1: 0.01,
+        r: c.r * 1.2, g: c.g * 1.2, b: c.b * 1.2, a: 0.7,
+      });
+    }
+
+    // Simulate + write instances.
+    _q.copy(camera.quaternion);
+    let count = 0;
+    const attrArr = sys.colorAttr.array as Float32Array;
+    for (const p of sys.pool) {
+      if (!p.alive) continue;
+      p.age += dt;
+      if (p.age >= p.life) {
+        p.alive = false;
+        continue;
+      }
+      p.vy += p.grav * dt;
+      const dr = Math.exp(-p.drag * dt);
+      p.vx *= dr; p.vy *= dr; p.vs *= dr;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.s += p.vs * dt;
+
+      const z = -(p.s - dist);
+      if (z > 24 || z < -420) {
+        p.alive = false;
+        continue;
+      }
+
+      const t = p.age / p.life;
+      const size = p.size0 + (p.size1 - p.size0) * t;
+      const fade = p.a * (t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85);
+
+      _p.set(p.x, p.y, z);
+      if (p.kind === 1) {
+        // Streak: plane rotated so its width runs along the track (z).
+        _e.set(0, Math.PI / 2, 0);
+        _s.set(size * p.stretch * (1 + world.speedNorm * 2), size, 1);
+        _m.compose(_p, _q.setFromEuler(_e), _s);
+      } else {
+        _s.set(size, size, size);
+        _m.compose(_p, _q.copy(camera.quaternion), _s);
+      }
+      sys.mesh.setMatrixAt(count, _m);
+      const o = count * 4;
+      attrArr[o] = p.r;
+      attrArr[o + 1] = p.g;
+      attrArr[o + 2] = p.b;
+      attrArr[o + 3] = fade;
+      count++;
+    }
+    sys.mesh.count = count;
+    sys.mesh.instanceMatrix.needsUpdate = true;
+    sys.colorAttr.needsUpdate = true;
+  });
+
+  return <primitive object={sys.mesh} />;
+}

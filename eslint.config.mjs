@@ -13,6 +13,18 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // The game loop mutates three.js objects inside useFrame by design —
+    // that is the react-three-fiber architecture (React owns lifecycle,
+    // the frame loop owns per-frame mutation). The React-Compiler-era
+    // immutability lints are incompatible with that pattern.
+    files: ["src/game/**", "src/ui/**"],
+    rules: {
+      "react-hooks/immutability": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/refs": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;
