@@ -53,7 +53,12 @@ export function createObstacleMaterial(
     const seed = hash(instanceIndex.toFloat().add(0.5));
     const pulse = sin(env.uTime.mul(2.4).add(seed.mul(31.4))).mul(0.16).add(0.9);
     const base = float(opts.emissiveBase ?? 0.05);
-    const intensity = fresnel.mul(1.35).add(base).mul(pulse).mul(glow);
+    const intensity = fresnel
+      .mul(1.35)
+      .add(base)
+      .mul(pulse)
+      .mul(glow)
+      .mul(env.uContrast.mul(1.15).add(1));
     // Flow state pushes everything hotter; lightning adds a specular wash.
     return paletteColor
       .mul(intensity)

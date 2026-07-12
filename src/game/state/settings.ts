@@ -60,6 +60,7 @@ interface SettingsState {
   sensitivity: number;
   reduceMotion: boolean;
   reduceFlash: boolean;
+  highContrast: boolean;
   showFps: boolean;
   setQuality(q: QualityPreset): void;
   setAutoTier(t: QualityTier): void;
@@ -68,6 +69,7 @@ interface SettingsState {
   setSensitivity(v: number): void;
   setReduceMotion(v: boolean): void;
   setReduceFlash(v: boolean): void;
+  setHighContrast(v: boolean): void;
   setShowFps(v: boolean): void;
 }
 
@@ -81,6 +83,7 @@ export const useSettings = create<SettingsState>()(
       sensitivity: 1,
       reduceMotion: false,
       reduceFlash: false,
+      highContrast: false,
       showFps: false,
       setQuality: (quality) => set({ quality }),
       setAutoTier: (autoTier) => set({ autoTier }),
@@ -89,6 +92,7 @@ export const useSettings = create<SettingsState>()(
       setSensitivity: (sensitivity) => set({ sensitivity }),
       setReduceMotion: (reduceMotion) => set({ reduceMotion }),
       setReduceFlash: (reduceFlash) => set({ reduceFlash }),
+      setHighContrast: (highContrast) => set({ highContrast }),
       setShowFps: (showFps) => set({ showFps }),
     }),
     { name: "cubefield:settings" },

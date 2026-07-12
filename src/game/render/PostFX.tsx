@@ -23,6 +23,7 @@ import { fxaa } from "three/addons/tsl/display/FXAANode.js";
 import { smaa } from "three/addons/tsl/display/SMAANode.js";
 import { useGameBundle } from "../GameController";
 import { damp } from "../core/mathUtils";
+import { useSettings } from "../state/settings";
 
 /**
  * WebGPU-native post chain: bloom, speed-driven chromatic aberration,
@@ -34,6 +35,9 @@ export function PostFX({ aa, bloomQuality }: { aa: "none" | "fxaa" | "smaa"; blo
   const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera);
+  const reduceMotion = useSettings((s) => s.reduceMotion);
+  const reduceFlash = useSettings((s) => s.reduceFlash);
+  const highContrast = useSettings((s) => s.highContrast);
 
   const uCA = useMemo(() => uniform(0.6), []);
   const uVignette = useMemo(() => uniform(0.62), []);
@@ -88,10 +92,13 @@ export function PostFX({ aa, bloomQuality }: { aa: "none" | "fxaa" | "smaa"; blo
     const dt = Math.min(rawDt, 0.08);
     // Bloom breathes with flow, spikes on boost and lightning.
     setup.bloomNode.strength.value =
-      0.75 + env.uFlow.value * 0.45 + world.boostCharge * 0.55 + env.uFlash.value * 0.4;
-    setup.bloomNode.radius.value = 0.4 + world.boostCharge * 0.25;
+      (0.72 + env.uFlow.value * 0.45 + world.boostCharge * 0.55 +
+        env.uFlash.value * (reduceFlash ? 0.1 : 0.4)) * bloomQuality;
+    setup.bloomNode.radius.value = 0.4 + world.boostCharge * (reduceMotion ? 0.08 : 0.25);
 
-    const targetCA = 0.16 + world.speedNorm * 0.6 + world.boostCharge * 2.2 + env.uDeath.value * 1.4;
+    const caScale = reduceMotion ? 0.28 : highContrast ? 0.35 : 1;
+    const targetCA =
+      (0.16 + world.speedNorm * 0.6 + world.boostCharge * 2.2 + env.uDeath.value * 1.4) * caScale;
     caSmooth.current = damp(caSmooth.current, targetCA, 6, dt);
     uCA.value = caSmooth.current;
     uVignette.value = 0.6 + world.boostCharge * 0.3 + env.uDeath.value * 0.5;

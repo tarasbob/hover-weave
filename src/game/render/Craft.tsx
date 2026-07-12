@@ -19,6 +19,7 @@ import {
 import { useGameBundle } from "../GameController";
 import { CRAFT } from "../core/constants";
 import { CRAFTS, TRAILS, useMeta } from "../state/meta";
+import { useSettings } from "../state/settings";
 
 const TRAIL_POINTS = 44;
 
@@ -86,6 +87,7 @@ export function Craft() {
   const { world, env } = useGameBundle();
   const selectedCraft = useMeta((s) => s.selectedCraft);
   const selectedTrail = useMeta((s) => s.selectedTrail);
+  const reduceMotion = useSettings((s) => s.reduceMotion);
   const design = CRAFTS.find((c) => c.id === selectedCraft) ?? CRAFTS[0];
   const trail = TRAILS.find((t) => t.id === selectedTrail) ?? TRAILS[0];
 
@@ -236,21 +238,34 @@ export function Craft() {
 
   useFrame((_, dt) => {
     const idle = world.status === "idle";
+    const dead = world.status === "dead";
     const dist = idle ? 0 : world.renderDistance;
     const x = idle ? 0 : world.renderX;
     const bank = idle ? Math.sin(performance.now() * 0.0011) * 0.08 : world.renderBank;
     const bob = Math.sin((idle ? performance.now() * 0.002 : world.time * 6.4)) * 0.06;
     const y = CRAFT.HOVER_HEIGHT + bob;
 
-    group.position.set(x, y, 0);
-    group.rotation.set(
-      world.boosting ? -0.07 : 0.02 - world.speedNorm * 0.04,
-      -world.latVel * 0.006,
-      bank,
-    );
-
-    const dead = world.status === "dead";
-    group.visible = !dead || world.deathTimer < 0.05;
+    if (dead) {
+      const t = Math.min(world.deathTimer / 1.1, 1);
+      const motion = reduceMotion ? 0.28 : 1;
+      group.position.set(x + world.latVel * t * 0.025, y + t * 1.2 * motion, t * 3.4);
+      group.rotation.set(
+        -0.12 - t * 2.3 * motion,
+        -world.latVel * 0.006 + t * 3.1 * motion,
+        bank + t * Math.PI * 2.4 * motion,
+      );
+      group.scale.setScalar(1 - t * 0.18);
+      group.visible = world.deathTimer < 1.08;
+    } else {
+      group.position.set(x, y, 0);
+      group.rotation.set(
+        world.boosting ? -0.07 : 0.02 - world.speedNorm * 0.04,
+        -world.latVel * 0.006,
+        bank,
+      );
+      group.scale.setScalar(1);
+      group.visible = true;
+    }
 
     engineLight.intensity = 10 + world.speedNorm * 14 + world.boostCharge * 26;
     uTrailBoost.value = world.boostCharge;

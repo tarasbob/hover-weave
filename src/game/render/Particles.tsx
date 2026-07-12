@@ -8,6 +8,7 @@ import { useGameBundle } from "../GameController";
 import { createRng } from "../core/rng";
 import { CRAFT } from "../core/constants";
 import { TRAILS, useMeta } from "../state/meta";
+import { useSettings } from "../state/settings";
 
 interface Particle {
   alive: boolean;
@@ -34,6 +35,8 @@ export function Particles({ max }: { max: number }) {
   const { world, env } = useGameBundle();
   const camera = useThree((s) => s.camera);
   const trailId = useMeta((s) => s.selectedTrail);
+  const reduceMotion = useSettings((s) => s.reduceMotion);
+  const reduceFlash = useSettings((s) => s.reduceFlash);
   const trailColor = useMemo(
     () => new THREE.Color((TRAILS.find((t) => t.id === trailId) ?? TRAILS[0]).color),
     [trailId],
@@ -78,25 +81,41 @@ export function Particles({ max }: { max: number }) {
     return { pool, mesh, colorAttr, spawn };
   }, [max]);
 
+  useEffect(() => {
+    return () => {
+      sys.mesh.geometry.dispose();
+      (sys.mesh.material as THREE.Material).dispose();
+    };
+  }, [sys]);
+
   // --- Event-driven bursts -------------------------------------------------
   useEffect(() => {
     const c = new THREE.Color();
+    const burstScale = Math.min(reduceMotion ? 0.4 : 1, reduceFlash ? 0.58 : 1);
+    const brightness = reduceFlash ? 0.62 : 1;
     const offs = [
       world.events.on("nearMiss", (e) => {
         c.copy(env.uWarn.value);
-        for (let i = 0; i < 10; i++) {
+        const gradeCount = e.grade === "perfect" ? 24 : e.grade === "razor" ? 16 : 10;
+        const count = Math.max(4, Math.round(gradeCount * burstScale));
+        const energy = reduceFlash ? 1.35 : 2 + e.precision * 0.7;
+        for (let i = 0; i < count; i++) {
           sys.spawn({
             x: e.x + (world.x - e.x) * 0.5, y: CRAFT.HOVER_HEIGHT + rng.range(-0.4, 0.6), s: e.s,
             vx: rng.range(-6, 6), vy: rng.range(2, 9), vs: rng.range(-4, 4),
             grav: -14, drag: 1.4, life: rng.range(0.3, 0.65),
             size0: rng.range(0.1, 0.24), size1: 0.02,
-            r: c.r * 2, g: c.g * 2, b: c.b * 2,
+            r: c.r * energy, g: c.g * energy, b: c.b * energy,
           });
         }
       }),
       world.events.on("shard", (e) => {
         c.copy(env.uAccent.value);
-        for (let i = 0; i < 14; i++) {
+        const count = Math.max(
+          5,
+          Math.round((12 + Math.min(8, e.combo) + (e.risk ? 8 : 0)) * burstScale),
+        );
+        for (let i = 0; i < count; i++) {
           const ang = rng.range(0, Math.PI * 2);
           sys.spawn({
             x: e.x, y: e.y, s: world.distance + 1,
@@ -104,13 +123,16 @@ export function Particles({ max }: { max: number }) {
             vs: rng.range(-2, 2),
             grav: -6, drag: 2.2, life: rng.range(0.35, 0.7),
             size0: rng.range(0.08, 0.2), size1: 0.01,
-            r: c.r * 2.4, g: c.g * 2.4, b: c.b * 2.4,
+            r: c.r * 2.4 * brightness,
+            g: c.g * 2.4 * brightness,
+            b: c.b * 2.4 * brightness,
           });
         }
       }),
       world.events.on("shieldBreak", () => {
         c.copy(env.uWarn.value);
-        for (let i = 0; i < 26; i++) {
+        const count = Math.max(8, Math.round(26 * burstScale));
+        for (let i = 0; i < count; i++) {
           const ang = rng.range(0, Math.PI * 2);
           sys.spawn({
             x: world.x, y: CRAFT.HOVER_HEIGHT, s: world.distance,
@@ -118,12 +140,15 @@ export function Particles({ max }: { max: number }) {
             vs: rng.range(-6, 6),
             grav: -10, drag: 1.6, life: rng.range(0.4, 0.9),
             size0: rng.range(0.12, 0.3), size1: 0.02,
-            r: c.r * 2.2, g: c.g * 2.2, b: c.b * 2.2,
+            r: c.r * 2.2 * brightness,
+            g: c.g * 2.2 * brightness,
+            b: c.b * 2.2 * brightness,
           });
         }
       }),
       world.events.on("death", () => {
-        for (let i = 0; i < 70; i++) {
+        const count = Math.max(18, Math.round(70 * burstScale));
+        for (let i = 0; i < count; i++) {
           const hot = rng.chance(0.45);
           c.copy(hot ? env.uWarn.value : env.uPrimary.value);
           const ang = rng.range(0, Math.PI * 2);
@@ -134,13 +159,16 @@ export function Particles({ max }: { max: number }) {
             vs: rng.range(-8, 14),
             grav: -18, drag: 1.1, life: rng.range(0.6, 1.7),
             size0: rng.range(0.1, 0.42), size1: 0.02,
-            r: c.r * 2.4, g: c.g * 2.4, b: c.b * 2.4,
+            r: c.r * 2.4 * brightness,
+            g: c.g * 2.4 * brightness,
+            b: c.b * 2.4 * brightness,
           });
         }
       }),
       world.events.on("slabFall", (e) => {
         c.copy(env.uDim.value);
-        for (let i = 0; i < 8; i++) {
+        const count = Math.max(3, Math.round(8 * burstScale));
+        for (let i = 0; i < count; i++) {
           sys.spawn({
             x: e.x + rng.range(-2, 2), y: 0.3, s: e.s + rng.range(-1.5, 1.5),
             vx: rng.range(-5, 5), vy: rng.range(1, 5), vs: rng.range(-3, 3),
@@ -152,7 +180,7 @@ export function Particles({ max }: { max: number }) {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [world, env, sys]);
+  }, [world, env, sys, reduceMotion, reduceFlash]);
 
   // --- Per-frame: continuous emitters + simulation --------------------------
   const emit = useMemo(() => ({ ember: 0, streak: 0, mote: 0 }), []);
@@ -166,10 +194,11 @@ export function Particles({ max }: { max: number }) {
     const dt = Math.min(rawDt, 0.08);
     const running = world.status === "running";
     const dist = world.status === "idle" ? 0 : world.renderDistance;
+    const continuousScale = reduceMotion ? 0.35 : reduceFlash ? 0.65 : 1;
 
     // Boost embers.
     if (running && world.boostCharge > 0.15) {
-      emit.ember += dt * 90 * world.boostCharge;
+      emit.ember += dt * 90 * world.boostCharge * continuousScale;
       while (emit.ember >= 1) {
         emit.ember -= 1;
         const side = rng.sign();
@@ -187,7 +216,7 @@ export function Particles({ max }: { max: number }) {
     // Speed streaks (stronger with speed/flow/boost).
     if (running) {
       const rate = 6 + world.speedNorm * 26 + world.boostCharge * 60 + world.flowTier * 4;
-      emit.streak += dt * rate;
+      emit.streak += dt * rate * (reduceMotion ? 0.25 : reduceFlash ? 0.6 : 1);
       while (emit.streak >= 1) {
         emit.streak -= 1;
         const side = rng.sign();
@@ -202,7 +231,7 @@ export function Particles({ max }: { max: number }) {
     }
 
     // Ambient motes drifting near the ground.
-    emit.mote += dt * 10;
+    emit.mote += dt * (reduceMotion ? 3 : 10);
     while (emit.mote >= 1) {
       emit.mote -= 1;
       const c = env.uAccent.value;

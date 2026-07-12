@@ -11,9 +11,14 @@
  *
  * Run: npx tsx scripts/simtest.ts
  */
-import { SimWorld } from "../src/game/core/world";
+import assert from "node:assert/strict";
+import {
+  SimWorld,
+  obstacleTrailingEdge,
+  precisionRewardAt,
+} from "../src/game/core/world";
 import type { InputState } from "../src/game/core/input";
-import { CRAFT, FIXED_DT, STEER, TRACK } from "../src/game/core/constants";
+import { CRAFT, FIXED_DT, POOL_SIZES, STEER, TRACK } from "../src/game/core/constants";
 import { blockedRanges } from "../src/game/track/validator";
 import { Motion, type ObstacleSpec } from "../src/game/core/types";
 
@@ -74,6 +79,10 @@ function autopilot(world: SimWorld, input: InputState): void {
 let totalDeaths = 0;
 let totalDist = 0;
 let peakActive = 0;
+let minDist = Infinity;
+const peakByKind = new Map<string, number>();
+let peakShards = 0;
+let peakShields = 0;
 const runs = 8;
 for (let r = 0; r < runs; r++) {
   const world = new SimWorld();
@@ -103,12 +112,30 @@ for (let r = 0; r < runs; r++) {
     if (steps % 60 === 0) {
       const active = world.obstacles.filter((o) => o.active).length;
       if (active > runPeak) runPeak = active;
+      const byKind = new Map<string, number>();
+      for (const obstacle of world.obstacles) {
+        if (obstacle.active) byKind.set(obstacle.kind, (byKind.get(obstacle.kind) ?? 0) + 1);
+      }
+      for (const [kind, count] of byKind) {
+        peakByKind.set(kind, Math.max(peakByKind.get(kind) ?? 0, count));
+      }
+      peakShards = Math.max(
+        peakShards,
+        world.pickups.filter((pickup) => pickup.active && pickup.type === "shard").length,
+      );
+      peakShields = Math.max(
+        peakShields,
+        world.pickups.filter((pickup) => pickup.active && pickup.type === "shield").length,
+      );
     }
     steps++;
   }
   peakActive = Math.max(peakActive, runPeak);
   if (world.status === "dead") totalDeaths++;
   totalDist += world.distance;
+  minDist = Math.min(minDist, world.distance);
+  assert.equal(world.stats.obstacleDrops, 0, `${seed} exhausted the obstacle pool`);
+  assert.equal(world.stats.pickupDrops, 0, `${seed} exhausted the pickup pool`);
   console.log(
     `run ${r}: ${world.status.padEnd(7)} dist=${world.distance.toFixed(0).padStart(6)}m ` +
     `score=${Math.floor(world.score).toString().padStart(7)} speed=${world.speed.toFixed(1)} ` +
@@ -119,13 +146,38 @@ for (let r = 0; r < runs; r++) {
 }
 console.log(
   `\ndeaths: ${totalDeaths}/${runs}, avg dist=${Math.round(totalDist / runs)}m, ` +
-  `peak active obstacles=${peakActive} (render pools: box 512 / pillar 256 / crystal 256)`,
+  `peak active obstacles=${peakActive} (render pools: box ${POOL_SIZES.box} / ` +
+  `pillar ${POOL_SIZES.pillar} / crystal ${POOL_SIZES.crystal})`,
 );
+const avgDist = totalDist / runs;
+assert.ok(minDist > 450, `opening is too punishing for the conservative bot (${minDist.toFixed(0)}m)`);
+assert.ok(avgDist > 900, `average survival collapsed to ${avgDist.toFixed(0)}m`);
+assert.ok(avgDist < 9000, `challenge curve is too gentle (${avgDist.toFixed(0)}m average)`);
+assert.ok(peakActive < 500, `active obstacle pressure is unexpectedly high (${peakActive})`);
+for (const kind of ["box", "pillar", "crystal", "sphere", "ring"] as const) {
+  assert.ok(
+    (peakByKind.get(kind) ?? 0) < POOL_SIZES[kind],
+    `${kind} render pool lacks headroom (${peakByKind.get(kind)}/${POOL_SIZES[kind]})`,
+  );
+}
+assert.ok(peakShards < POOL_SIZES.shard, `shard render pool lacks headroom (${peakShards})`);
+assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom (${peakShields})`);
 
 // Determinism check.
 {
   const a = new SimWorld();
   const b = new SimWorld();
+  const eventsA: unknown[] = [];
+  const eventsB: unknown[] = [];
+  const wire = (world: SimWorld, out: unknown[]) => {
+    world.events.on("nearMiss", (event) => out.push(["nearMiss", event]));
+    world.events.on("shard", (event) => out.push(["shard", event]));
+    world.events.on("flowTier", (event) => out.push(["flowTier", event]));
+    world.events.on("biome", (event) => out.push(["biome", event]));
+    world.events.on("death", (event) => out.push(["death", event]));
+  };
+  wire(a, eventsA);
+  wire(b, eventsB);
   const input: InputState = { axis: 0.3, boost: false, restart: false, pause: false };
   a.start("determinism", false);
   b.start("determinism", false);
@@ -134,6 +186,137 @@ console.log(
     a.update(FIXED_DT, input);
     b.update(FIXED_DT, input);
   }
-  const same = a.distance === b.distance && a.score === b.score && a.x === b.x;
-  console.log(`determinism: ${same ? "PASS" : "FAIL"} (dist=${a.distance.toFixed(2)} vs ${b.distance.toFixed(2)})`);
+  assert.equal(a.distance, b.distance);
+  assert.equal(a.score, b.score);
+  assert.equal(a.x, b.x);
+  assert.deepEqual(a.stats, b.stats);
+  assert.deepEqual(eventsA, eventsB);
+  console.log(`determinism: PASS (dist=${a.distance.toFixed(2)} vs ${b.distance.toFixed(2)})`);
 }
+
+// Focused mastery-economy checks.
+{
+  const perfect = precisionRewardAt(0.1);
+  const razor = precisionRewardAt(0.45);
+  const close = precisionRewardAt(1);
+  assert.equal(perfect.grade, "perfect");
+  assert.equal(razor.grade, "razor");
+  assert.equal(close.grade, "close");
+  assert.ok(perfect.baseScore > razor.baseScore && razor.baseScore > close.baseScore);
+  assert.ok(perfect.flowPoints > razor.flowPoints && razor.flowPoints > close.flowPoints);
+
+  const world = new SimWorld();
+  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  world.start("combo-economy", false);
+  const shards = world.pickups.filter((pickup) => pickup.active && pickup.type === "shard");
+  assert.ok(shards.length >= 2, "fixed combo seed did not generate enough shards");
+  const startEnergy = world.energy;
+  for (const shard of shards.slice(0, 2)) {
+    shard.s = world.distance;
+    shard.x = world.x;
+    world.update(FIXED_DT, input);
+  }
+  assert.equal(world.shardCombo, 2);
+  assert.equal(world.stats.bestShardCombo, 2);
+  assert.ok(world.energy > startEnergy + 10, "shard combo did not add bonus energy");
+  assert.ok(world.flowDecayGrace < 3, "Flow grace should remain bounded");
+}
+
+console.log("simulation assertions: PASS");
+
+// Fixed-step partitioning must not grant slow motion at low render FPS.
+{
+  const smooth = new SimWorld();
+  const chunky = new SimWorld();
+  const input: InputState = { axis: 0.2, boost: false, restart: false, pause: false };
+  smooth.start("frame-partition", false);
+  chunky.start("frame-partition", false);
+  for (let i = 0; i < 120; i++) smooth.update(FIXED_DT, input);
+  for (let i = 0; i < 10; i++) chunky.update(0.1, input);
+  assert.equal(chunky.time, smooth.time);
+  assert.equal(chunky.distance, smooth.distance);
+  assert.equal(chunky.x, smooth.x);
+}
+
+// A fatal collision freezes score/resources and cannot also collect a shard.
+{
+  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const makeDeathProbe = (seed: string) => {
+    const world = new SimWorld();
+    world.start(seed, false);
+    world.clearField();
+    Object.assign(world.obstacles[0], {
+      active: true,
+      kind: "box",
+      s: 0,
+      x: 0,
+      y: 1,
+      hx: 2,
+      hy: 2,
+      hs: 2,
+      yaw: 0,
+      motion: Motion.None,
+      collidable: true,
+      cx: 0,
+      cy: 1,
+      cs: 0,
+      cyaw: 0,
+      nearMissed: false,
+      nearMissClearance: Infinity,
+      patternId: "deathFreeze",
+    });
+    Object.assign(world.pickups[0], {
+      active: true,
+      type: "shard",
+      s: 0,
+      x: 0,
+      y: 1.3,
+      seeking: false,
+      magnetic: true,
+    });
+    world.score = 100;
+    return world;
+  };
+
+  const world = makeDeathProbe("death-freeze");
+  let deaths = 0;
+  let shards = 0;
+  world.events.on("death", () => deaths++);
+  world.events.on("shard", () => shards++);
+  world.update(FIXED_DT, input);
+  assert.equal(world.status, "dead");
+  assert.equal(world.score, 100);
+  assert.equal(world.stats.score, 100);
+  assert.equal(world.stats.shards, 0);
+  assert.equal(deaths, 1);
+  assert.equal(shards, 0);
+  assert.equal(world.pickups[0].active, true);
+
+  const fixedDeath = makeDeathProbe("death-partition");
+  const chunkyDeath = makeDeathProbe("death-partition");
+  for (let i = 0; i < 12; i++) fixedDeath.update(FIXED_DT, input);
+  chunkyDeath.update(0.1, input);
+  assert.ok(Math.abs(chunkyDeath.time - fixedDeath.time) < 1e-12);
+  assert.ok(Math.abs(chunkyDeath.deathTimer - fixedDeath.deathTimer) < 1e-12);
+  assert.ok(Math.abs(chunkyDeath.speed - fixedDeath.speed) < 1e-12);
+}
+
+// Moving geometry must be fully behind before a precision pass can settle.
+{
+  const probe = new SimWorld().obstacles[0];
+  Object.assign(probe, {
+    cs: 100,
+    s: 100,
+    hx: 8,
+    hs: 0.5,
+    cyaw: 0,
+    motion: Motion.RotateYaw,
+    m0: 2,
+  });
+  assert.ok(obstacleTrailingEdge(probe) > probe.cs + probe.hs + 7);
+  probe.motion = Motion.OrbitXZ;
+  probe.m0 = 9;
+  assert.equal(obstacleTrailingEdge(probe), 117);
+}
+
+console.log("edge-case assertions: PASS");

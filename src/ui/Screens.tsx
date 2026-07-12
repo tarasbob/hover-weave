@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useGameBundle } from "@/game/GameController";
 import { useGame } from "@/game/state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "@/game/state/meta";
@@ -20,10 +20,40 @@ const btnGhost = `${btn} border border-white/15 bg-white/5 text-white/85 hover:b
 export function Screens() {
   const phase = useGame((s) => s.phase);
   const overlay = useGame((s) => s.overlay);
+  const setOverlay = useGame((s) => s.setOverlay);
+  const reduceMotion = useSettings((s) => s.reduceMotion);
+
+  useEffect(() => {
+    if (overlay === "none") return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOverlay("none");
+    };
+    window.addEventListener("keydown", closeOnEscape, true);
+    return () => window.removeEventListener("keydown", closeOnEscape, true);
+  }, [overlay, setOverlay]);
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-20 font-body" data-ui>
-      <AnimatePresence mode="wait">
+    <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
+      <div
+        className="pointer-events-none fixed inset-0 z-20 font-body"
+        data-ui
+        data-reduce-motion={reduceMotion}
+      >
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {phase === "running"
+          ? "Run started"
+          : phase === "paused"
+            ? "Game paused"
+            : phase === "dead"
+              ? "Run ended"
+              : phase === "title"
+                ? "Main menu"
+                : "Game loading"}
+      </div>
+      <AnimatePresence mode="sync">
         {phase === "boot" && <BootScreen key="boot" />}
         {phase === "title" && overlay === "none" && <TitleScreen key="title" />}
         {phase === "paused" && overlay === "none" && <PauseScreen key="pause" />}
@@ -34,7 +64,8 @@ export function Screens() {
         {overlay === "settings" && <SettingsOverlay key="settings" />}
         {overlay === "help" && <HelpOverlay key="help" />}
       </AnimatePresence>
-    </div>
+      </div>
+    </MotionConfig>
   );
 }
 
@@ -46,6 +77,7 @@ function Screen({ children, dim = true }: { children: React.ReactNode; dim?: boo
       exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
       className={`absolute inset-0 flex items-center justify-center ${dim ? "bg-[#05030c]/55" : ""}`}
+      role="region"
     >
       {children}
     </motion.div>
@@ -73,7 +105,7 @@ function BootScreen() {
 function Logo() {
   return (
     <div className="font-display">
-      <div className="bg-gradient-to-br from-cyan-200 via-white to-fuchsia-400 bg-clip-text text-6xl font-black tracking-[0.28em] text-transparent drop-shadow-[0_0_30px_rgba(110,60,255,0.6)] md:text-7xl">
+      <div className="bg-gradient-to-br from-cyan-200 via-white to-fuchsia-400 bg-clip-text text-4xl font-black tracking-[0.16em] text-transparent drop-shadow-[0_0_30px_rgba(110,60,255,0.6)] sm:text-6xl sm:tracking-[0.24em] md:text-7xl">
         CUBEFIELD
       </div>
       <div className="mt-2 text-[11px] tracking-[0.62em] text-cyan-200/70">
@@ -93,7 +125,7 @@ function TitleScreen() {
 
   return (
     <Screen dim={false}>
-      <div className="pointer-events-auto flex flex-col items-center gap-8 text-center">
+      <div className="pointer-events-auto flex flex-col items-center gap-5 px-4 text-center sm:gap-8">
         <motion.div
           initial={{ y: -26, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
@@ -117,7 +149,7 @@ function TitleScreen() {
               {dailyRecord ? `BEST ${dailyRecord.score.toLocaleString()}` : today}
             </span>
           </button>
-          <div className="mt-1 flex gap-2">
+          <div className="mt-1 flex flex-wrap justify-center gap-2">
             <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("hangar")}>
               HANGAR
             </button>
@@ -155,14 +187,24 @@ function PauseScreen() {
   const setOverlay = useGame((s) => s.setOverlay);
   return (
     <Screen>
-      <div className={`${panel} pointer-events-auto flex flex-col items-center gap-5 px-12 py-10`}>
-        <div className="font-display text-3xl font-black tracking-[0.3em] text-white">PAUSED</div>
+      <div
+        className={`${panel} pointer-events-auto flex flex-col items-center gap-5 px-7 py-8 sm:px-12 sm:py-10`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pause-title"
+      >
+        <div id="pause-title" className="font-display text-3xl font-black tracking-[0.3em] text-white">
+          PAUSED
+        </div>
         <div className="flex flex-col gap-2.5">
-          <button className={btnPrimary} onClick={() => bundle.togglePause()}>
+          <button autoFocus className={btnPrimary} onClick={() => bundle.togglePause()}>
             RESUME
           </button>
           <button className={btnGhost} onClick={() => setOverlay("settings")}>
             SETTINGS
+          </button>
+          <button className={btnGhost} onClick={() => bundle.restart()}>
+            RESTART RUN
           </button>
           <button className={btnGhost} onClick={() => bundle.backToTitle()}>
             ABANDON RUN
@@ -181,7 +223,7 @@ function GameOverScreen() {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setShow(true), 700);
+    const t = setTimeout(() => setShow(true), 260);
     return () => clearTimeout(t);
   }, []);
 
@@ -194,10 +236,13 @@ function GameOverScreen() {
         initial={{ y: 26, opacity: 0, scale: 0.97 }}
         animate={{ y: 0, opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className={`${panel} pointer-events-auto w-[min(92vw,480px)] px-8 py-8`}
+        className={`${panel} pointer-events-auto max-h-[92vh] w-[min(94vw,500px)] overflow-y-auto px-5 py-6 sm:px-8 sm:py-8`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="game-over-title"
       >
         <div className="text-center">
-          <div className="font-display text-2xl font-black tracking-[0.3em] text-rose-300">
+          <div id="game-over-title" className="font-display text-2xl font-black tracking-[0.3em] text-rose-300">
             SIGNAL LOST
           </div>
           {(outcome.newBestScore || (mode === "daily" && outcome.newDailyBest)) && (
@@ -219,6 +264,24 @@ function GameOverScreen() {
           <Stat label="SHARDS" value={String(s.shards)} />
           <Stat label="PEAK FLOW" value={`×${(1 + s.maxFlowPoints * FLOW.MULT_PER_POINT).toFixed(2)}`} />
           <Stat label="TIME" value={`${s.duration.toFixed(1)}s`} />
+          <Stat label="PERFECT PASSES" value={String(s.perfectPasses)} />
+          <Stat label="BEST CHAIN" value={String(s.bestFlowChain)} />
+        </div>
+
+        <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
+          <div className="text-[10px] tracking-[0.24em] text-white/40">RUN READOUT</div>
+          <div className="mt-1 text-sm text-white/75">
+            {s.deathCause
+              ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
+              : "SIGNAL TERMINATED"}
+          </div>
+          <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
+            {outcome.scoreDelta > 0
+              ? `PB +${outcome.scoreDelta.toLocaleString()}`
+              : outcome.scoreDelta === 0
+                ? "MATCHED PERSONAL BEST"
+              : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of PB`}
+          </div>
         </div>
 
         {outcome.unlocked.length > 0 && (
@@ -232,7 +295,7 @@ function GameOverScreen() {
         )}
 
         <div className="mt-7 flex justify-center gap-3">
-          <button className={btnPrimary} onClick={() => bundle.restart()}>
+          <button autoFocus className={btnPrimary} onClick={() => bundle.restart()}>
             RETRY
           </button>
           <button className={btnGhost} onClick={() => bundle.backToTitle()}>
@@ -256,14 +319,53 @@ function Stat({ label, value, big = false }: { label: string; value: string; big
   );
 }
 
+function formatPattern(id: string): string {
+  return id
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
 function OverlayShell({ title, children }: { title: string; children: React.ReactNode }) {
   const setOverlay = useGame((s) => s.setOverlay);
+  const titleId = `overlay-${title.toLowerCase().replaceAll(" ", "-")}`;
+  const returnFocus = useRef<HTMLElement | null>(
+    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null,
+  );
+  useEffect(() => {
+    const target = returnFocus.current;
+    return () => target?.focus();
+  }, []);
+
+  const trapFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab") return;
+    const controls = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (controls.length === 0) return;
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-[#05030c]/70"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      onKeyDown={trapFocus}
       onClick={(e) => {
         if (e.target === e.currentTarget) setOverlay("none");
       }}
@@ -276,12 +378,14 @@ function OverlayShell({ title, children }: { title: string; children: React.Reac
         className={`${panel} max-h-[86vh] w-[min(94vw,660px)] overflow-y-auto px-7 py-6`}
       >
         <div className="mb-5 flex items-center justify-between">
-          <div className="font-display text-xl font-black tracking-[0.3em] text-white">{title}</div>
+          <div id={titleId} className="font-display text-xl font-black tracking-[0.3em] text-white">{title}</div>
           <button
+            autoFocus
             className="rounded-lg border border-white/15 px-3 py-1 text-sm text-white/70 hover:bg-white/10"
             onClick={() => setOverlay("none")}
+            aria-label={`Close ${title}`}
           >
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
         {children}
@@ -301,10 +405,12 @@ function HangarOverlay() {
         {CRAFTS.map((c) => {
           const unlocked = c.unlock.check(snap);
           const selected = meta.selectedCraft === c.id;
+          const progress = c.unlock.progress?.(snap);
           return (
             <button
               key={c.id}
               disabled={!unlocked}
+              aria-pressed={selected}
               onClick={() => meta.selectCraft(c.id)}
               className={`rounded-xl border p-3 text-left transition-all ${
                 selected
@@ -326,6 +432,9 @@ function HangarOverlay() {
               <div className="text-[11px] leading-snug text-white/55">
                 {unlocked ? c.desc : c.unlock.label}
               </div>
+              {!unlocked && progress && (
+                <UnlockProgress value={progress.value} target={progress.target} />
+              )}
             </button>
           );
         })}
@@ -336,10 +445,12 @@ function HangarOverlay() {
         {TRAILS.map((t) => {
           const unlocked = t.unlock.check(snap);
           const selected = meta.selectedTrail === t.id;
+          const progress = t.unlock.progress?.(snap);
           return (
             <button
               key={t.id}
               disabled={!unlocked}
+              aria-pressed={selected}
               title={unlocked ? t.name : t.unlock.label}
               onClick={() => meta.selectTrail(t.id)}
               className={`flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 transition-all ${
@@ -355,6 +466,11 @@ function HangarOverlay() {
                 style={{ background: t.color, boxShadow: `0 0 10px ${t.color}` }}
               />
               <span className="text-[10px] text-white/70">{t.name.split(" ")[0]}</span>
+              {!unlocked && progress && (
+                <span className="text-[9px] tabular-nums text-white/45">
+                  {Math.floor(progress.value).toLocaleString()}/{progress.target.toLocaleString()}
+                </span>
+              )}
             </button>
           );
         })}
@@ -365,8 +481,25 @@ function HangarOverlay() {
         <Stat label="LIFETIME KM" value={(meta.totalDistance / 1000).toFixed(1)} />
         <Stat label="SHARDS" value={String(meta.totalShards)} />
         <Stat label="NEAR MISSES" value={String(meta.totalNearMisses)} />
+        <Stat label="PERFECT" value={String(meta.totalPerfectPasses)} />
+        <Stat label="BEST CHAIN" value={String(meta.bestFlowChain)} />
+        <Stat label="SHARD COMBO" value={String(meta.bestShardCombo)} />
       </div>
     </OverlayShell>
+  );
+}
+
+function UnlockProgress({ value, target }: { value: number; target: number }) {
+  const pct = Math.min(100, (value / Math.max(1, target)) * 100);
+  return (
+    <div className="mt-2">
+      <div className="h-1 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-cyan-300/70" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="mt-1 text-[9px] tabular-nums text-white/35">
+        {Math.floor(value).toLocaleString()} / {target.toLocaleString()}
+      </div>
+    </div>
   );
 }
 
@@ -383,6 +516,7 @@ function SettingsOverlay() {
               <button
                 key={q}
                 onClick={() => s.setQuality(q)}
+                aria-pressed={s.quality === q}
                 className={`rounded-lg px-3 py-1.5 text-xs font-bold tracking-wider transition-colors ${
                   s.quality === q ? "bg-cyan-300/25 text-cyan-100" : "bg-white/5 text-white/55 hover:bg-white/10"
                 }`}
@@ -393,22 +527,31 @@ function SettingsOverlay() {
           </div>
         </Row>
         <Row label="MUSIC">
-          <Slider value={s.musicVolume} onChange={s.setMusicVolume} />
+          <Slider label="Music volume" value={s.musicVolume} onChange={s.setMusicVolume} />
         </Row>
         <Row label="SFX">
-          <Slider value={s.sfxVolume} onChange={s.setSfxVolume} />
+          <Slider label="Sound effects volume" value={s.sfxVolume} onChange={s.setSfxVolume} />
         </Row>
         <Row label="STEERING SENSITIVITY">
-          <Slider value={s.sensitivity} min={0.5} max={1.5} onChange={s.setSensitivity} />
+          <Slider
+            label="Steering sensitivity"
+            value={s.sensitivity}
+            min={0.5}
+            max={1.5}
+            onChange={s.setSensitivity}
+          />
         </Row>
         <Row label="REDUCE MOTION" hint="Softer camera shake and FOV kicks">
-          <Toggle value={s.reduceMotion} onChange={s.setReduceMotion} />
+          <Toggle label="Reduce motion" value={s.reduceMotion} onChange={s.setReduceMotion} />
         </Row>
         <Row label="REDUCE FLASHES" hint="Caps lightning and flash effects">
-          <Toggle value={s.reduceFlash} onChange={s.setReduceFlash} />
+          <Toggle label="Reduce flashes" value={s.reduceFlash} onChange={s.setReduceFlash} />
+        </Row>
+        <Row label="HIGH CONTRAST" hint="Brighter obstacle edges and calmer distortion">
+          <Toggle label="High contrast" value={s.highContrast} onChange={s.setHighContrast} />
         </Row>
         <Row label="SHOW FPS">
-          <Toggle value={s.showFps} onChange={s.setShowFps} />
+          <Toggle label="Show FPS" value={s.showFps} onChange={s.setShowFps} />
         </Row>
       </div>
     </OverlayShell>
@@ -417,7 +560,7 @@ function SettingsOverlay() {
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4">
+    <div className="flex flex-col items-stretch justify-between gap-2 sm:flex-row sm:items-center sm:gap-4">
       <div>
         <div className="text-sm font-semibold tracking-wider text-white/85">{label}</div>
         {hint && <div className="text-[11px] text-white/40">{hint}</div>}
@@ -428,8 +571,8 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 }
 
 function Slider({
-  value, onChange, min = 0, max = 1,
-}: { value: number; onChange: (v: number) => void; min?: number; max?: number }) {
+  label, value, onChange, min = 0, max = 1,
+}: { label: string; value: number; onChange: (v: number) => void; min?: number; max?: number }) {
   return (
     <input
       type="range"
@@ -437,16 +580,28 @@ function Slider({
       max={max}
       step={0.05}
       value={value}
+      aria-label={label}
       onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="h-1.5 w-40 cursor-pointer appearance-none rounded-full bg-white/15 accent-cyan-300"
+      className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/15 accent-cyan-300 sm:w-40"
     />
   );
 }
 
-function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       onClick={() => onChange(!value)}
+      role="switch"
+      aria-checked={value}
+      aria-label={label}
       className={`relative h-6 w-11 rounded-full transition-colors ${value ? "bg-cyan-400/80" : "bg-white/15"}`}
     >
       <span
@@ -469,17 +624,18 @@ function HelpOverlay() {
         </div>
         <div>
           <span className="font-bold text-cyan-200">Near misses build FLOW.</span> Graze obstacles
-          to raise your multiplier — it decays if you play safe. Higher flow intensifies the music
-          and the world.
+          to raise your multiplier — Close, Razor, and Perfect passes pay increasingly more.
+          Chain precise passes before Flow decays to reach the highest scores.
         </div>
         <div>
-          <span className="font-bold text-cyan-200">Shards are fuel.</span> Hold <Key>SHIFT</Key> or{" "}
-          <Key>SPACE</Key> to spend them on a boost. Boosting is fast, but steering authority drops —
-          respect it.
+          <span className="font-bold text-cyan-200">Shards are fuel.</span> Collect them quickly to
+          build a combo, then hold <Key>SHIFT</Key> or <Key>SPACE</Key> to spend that energy on a
+          boost. Larger risk-route shards do not magnetize, but pay 60% extra. Boosting is fast,
+          but steering authority drops — respect it.
         </div>
         <div>
           <span className="font-bold text-amber-200">Shields</span> are rare. One hit is forgiven;
-          the second is not.
+          the second is not, and a shield break costs Flow.
         </div>
         <div>
           <Key>R</Key> restarts instantly. <Key>ESC</Key> pauses. The{" "}

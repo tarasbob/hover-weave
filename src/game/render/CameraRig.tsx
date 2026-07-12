@@ -34,8 +34,8 @@ export function CameraRig() {
       world.events.on("shieldBreak", () => {
         state.current.trauma = Math.max(state.current.trauma, 0.65);
       }),
-      world.events.on("nearMiss", () => {
-        state.current.trauma = Math.max(state.current.trauma, 0.18);
+      world.events.on("nearMiss", (e) => {
+        state.current.trauma = Math.max(state.current.trauma, 0.12 + e.precision * 0.2);
       }),
       world.events.on("slabFall", (e) => {
         const d = Math.abs(e.s - world.distance);

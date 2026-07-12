@@ -23,9 +23,9 @@ export const TRACK = {
 
 export const SPEED = {
   BASE: 30,
-  MAX: 82,
+  MAX: 90,
   /** Distance (m) over which speed approaches max (asymptotic). */
-  RAMP_DISTANCE: 9000,
+  RAMP_DISTANCE: 5600,
   /** Speed multiplier while boosting. */
   BOOST_MULT: 1.45,
   /** Seconds for the initial 0 -> base speed launch ramp. */
@@ -60,13 +60,29 @@ export const CRAFT = {
 
 export const FLOW = {
   /** Lateral clearance (m) under which a pass counts as a near miss. */
-  NEAR_MISS_CLEARANCE: 1.25,
-  /** Flow points gained per near miss. */
-  POINTS_PER_NEAR_MISS: 1,
+  NEAR_MISS_CLEARANCE: 1.3,
+  /** Display/reward thresholds measured from the craft collision hull. */
+  PERFECT_CLEARANCE: 0.24,
+  RAZOR_CLEARANCE: 0.62,
+  CLOSE_POINTS: 0.75,
+  RAZOR_POINTS: 1.3,
+  PERFECT_POINTS: 2,
+  CLOSE_SCORE: 30,
+  RAZOR_SCORE: 70,
+  PERFECT_SCORE: 125,
+  POINTS_PER_SHARD: 0.15,
+  /** Near misses inside this window form a precision chain. */
+  CHAIN_WINDOW: 2.75,
+  CHAIN_SCORE_STEP: 0.07,
+  CHAIN_SCORE_CAP: 0.7,
   /** Seconds of no flow events before decay starts. */
   DECAY_GRACE: 2.9,
   /** Points lost per second once decaying. */
   DECAY_RATE: 1.35,
+  /** High Flow demands more frequent committed play. */
+  DECAY_RATE_PER_HIGH_TIER: 0.22,
+  GRACE_LOSS_PER_HIGH_TIER: 0.18,
+  SHIELD_PENALTY: 7,
   MAX_POINTS: 28,
   /** Score multiplier = 1 + points * this. */
   MULT_PER_POINT: 0.25,
@@ -76,8 +92,13 @@ export const FLOW = {
 
 export const ENERGY = {
   MAX: 100,
-  PER_SHARD: 7,
-  BOOST_DRAIN: 30,
+  START: 12,
+  PER_SHARD: 5,
+  COMBO_WINDOW: 1.35,
+  COMBO_CAP: 8,
+  COMBO_ENERGY_STEP: 0.4,
+  COMBO_SCORE_STEP: 0.16,
+  BOOST_DRAIN: 34,
   /** Minimum energy required to ignite a boost. */
   BOOST_MIN: 8,
   SHARD_SCORE: 40,
@@ -96,7 +117,8 @@ export const RUN = {
 
 /** Fixed timestep for the simulation (seconds). */
 export const FIXED_DT = 1 / 120;
-export const MAX_STEPS_PER_FRAME = 10;
+/** Covers 250ms exactly; longer stalls auto-pause instead of slowing the run. */
+export const MAX_STEPS_PER_FRAME = 30;
 
 export const BIOME_LENGTH = 2400;
 export const BIOME_TRANSITION = 320;

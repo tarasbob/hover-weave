@@ -23,17 +23,23 @@ export class InputManager {
   private detach: (() => void) | null = null;
   private gestureCallbacks: (() => void)[] = [];
   private gestureFired = false;
+  private gamepadRestartHeld = false;
+  private gamepadPauseHeld = false;
 
   attach(target: HTMLElement): void {
+    this.dispose();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
+      this.fireGesture();
+      const inUi = e.target instanceof Element && e.target.closest("[data-ui]");
+      const globalShortcut = e.code === "KeyR" || e.code === "Escape" || e.code === "KeyP";
+      if (inUi && !globalShortcut) return;
       this.keys.add(e.code);
       if (e.code === "KeyR" || e.code === "Enter") this.state.restart = true;
       if (e.code === "Escape" || e.code === "KeyP") this.state.pause = true;
       if (["ArrowLeft", "ArrowRight", "Space", "ArrowUp", "ArrowDown"].includes(e.code)) {
         e.preventDefault();
       }
-      this.fireGesture();
     };
     const onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
     const onBlur = () => {
@@ -42,11 +48,11 @@ export class InputManager {
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (e.target instanceof HTMLElement && e.target.closest("[data-ui]")) return;
+      this.fireGesture();
+      if (e.target instanceof Element && e.target.closest("[data-ui]")) return;
       this.pointerCount++;
       this.pointerActive = true;
       if (this.pointerCount === 1) this.updatePointer(e, target);
-      this.fireGesture();
     };
     const onPointerMove = (e: PointerEvent) => {
       if (this.pointerActive && e.isPrimary) this.updatePointer(e, target);
@@ -84,9 +90,15 @@ export class InputManager {
   }
 
   /** Register a one-shot callback for the first user gesture (audio unlock). */
-  onFirstGesture(cb: () => void): void {
-    if (this.gestureFired) cb();
-    else this.gestureCallbacks.push(cb);
+  onFirstGesture(cb: () => void): () => void {
+    if (this.gestureFired) {
+      cb();
+      return () => undefined;
+    }
+    this.gestureCallbacks.push(cb);
+    return () => {
+      this.gestureCallbacks = this.gestureCallbacks.filter((candidate) => candidate !== cb);
+    };
   }
 
   private fireGesture(): void {
@@ -124,15 +136,21 @@ export class InputManager {
 
     if (typeof navigator !== "undefined" && navigator.getGamepads) {
       const pads = navigator.getGamepads();
+      let restartPressed = false;
+      let pausePressed = false;
       for (const pad of pads) {
         if (!pad) continue;
         const gx = pad.axes[0] ?? 0;
         if (Math.abs(gx) > 0.12) axis = clamp(gx * 1.15, -1, 1);
         if (pad.buttons[0]?.pressed || pad.buttons[7]?.pressed) boost = true;
-        if (pad.buttons[1]?.pressed) this.state.restart = true;
-        if (pad.buttons[9]?.pressed) this.state.pause = true;
+        restartPressed = Boolean(pad.buttons[1]?.pressed);
+        pausePressed = Boolean(pad.buttons[9]?.pressed);
         break;
       }
+      if (restartPressed && !this.gamepadRestartHeld) this.state.restart = true;
+      if (pausePressed && !this.gamepadPauseHeld) this.state.pause = true;
+      this.gamepadRestartHeld = restartPressed;
+      this.gamepadPauseHeld = pausePressed;
     }
 
     this.state.axis = clamp(axis * sensitivity, -1, 1);

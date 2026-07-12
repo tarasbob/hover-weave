@@ -50,6 +50,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const seed = daily ? dailySeed() : randomSeed();
       useGame.getState().setMode(mode);
       useGame.getState().setOutcome(null);
+      useGame.getState().clearRunFeedback();
       world.start(seed, daily);
       useGame.getState().setPhase("running");
       audio.startMusic();
@@ -114,11 +115,34 @@ export function GameProvider({ children }: { children: ReactNode }) {
             unlocked.push({ kind: "trail", id: t.id, name: t.name });
           }
         }
-        g.setOutcome({ stats: { ...stats }, ...res, unlocked });
+        g.setOutcome({
+          stats: { ...stats },
+          ...res,
+          scoreDelta: stats.score - before.bestScore,
+          unlocked,
+        });
         g.setPhase("dead");
       }),
-      world.events.on("nearMiss", (e) => audio.nearMiss(Math.sign(e.x - world.x))),
-      world.events.on("shard", (e) => audio.shard(e.combo)),
+      world.events.on("nearMiss", (e) => {
+        audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision);
+        const label =
+          e.grade === "perfect" ? "PERFECT PASS" : e.grade === "razor" ? "RAZOR PASS" : "CLOSE PASS";
+        useGame.getState().setSkillMoment(
+          label,
+          `+${e.scoreAward.toLocaleString()} · CHAIN ${e.chain}`,
+          e.grade,
+        );
+      }),
+      world.events.on("shard", (e) => {
+        audio.shard(e.combo);
+        if (e.combo >= 2 || e.risk) {
+          useGame.getState().setSkillMoment(
+            e.risk ? `RISK SHARD ×${e.combo}` : `SHARD COMBO ×${e.combo}`,
+            `+${e.scoreAward.toLocaleString()} · +${e.energyAward.toFixed(1)} ENERGY`,
+            "shard",
+          );
+        }
+      }),
       world.events.on("shieldPickup", () => audio.shieldPickup()),
       world.events.on("shieldBreak", () => audio.shieldBreak()),
       world.events.on("boostStart", () => audio.boostStart()),
@@ -126,6 +150,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
         if (e.tier > e.prev) audio.flowTierUp(e.tier);
       }),
       world.events.on("setpiece", (e) => useGame.getState().setCallout(e.name)),
+      world.events.on("biome", (e) => {
+        if (e.index > 0) {
+          audio.biome(e.index);
+          useGame.getState().setCallout(e.name, "NEW SECTOR");
+        }
+      }),
       env.onStrike((i) => audio.thunderClap(i)),
     ];
     return () => offs.forEach((off) => off());
@@ -135,7 +165,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const { input, audio } = bundle;
     input.attach(document.body);
-    input.onFirstGesture(() => {
+    const offGesture = input.onFirstGesture(() => {
       const s = useSettings.getState();
       void audio.init().then(() => {
         audio.setVolumes(s.musicVolume, s.sfxVolume);
@@ -147,9 +177,15 @@ export function GameProvider({ children }: { children: ReactNode }) {
         bundle.togglePause();
       }
     };
+    const onUiClick = (event: MouseEvent) => {
+      if (event.target instanceof Element && event.target.closest("button")) audio.uiClick();
+    };
     document.addEventListener("visibilitychange", onVisibility);
+    document.addEventListener("click", onUiClick);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
+      document.removeEventListener("click", onUiClick);
+      offGesture();
       input.dispose();
     };
   }, [bundle]);
@@ -160,6 +196,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const s = useSettings.getState();
       bundle.audio.setVolumes(s.musicVolume, s.sfxVolume);
       bundle.env.reduceFlash = s.reduceFlash;
+      bundle.env.highContrast = s.highContrast;
     };
     apply();
     return useSettings.subscribe(apply);

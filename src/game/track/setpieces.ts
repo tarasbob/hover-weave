@@ -7,7 +7,8 @@ import {
   type PatternResult,
   type PickupSpec,
 } from "../core/types";
-import { box, funnelTo, leadInDist } from "./patterns";
+import { box, funnelTo, gateRow, leadInDist } from "./patterns";
+import { pathSlopeAt } from "./validator";
 
 const XP = TRACK.X_PATTERN;
 
@@ -15,9 +16,12 @@ const XP = TRACK.X_PATTERN;
 const monolithKeyhole: PatternDef = {
   id: "monolithKeyhole",
   category: "setpiece",
+  intensity: 3,
+  skills: ["precision", "commitment"],
   weight: 1,
   minDifficulty: 0.15,
   maxDifficulty: 1,
+  maxEntryHalf: 18,
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
     const obstacles: ObstacleSpec[] = [];
@@ -47,6 +51,8 @@ const monolithKeyhole: PatternDef = {
 const colossalArch: PatternDef = {
   id: "colossalArch",
   category: "setpiece",
+  intensity: 2,
+  skills: ["navigation"],
   weight: 1,
   minDifficulty: 0.1,
   maxDifficulty: 0.9,
@@ -77,6 +83,8 @@ const colossalArch: PatternDef = {
 const gravityWell: PatternDef = {
   id: "gravityWell",
   category: "setpiece",
+  intensity: 4,
+  skills: ["rhythm", "reaction"],
   weight: 0.9,
   minDifficulty: 0.35,
   maxDifficulty: 1,
@@ -116,6 +124,8 @@ const gravityWell: PatternDef = {
 const closingCanyon: PatternDef = {
   id: "closingCanyon",
   category: "setpiece",
+  intensity: 4,
+  skills: ["commitment"],
   weight: 0.9,
   minDifficulty: 0.3,
   maxDifficulty: 1,
@@ -164,10 +174,13 @@ const closingCanyon: PatternDef = {
 const breathingRings: PatternDef = {
   id: "breathingRings",
   category: "setpiece",
+  intensity: 4,
+  skills: ["precision", "rhythm"],
   weight: 0.85,
   minDifficulty: 0.4,
   maxDifficulty: 1,
   biomes: [1, 3],
+  maxEntryHalf: 18,
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
     const count = 9;
@@ -211,6 +224,8 @@ const breathingRings: PatternDef = {
 const turbineField: PatternDef = {
   id: "turbineField",
   category: "setpiece",
+  intensity: 5,
+  skills: ["rhythm", "precision"],
   weight: 0.8,
   minDifficulty: 0.5,
   maxDifficulty: 1,
@@ -246,6 +261,75 @@ const turbineField: PatternDef = {
   },
 };
 
+/** Late-run multi-stage precision peak with readable off-line rotors. */
+const apexGauntlet: PatternDef = {
+  id: "apexGauntlet",
+  category: "setpiece",
+  intensity: 5,
+  skills: ["precision", "commitment", "rhythm"],
+  weight: 0.75,
+  minDifficulty: 0.72,
+  maxDifficulty: 1,
+  maxEntryHalf: 15,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const gapHalf = lerp(3.8, 3.05, d);
+    const slope = pathSlopeAt(d) * 0.8;
+    let gx = clamp(ctx.entryX + rng.range(-2, 2), -7, 7);
+    let s = funnelTo(ctx, obstacles, gx, gapHalf + 2, 4.5, "warn") + 16;
+    let side = gx === 0 ? rng.sign() : Math.sign(gx);
+    for (let stage = 0; stage < 6; stage++) {
+      obstacles.push(...gateRow(s, gx, gapHalf, 7, 1.7, {
+        role: "warn",
+        glow: 1.9,
+      }));
+      pickups.push({
+        type: "shard",
+        s,
+        x: gx + side * (gapHalf - 0.3),
+        y: 1.3,
+        magnet: false,
+      });
+      if (stage === 5) break;
+
+      const nx = clamp(-gx + rng.range(-2.5, 2.5), -9, 9);
+      const run = Math.max(36, Math.abs(nx - gx) / slope + 12);
+      const rotorX = -side * 18;
+      obstacles.push(box(rotorX, s + run * 0.5, 1.1, 8, 1.1, {
+        kind: "pillar",
+        role: "dim",
+      }));
+      obstacles.push({
+        kind: "box",
+        x: rotorX,
+        s: s + run * 0.5,
+        y: 1.4,
+        hx: 7.2,
+        hy: 0.65,
+        hs: 0.55,
+        role: "warn",
+        glow: 1.8,
+        motion: Motion.RotateYaw,
+        m0: side * lerp(1.5, 2.25, d),
+        m1: stage * 0.85,
+      });
+      s += run;
+      gx = nx;
+      side = -side;
+    }
+    return {
+      length: s - s0 + 28,
+      exitX: gx,
+      exitHalf: gapHalf + 1,
+      obstacles,
+      pickups,
+      announce: "APEX GAUNTLET",
+    };
+  },
+};
+
 export const SETPIECES: PatternDef[] = [
   monolithKeyhole,
   colossalArch,
@@ -253,4 +337,5 @@ export const SETPIECES: PatternDef[] = [
   closingCanyon,
   breathingRings,
   turbineField,
+  apexGauntlet,
 ];

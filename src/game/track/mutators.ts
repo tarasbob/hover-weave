@@ -22,6 +22,7 @@ export function mutatePattern(
   s0: number,
   category: PatternCategory,
   entryX = 0,
+  difficulty = 0,
 ): MutationLog {
   const log: MutationLog = { mirrored: false, scatterAdded: 0, jittered: false, moverBoost: 1 };
 
@@ -48,25 +49,28 @@ export function mutatePattern(
 
   // Positional jitter on free-standing obstacles (walls and wide slabs are
   // left alone so corridors keep their authored shape).
-  if (category !== "setpiece" && rng.chance(0.35)) {
+  if (category !== "setpiece" && rng.chance(0.26 + difficulty * 0.24)) {
     log.jittered = true;
     for (const o of result.obstacles) {
       if (o.hx > 6 || o.motion) continue;
-      o.x += rng.range(-1.2, 1.2);
-      o.s += rng.range(-2.5, 2.5);
+      const jitter = 0.8 + difficulty * 0.8;
+      o.x += rng.range(-jitter, jitter);
+      o.s += rng.range(-1.8 - difficulty, 1.8 + difficulty);
     }
   }
 
   // Speed up movers a touch.
-  if (rng.chance(0.22)) {
-    log.moverBoost = rng.range(1.05, 1.35);
+  if (rng.chance(0.14 + difficulty * 0.34)) {
+    log.moverBoost = rng.range(1.04, 1.2 + difficulty * 0.34);
     for (const o of result.obstacles) {
       switch (o.motion) {
         case Motion.SweepX:
         case Motion.RotateYaw:
-        case Motion.OrbitXZ:
         case Motion.Piston:
           o.m0 = (o.m0 ?? 0) * log.moverBoost;
+          break;
+        case Motion.OrbitXZ:
+          o.m1 = (o.m1 ?? 0) * log.moverBoost;
           break;
         case Motion.Pendulum:
           o.m2 = (o.m2 ?? 0) * log.moverBoost;
@@ -78,8 +82,8 @@ export function mutatePattern(
   // Sprinkle a few extra loose objects over normal patterns so even a
   // memorized layout stays alive. (Fields are already chaos; set-pieces stay
   // authored.)
-  if (category === "normal" && rng.chance(0.28)) {
-    const n = rng.int(2, 6);
+  if (category === "normal" && rng.chance(0.2 + difficulty * 0.24)) {
+    const n = rng.int(2, 4 + Math.round(difficulty * 3));
     for (let i = 0; i < n; i++) {
       const s = s0 + rng.range(14, result.length - 10);
       const x = rng.range(-XP + 3, XP - 3);

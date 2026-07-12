@@ -1,13 +1,21 @@
 import { SPEED, TRACK } from "../core/constants";
-import { clamp01, lerp } from "../core/mathUtils";
+import { clamp, clamp01, lerp } from "../core/mathUtils";
 import type { Rng } from "../core/rng";
-import type { BuildCtx, ObstacleSpec, PatternDef, PatternResult, PickupSpec } from "../core/types";
+import type {
+  BuildCtx,
+  ObstacleSpec,
+  PatternDef,
+  PatternResult,
+  PatternSkill,
+  PickupSpec,
+} from "../core/types";
 import { biomeIndexAt } from "./biomes";
 import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
 import { SETPIECES } from "./setpieces";
 import { mutatePattern } from "./mutators";
 import {
   openLanes,
+  blockedRanges,
   validatePattern,
   widestCorridor,
   type ValidationResult,
@@ -17,6 +25,10 @@ export interface GeneratedChunk {
   s0: number;
   s1: number;
   patternId: string;
+  requestedPatternId: string;
+  attempts: number;
+  intensity: number;
+  skills: PatternSkill[];
   announce?: string;
   obstacles: ObstacleSpec[];
   pickups: PickupSpec[];
@@ -25,14 +37,22 @@ export interface GeneratedChunk {
 
 /** Difficulty curve: fast early growth, asymptotic tail, gentle waves. */
 export function difficultyAt(s: number): number {
-  const base = 1 - Math.exp(-s / 3800);
+  const base = 1 - Math.exp(-s / 2400);
   const wave = Math.sin(s * 0.0011) * 0.07;
-  return clamp01(base * 0.92 + wave + 0.04);
+  return clamp01(base * 0.96 + wave + 0.035);
 }
 
 /** Target craft speed at distance s (before boost/flow modifiers). */
 export function speedAt(s: number): number {
   return lerp(SPEED.BASE, SPEED.MAX, 1 - Math.exp(-s / SPEED.RAMP_DISTANCE));
+}
+
+export function patternIntensity(pattern: PatternDef): number {
+  if (pattern.intensity) return pattern.intensity;
+  if (pattern.category === "breather") return 1;
+  if (pattern.category === "setpiece") return 4;
+  if (pattern.category === "field") return 3;
+  return clamp(Math.round(1.5 + pattern.minDifficulty * 4), 2, 5);
 }
 
 export interface GeneratorEmit {
@@ -52,6 +72,9 @@ export class TrackGenerator {
   private sinceSetpiece = 0;
   private sinceField = 0;
   private forceBreather = true;
+  private recoveryDue = false;
+  private peakStreak = 0;
+  private recentSkills: PatternSkill[] = [];
   private lastPatternId = "";
   private shieldCooldown = 900;
   private nextSetpieceAt: number;
@@ -67,8 +90,8 @@ export class TrackGenerator {
     this.rng = rng;
     this.debug = debug;
     this.exitLanes = openLanes();
-    this.nextSetpieceAt = rng.range(650, 950);
-    this.nextFieldAt = rng.range(250, 500);
+    this.nextSetpieceAt = rng.range(620, 900);
+    this.nextFieldAt = rng.range(240, 440);
   }
 
   fill(target: number, emit: GeneratorEmit): void {
@@ -107,14 +130,22 @@ export class TrackGenerator {
     let result: PatternResult | null = null;
     let validation: ValidationResult | null = null;
     let usedPattern = pattern;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const tryPattern = attempt < 4 ? pattern : BREATHER;
+    let attempts = 0;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const tryPattern = attempt < 6 ? pattern : BREATHER;
       const tryCtx: BuildCtx = {
         ...baseCtx,
-        difficulty: Math.max(0, difficulty * (1 - attempt * 0.18)),
+        difficulty: Math.max(0, difficulty * (1 - Math.min(attempt, 5) * 0.13)),
       };
       const built = tryPattern.build(tryCtx);
-      mutatePattern(this.rng, built, s0, tryPattern.category, baseCtx.entryX);
+      mutatePattern(
+        this.rng,
+        built,
+        s0,
+        tryPattern.category,
+        baseCtx.entryX,
+        tryCtx.difficulty,
+      );
       const v = validatePattern(
         built.obstacles,
         s0,
@@ -122,11 +153,13 @@ export class TrackGenerator {
         this.exitLanes,
         runway,
         this.debug,
+        tryCtx.difficulty,
       );
       if (v.ok) {
         result = built;
         validation = v;
         usedPattern = tryPattern;
+        attempts = attempt + 1;
         if (attempt > 0) this.rejections += attempt;
         if (tryPattern !== pattern) this.fallbacks++;
         break;
@@ -136,8 +169,9 @@ export class TrackGenerator {
       // Truly unreachable in practice; emit an empty stretch as a last resort.
       this.fallbacks++;
       result = { length: 90, exitX: 0, exitHalf: TRACK.X_LIMIT - 2, obstacles: [], pickups: [] };
-      validation = validatePattern([], s0, 90, openLanes(), runway, this.debug);
+      validation = validatePattern([], s0, 90, openLanes(), runway, this.debug, difficulty);
       usedPattern = BREATHER;
+      attempts = 8;
     }
 
     // Chain corridors for the next pattern.
@@ -151,29 +185,48 @@ export class TrackGenerator {
     const span = result.length + runway;
     if (usedPattern.category === "setpiece") {
       this.sinceSetpiece = 0;
-      this.nextSetpieceAt = this.rng.range(650, 1000);
-      this.forceBreather = true;
+      this.nextSetpieceAt = this.rng.range(620, 960) * lerp(1, 0.72, difficulty);
+      this.forceBreather = s0 < 1800;
+      this.recoveryDue = !this.forceBreather;
     } else {
       this.sinceSetpiece += span;
       this.forceBreather = false;
     }
     if (usedPattern.category === "field") {
       this.sinceField = 0;
-      this.nextFieldAt = this.rng.range(450, 800);
+      this.nextFieldAt = this.rng.range(420, 760) * lerp(1, 0.74, difficulty);
     } else {
       this.sinceField += span;
     }
     this.lastPatternId = usedPattern.id;
     this.lastUsedAt.set(usedPattern.id, s0);
+    const usedIntensity = patternIntensity(usedPattern);
+    if (this.recoveryDue && usedIntensity <= 2) {
+      this.recoveryDue = false;
+      this.peakStreak = 0;
+    } else if (usedIntensity >= 4) {
+      this.peakStreak++;
+      if (this.peakStreak >= 2) this.recoveryDue = true;
+    } else {
+      this.peakStreak = Math.max(0, this.peakStreak - 1);
+    }
+    if (usedPattern.skills?.length) {
+      this.recentSkills.push(...usedPattern.skills);
+      while (this.recentSkills.length > 5) this.recentSkills.shift();
+    }
 
     const pickups = [...result.pickups];
-    this.placePathPickups(validation, pickups, s0);
+    this.placePathPickups(validation, pickups, result.obstacles, s0, difficulty);
 
     this.generatedUpTo = s0 + result.length;
     const chunk: GeneratedChunk = {
       s0,
       s1: this.generatedUpTo,
       patternId: usedPattern.id,
+      requestedPatternId: pattern.id,
+      attempts,
+      intensity: usedIntensity,
+      skills: usedPattern.skills ?? [],
       announce: result.announce,
       obstacles: result.obstacles,
       pickups,
@@ -193,10 +246,25 @@ export class TrackGenerator {
     const eligible = (p: PatternDef) =>
       difficulty >= p.minDifficulty - 0.02 &&
       difficulty <= p.maxDifficulty + 0.35 &&
+      (s0 >= 500 || patternIntensity(p) <= 1) &&
+      (s0 >= 1400 || patternIntensity(p) <= 3) &&
       (!p.biomes || p.biomes.includes(biome)) &&
       (p.maxEntryHalf === undefined || entryHalf <= p.maxEntryHalf) &&
       (p.minEntryHalf === undefined || entryHalf >= p.minEntryHalf) &&
       p.id !== this.lastPatternId;
+
+    // A short low-intensity weave follows stacked peaks. Late recovery keeps
+    // the player steering instead of dropping into a long empty breather.
+    if (this.recoveryDue) {
+      const recovery = NORMAL_PATTERNS.filter(
+        (p) => eligible(p) && patternIntensity(p) <= 2,
+      );
+      if (recovery.length > 0) {
+        const weights = recovery.map((p) => p.weight * this.noveltyWeight(p, s0));
+        return recovery[this.rng.weighted(weights)];
+      }
+      return BREATHER;
+    }
 
     // Cadence guarantees: set-pieces trump, then overdue field sections.
     const setpieceDue = this.sinceSetpiece > this.nextSetpieceAt;
@@ -204,7 +272,9 @@ export class TrackGenerator {
     let pool: PatternDef[];
     if (setpieceDue) {
       pool = SETPIECES.filter(eligible);
-      if (pool.length === 0) return this.rng.pick(SETPIECES);
+      if (pool.length === 0) {
+        pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
+      }
     } else if (fieldDue) {
       pool = FIELD_PATTERNS.filter(eligible);
       if (pool.length === 0) pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
@@ -213,27 +283,64 @@ export class TrackGenerator {
     }
     if (pool.length === 0) return BREATHER;
 
-    // Novelty bonus: the longer since a pattern last appeared, the likelier.
+    // Director target: rapid distance ramp plus a rolling build/peak wave.
+    const wave = (Math.sin(s0 / 310) + 1) * 0.5;
+    const targetIntensity = clamp(Math.round(1 + difficulty * 3.3 + wave * difficulty), 1, 5);
+
+    // Novelty, intensity fit, and skill variation shape the weighted pick.
     const weights = pool.map((p) => {
-      const last = this.lastUsedAt.get(p.id);
-      const staleness = last === undefined ? 3000 : s0 - last;
-      return p.weight * (1 + Math.min(1.5, staleness / 3000));
+      const intensityFit = 1 / (1 + Math.abs(patternIntensity(p) - targetIntensity) * 0.72);
+      const skills = p.skills ?? [];
+      const repeats = skills.filter((skill) => this.recentSkills.includes(skill)).length;
+      const skillNovelty = skills.length === 0 ? 1 : repeats === 0 ? 1.3 : Math.max(0.62, 1 - repeats * 0.16);
+      return p.weight * this.noveltyWeight(p, s0) * intensityFit * skillNovelty;
     });
     return pool[this.rng.weighted(weights)];
   }
 
-  private placePathPickups(v: ValidationResult, pickups: PickupSpec[], s0: number): void {
+  private noveltyWeight(pattern: PatternDef, s0: number): number {
+    const last = this.lastUsedAt.get(pattern.id);
+    const staleness = last === undefined ? 3000 : s0 - last;
+    return 1 + Math.min(1.5, staleness / 3000);
+  }
+
+  private placePathPickups(
+    v: ValidationResult,
+    pickups: PickupSpec[],
+    obstacles: ObstacleSpec[],
+    s0: number,
+    difficulty: number,
+  ): void {
     if (v.path.length < 3) return;
-    for (let i = 2; i < v.path.length - 1; i += 5) {
-      if (!this.rng.chance(0.4)) continue;
-      const [s, x] = v.path[i];
-      if (pickups.some((p) => Math.abs(p.s - s) < 7)) continue;
-      pickups.push({ type: "shard", s, x, y: 1.3 });
+    for (let i = 2; i < v.path.length - 1; i += 8) {
+      if (!this.rng.chance(lerp(0.3, 0.2, difficulty))) continue;
+      const [s, safeX] = v.path[i];
+      if (pickups.some((p) => Math.abs(p.s - s) < 10)) continue;
+      let x = safeX;
+      let riskRoute = false;
+      if (difficulty > 0.2 && this.rng.chance(lerp(0.35, 0.78, difficulty))) {
+        const candidate = clamp(
+          safeX + this.rng.sign() * this.rng.range(2.5, lerp(4.5, 8, difficulty)),
+          -TRACK.X_LIMIT + 2,
+          TRACK.X_LIMIT - 2,
+        );
+        const blocked = obstacles.some(
+          (o) =>
+            Math.abs(o.s - s) < o.hs + 4 &&
+            blockedRanges(o).some(([x0, x1]) => candidate > x0 - 1.2 && candidate < x1 + 1.2),
+        );
+        if (!blocked) {
+          x = candidate;
+          riskRoute = true;
+        }
+      }
+      pickups.push({ type: "shard", s, x, y: 1.3, magnet: !riskRoute });
     }
-    if (s0 > this.shieldCooldown && this.rng.chance(0.3)) {
+    const shieldChance = lerp(0.32, 0.1, difficulty);
+    if (s0 > this.shieldCooldown && this.rng.chance(shieldChance)) {
       const [s, x] = v.path[Math.floor(v.path.length / 2)];
       pickups.push({ type: "shield", s, x, y: 1.5 });
-      this.shieldCooldown = s0 + this.rng.range(1100, 1800);
+      this.shieldCooldown = s0 + this.rng.range(1250, 2100) * lerp(1, 1.25, difficulty);
     }
   }
 }

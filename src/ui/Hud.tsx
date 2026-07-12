@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
-import { useGame } from "@/game/state/game";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { useGame, type SkillMoment } from "@/game/state/game";
 import { useMeta } from "@/game/state/meta";
 import { useSettings } from "@/game/state/settings";
 
@@ -12,22 +12,33 @@ export function Hud() {
   const hud = useGame((s) => s.hud);
   const mode = useGame((s) => s.mode);
   const callout = useGame((s) => s.callout);
+  const skillMoment = useGame((s) => s.skillMoment);
   const fps = useGame((s) => s.fps);
   const showFps = useSettings((s) => s.showFps);
+  const reduceMotion = useSettings((s) => s.reduceMotion);
   const bestScore = useMeta((s) => s.bestScore);
 
   const inRun = phase === "running" || phase === "paused" || phase === "dead";
   if (!inRun) return null;
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-10 font-display">
+    <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
+      <div
+        className="pointer-events-none fixed inset-0 z-10 font-display"
+        data-reduce-motion={reduceMotion}
+      >
       {/* Score block */}
-      <div className="absolute left-5 top-5">
+      <div className="absolute left-3 top-3 sm:left-5 sm:top-5">
         <div className="text-[11px] tracking-[0.3em] text-white/50">SCORE</div>
-        <div className="text-4xl font-bold tabular-nums text-white drop-shadow-[0_0_12px_rgba(90,220,255,0.55)]">
+        <div className="text-3xl font-bold tabular-nums text-white drop-shadow-[0_0_12px_rgba(90,220,255,0.55)] sm:text-4xl">
           {hud.score.toLocaleString()}
         </div>
-        <div className="mt-2 flex items-center gap-2">
+        {hud.personalBestBeaten && (
+          <div className="mt-0.5 text-[10px] font-bold tracking-[0.22em] text-amber-200">
+            NEW PERSONAL BEST
+          </div>
+        )}
+        <div className="mt-2 flex max-w-[62vw] flex-wrap items-center gap-1.5 sm:gap-2">
           <div
             className={`rounded-md px-2 py-0.5 text-sm font-bold tabular-nums transition-colors ${
               hud.flowTier >= 4
@@ -39,7 +50,12 @@ export function Hud() {
           >
             ×{hud.multiplier.toFixed(2)}
           </div>
-          <div className="h-1.5 w-28 overflow-hidden rounded-full bg-white/10">
+          <div
+            className={`h-1.5 w-20 overflow-hidden rounded-full bg-white/10 sm:w-28 ${
+              hud.flowTier > 0 && hud.flowGrace < 0.22 && !reduceMotion ? "animate-pulse" : ""
+            }`}
+            title={hud.flowGrace < 0.22 ? "Flow is decaying" : "Flow tier progress"}
+          >
             <div
               className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-fuchsia-400 transition-[width] duration-150"
               style={{ width: `${Math.min(hud.flowFrac * 100, 100)}%` }}
@@ -48,11 +64,16 @@ export function Hud() {
           {hud.flowTier > 0 && (
             <div className="text-xs font-semibold text-cyan-200/90">FLOW {hud.flowTier}</div>
           )}
+          {hud.flowChain > 1 && (
+            <div className="text-xs font-bold tabular-nums text-fuchsia-200">
+              CHAIN {hud.flowChain}
+            </div>
+          )}
         </div>
       </div>
 
       {/* Mode / biome / best */}
-      <div className="absolute right-5 top-5 text-right">
+      <div className="absolute right-3 top-3 text-right sm:right-5 sm:top-5">
         <div className="text-[11px] tracking-[0.3em] text-white/50">
           {mode === "daily" ? "DAILY COURSE" : "ENDLESS"}
         </div>
@@ -64,7 +85,7 @@ export function Hud() {
       </div>
 
       {/* Distance + speed */}
-      <div className="absolute bottom-5 right-5 text-right">
+      <div className="absolute bottom-3 right-3 text-right sm:bottom-5 sm:right-5">
         <div className="text-2xl font-bold tabular-nums text-white/90">
           {hud.distance.toLocaleString()}
           <span className="ml-1 text-sm font-normal text-white/50">m</span>
@@ -73,14 +94,16 @@ export function Hud() {
       </div>
 
       {/* Energy + shield */}
-      <div className="absolute bottom-6 left-1/2 flex w-72 -translate-x-1/2 items-center gap-3">
+      <div className="absolute bottom-4 left-1/2 flex w-[min(18rem,calc(100vw-8rem))] -translate-x-1/2 items-center gap-2 sm:bottom-6 sm:gap-3">
         <div
-          className={`grid h-9 w-9 shrink-0 place-items-center rounded-full border transition-all ${
+          className={`flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-2 transition-all ${
             hud.shield
               ? "border-amber-300/80 bg-amber-300/15 text-amber-200 shadow-[0_0_14px_rgba(252,211,77,0.5)]"
               : "border-white/15 bg-white/5 text-white/25"
           }`}
           title={hud.shield ? "Shield active" : "No shield"}
+          role="status"
+          aria-label={hud.shield ? "Shield active" : "No shield"}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
             <path
@@ -91,12 +114,15 @@ export function Hud() {
               fillOpacity={hud.shield ? 0.35 : 0}
             />
           </svg>
+          <span className="text-[8px] font-bold tracking-wider">
+            {hud.shield ? "SHIELD" : "NO SHIELD"}
+          </span>
         </div>
         <div className="flex-1">
           <div className="mb-1 flex justify-between text-[10px] tracking-[0.25em] text-white/45">
             <span>ENERGY</span>
             <span className={hud.boosting ? "text-amber-300" : ""}>
-              {hud.boosting ? "BOOSTING" : boostHint()}
+              {hud.boosting ? "BOOSTING" : hud.shardCombo > 1 ? `SHARDS ×${hud.shardCombo}` : boostHint()}
             </span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-white/10">
@@ -113,9 +139,19 @@ export function Hud() {
       </div>
 
       {/* Center callouts */}
-      <CalloutToast key={callout?.at ?? "none"} text={callout?.text} at={callout?.at} />
+      <CalloutToast
+        key={`callout-${callout?.at ?? "none"}`}
+        text={callout?.text}
+        sub={callout?.sub}
+        at={callout?.at}
+      />
+      <SkillMomentToast
+        key={`skill-${skillMoment?.at ?? "none"}`}
+        moment={skillMoment}
+      />
       <UnlockToasts />
-    </div>
+      </div>
+    </MotionConfig>
   );
 }
 
@@ -124,7 +160,7 @@ function boostHint(): string {
   return touch ? "SECOND FINGER TO BOOST" : "HOLD SHIFT / SPACE TO BOOST";
 }
 
-function CalloutToast({ text, at }: { text?: string; at?: number }) {
+function CalloutToast({ text, sub, at }: { text?: string; sub?: string; at?: number }) {
   const [visible, setVisible] = useState(false);
   useEffect(() => {
     if (!text || !at) return;
@@ -146,6 +182,51 @@ function CalloutToast({ text, at }: { text?: string; at?: number }) {
           <div className="bg-gradient-to-r from-cyan-200 via-white to-fuchsia-300 bg-clip-text text-3xl font-black tracking-[0.35em] text-transparent drop-shadow-[0_0_18px_rgba(120,200,255,0.45)]">
             {text}
           </div>
+          {sub && <div className="mt-1 text-[10px] tracking-[0.35em] text-white/55">{sub}</div>}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function SkillMomentToast({
+  moment,
+}: {
+  moment: SkillMoment | null;
+}) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!moment) return;
+    setVisible(true);
+    const t = setTimeout(() => setVisible(false), 950);
+    return () => clearTimeout(t);
+  }, [moment]);
+
+  const tone =
+    moment?.tone === "perfect"
+      ? "text-amber-200"
+      : moment?.tone === "razor"
+        ? "text-fuchsia-200"
+        : moment?.tone === "shard"
+          ? "text-cyan-200"
+          : "text-white/85";
+
+  return (
+    <AnimatePresence>
+      {visible && moment && (
+        <motion.div
+          initial={{ opacity: 0, y: 8, scale: 0.94 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -10, scale: 1.03 }}
+          transition={{ duration: 0.18 }}
+          className="absolute left-1/2 top-[38%] -translate-x-1/2 text-center"
+        >
+          <div className={`font-display text-lg font-black tracking-[0.22em] ${tone}`}>
+            {moment.text}
+          </div>
+          <div className="mt-0.5 text-[10px] font-semibold tracking-[0.16em] text-white/60">
+            {moment.detail}
+          </div>
         </motion.div>
       )}
     </AnimatePresence>
@@ -154,6 +235,41 @@ function CalloutToast({ text, at }: { text?: string; at?: number }) {
 
 function UnlockToasts() {
   const outcome = useGame((s) => s.outcome);
-  void outcome; // Unlocks are surfaced on the game-over screen.
-  return null;
+  const markCelebrated = useMeta((s) => s.markCelebrated);
+  const [names, setNames] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!outcome) {
+      setNames([]);
+      return;
+    }
+    const celebrated = useMeta.getState().celebrated;
+    const fresh = outcome.unlocked.filter((item) => !celebrated.includes(item.id));
+    if (fresh.length === 0) {
+      setNames([]);
+      return;
+    }
+    setNames(fresh.map((item) => item.name));
+    for (const item of fresh) markCelebrated(item.id);
+    const t = setTimeout(() => setNames([]), 3200);
+    return () => clearTimeout(t);
+  }, [outcome, markCelebrated]);
+
+  return (
+    <AnimatePresence>
+      {names.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -12 }}
+          className="absolute bottom-24 left-1/2 -translate-x-1/2 rounded-xl border border-cyan-300/30 bg-[#08131d]/85 px-5 py-3 text-center backdrop-blur"
+        >
+          <div className="font-display text-xs font-black tracking-[0.25em] text-cyan-200">
+            NEW COSMETIC UNLOCKED
+          </div>
+          <div className="mt-1 text-sm text-white/80">{names.join(" · ")}</div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 }

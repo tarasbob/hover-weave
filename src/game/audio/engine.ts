@@ -2,6 +2,7 @@
 
 import * as Tone from "tone";
 import type { SimWorld } from "../core/world";
+import type { PrecisionGrade } from "../core/types";
 import { clamp01, damp } from "../core/mathUtils";
 
 /**
@@ -35,6 +36,7 @@ export class AudioEngine {
   // SFX synths.
   private whoosh!: Tone.NoiseSynth;
   private whooshFilter!: Tone.Filter;
+  private whooshPanner!: Tone.Panner;
   private pluck!: Tone.Synth;
   private chime!: Tone.PolySynth;
   private impact!: Tone.MembraneSynth;
@@ -47,7 +49,9 @@ export class AudioEngine {
   private seqs: (Tone.Sequence | Tone.Loop)[] = [];
   private chordIndex = 0;
   private started = false;
+  private musicActive = false;
   private bpmClock = 0;
+  private initPromise: Promise<void> | null = null;
 
   /** D minor progression: i, VI, III, VII. */
   private chords = [
@@ -58,8 +62,13 @@ export class AudioEngine {
   ];
   private pentatonic = ["D4", "F4", "G4", "A4", "C5", "D5", "F5", "G5", "A5", "C6"];
 
-  async init(): Promise<void> {
-    if (this.ready) return;
+  init(): Promise<void> {
+    if (this.ready) return Promise.resolve();
+    if (!this.initPromise) this.initPromise = this.initialize();
+    return this.initPromise;
+  }
+
+  private async initialize(): Promise<void> {
     await Tone.start();
     const ctx = Tone.getContext();
     ctx.lookAhead = 0.05;
@@ -197,7 +206,8 @@ export class AudioEngine {
     );
 
     // --- SFX -------------------------------------------------------------
-    this.whooshFilter = new Tone.Filter(1200, "bandpass", -12).connect(this.sfxBus);
+    this.whooshPanner = new Tone.Panner(0).connect(this.sfxBus);
+    this.whooshFilter = new Tone.Filter(1200, "bandpass", -12).connect(this.whooshPanner);
     this.whooshFilter.Q.value = 1.4;
     this.whoosh = new Tone.NoiseSynth({
       noise: { type: "pink" },
@@ -249,17 +259,20 @@ export class AudioEngine {
     }).connect(this.thunderFilter);
 
     this.ready = true;
+    if (this.musicActive) this.startMusic();
   }
 
   setVolumes(music: number, sfx: number): void {
     this.musicVol = music;
     this.sfxVol = sfx;
     if (!this.ready) return;
-    this.musicBus.gain.rampTo(this.muted ? 0 : music, 0.1);
+    const target = this.musicActive ? music : music * 0.35;
+    this.musicBus.gain.rampTo(this.muted ? 0 : target, 0.1);
     this.sfxBus.gain.rampTo(this.muted ? 0 : sfx, 0.1);
   }
 
   startMusic(): void {
+    this.musicActive = true;
     if (!this.ready) return;
     const t = Tone.getTransport();
     if (t.state !== "started") t.start("+0.05");
@@ -270,6 +283,7 @@ export class AudioEngine {
   }
 
   pauseMusic(): void {
+    this.musicActive = false;
     if (!this.ready) return;
     this.musicFilter.frequency.rampTo(500, 0.3);
     this.musicBus.gain.rampTo(this.musicVol * 0.35, 0.3);
@@ -277,7 +291,7 @@ export class AudioEngine {
 
   /** Per-frame adaptive mixing. */
   update(world: SimWorld, dt: number): void {
-    if (!this.ready || !this.started) return;
+    if (!this.ready || !this.started || !this.musicActive) return;
     const tier = world.flowTier;
     const speed = world.speedNorm;
 
@@ -326,11 +340,12 @@ export class AudioEngine {
     }
   }
 
-  nearMiss(side: number): void {
-    void side;
+  nearMiss(side: number, grade: PrecisionGrade, precision: number): void {
     this.oneShot(() => {
-      this.whooshFilter.frequency.value = 900 + Math.random() * 900;
-      this.whoosh.triggerAttackRelease("8n", undefined, 0.7 + Math.random() * 0.3);
+      this.whooshPanner.pan.rampTo(Math.max(-1, Math.min(1, side)) * 0.82, 0.025);
+      const gradeLift = grade === "perfect" ? 1400 : grade === "razor" ? 700 : 0;
+      this.whooshFilter.frequency.value = 850 + gradeLift + precision * 900;
+      this.whoosh.triggerAttackRelease("8n", undefined, 0.62 + precision * 0.38);
     });
   }
 
@@ -365,6 +380,18 @@ export class AudioEngine {
     this.oneShot(() => {
       const base = ["D5", "F5", "A5", "C6", "D6", "F6"];
       this.chime.triggerAttackRelease(base[Math.min(tier, base.length - 1)], "16n");
+    });
+  }
+
+  biome(index: number): void {
+    this.oneShot(() => {
+      const notes = ["D5", "F5", "A5", "C6"];
+      this.chime.triggerAttackRelease(
+        [notes[index % notes.length], notes[(index + 2) % notes.length]],
+        "16n",
+        undefined,
+        0.42,
+      );
     });
   }
 

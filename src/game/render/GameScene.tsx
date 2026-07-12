@@ -6,6 +6,7 @@ import * as THREE from "three/webgpu";
 import { densityFogFactor, fog, positionWorld, smoothstep } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { useGame } from "../state/game";
+import { useMeta } from "../state/meta";
 import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
 import { CameraRig } from "./CameraRig";
 import { Craft } from "./Craft";
@@ -65,23 +66,27 @@ export function GameScene() {
   const ambientLight = useMemo(() => new THREE.AmbientLight("#8f9bff", 0.5), []);
 
   useFrame((state, rawDt) => {
-    const dt = Math.min(rawDt, 0.1);
+    const dt = Math.min(rawDt, 0.25);
     const g = useGame.getState();
 
     // --- Input edges ---------------------------------------------------
     input.poll(sensitivity);
     if (input.consumeRestart()) {
-      if (g.phase === "dead") bundle.restart();
-      else if (g.phase === "title") bundle.startRun(g.mode);
+      if (g.overlay === "none") {
+        if (g.phase === "dead") bundle.restart();
+        else if (g.phase === "title") bundle.startRun(g.mode);
+      }
     }
     if (input.consumePause()) {
-      if (g.phase === "running" || g.phase === "paused") bundle.togglePause();
+      if (g.overlay !== "none") g.setOverlay("none");
+      else if (g.phase === "running" || g.phase === "paused") bundle.togglePause();
     }
 
     // --- Simulation ------------------------------------------------------
-    // Frames longer than ~0.35s mean the tab was throttled/hidden; dropping
-    // them keeps the craft from teleporting into obstacles.
-    const throttled = rawDt > 0.35;
+    // A long stall auto-pauses a live run. Shorter low-FPS frames are fully
+    // simulated, so dropping frames cannot create a slow-motion score exploit.
+    const throttled = rawDt > 0.25;
+    if (throttled && g.phase === "running") bundle.togglePause();
     if ((g.phase === "running" || g.phase === "dead") && !throttled) {
       world.update(dt, input.state);
     } else if (g.phase === "title") {
@@ -105,12 +110,16 @@ export function GameScene() {
           multiplier: world.flowMultiplier,
           flowTier: world.flowTier,
           flowFrac: (world.flowPoints % 5) / 5,
+          flowGrace: world.flowGraceRemaining,
+          flowChain: world.flowChain,
+          shardCombo: world.shardCombo,
           energy: world.energy,
           boosting: world.boosting,
           shield: world.hasShield,
           speedKmh: Math.round(world.speed * 3.6),
           distance: Math.floor(world.distance),
           biome: env.biomeLabelAt(world.distance),
+          personalBestBeaten: world.score > useMeta.getState().bestScore,
         });
       }
       // FPS + dynamic resolution.

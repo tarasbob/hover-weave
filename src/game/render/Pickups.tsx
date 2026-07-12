@@ -14,11 +14,11 @@ import {
   sin,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
-import { TRACK } from "../core/constants";
+import { POOL_SIZES, TRACK } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 
-const SHARD_CAP = 128;
-const SHIELD_CAP = 8;
+const SHARD_CAP = POOL_SIZES.shard;
+const SHIELD_CAP = POOL_SIZES.shield;
 
 const _m = new THREE.Matrix4();
 const _p = new THREE.Vector3();
@@ -83,10 +83,11 @@ export function Pickups() {
       if (p.type === "shard" && si < SHARD_CAP) {
         const bob = Math.sin(t * 3.1 + p.id * 1.7) * 0.16;
         _p.set(p.x, p.y + bob, z);
-        _e.set(0, t * 2.4 + p.id, Math.PI * 0.13);
+        _e.set(0, t * (p.magnetic ? 2.4 : 3.8) + p.id, Math.PI * (p.magnetic ? 0.13 : 0.22));
         _q.setFromEuler(_e);
-        const sc = (p.seeking ? 0.72 : 1) * Math.max(grow, 0.001);
-        _s.set(sc, 1.5 * sc, sc);
+        const riskScale = p.magnetic ? 1 : 1.32;
+        const sc = (p.seeking ? 0.72 : riskScale) * Math.max(grow, 0.001);
+        _s.set(sc, (p.magnetic ? 1.5 : 1.9) * sc, sc);
         _m.compose(_p, _q, _s);
         shardMesh.setMatrixAt(si++, _m);
       } else if (p.type === "shield" && hi < SHIELD_CAP) {

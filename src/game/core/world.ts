@@ -15,9 +15,12 @@ import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils"
 import { createRng } from "./rng";
 import {
   Motion,
+  type MotionType,
   type Obstacle,
+  type ObstacleKind,
   type ObstacleSpec,
   type Pickup,
+  type PrecisionGrade,
   type RunStatus,
 } from "./types";
 import { biomeIndexAt, BIOMES } from "../track/biomes";
@@ -26,17 +29,74 @@ import { speedAt, TrackGenerator, type GeneratedChunk } from "../track/generator
 const OBSTACLE_CAP = 1400;
 const PICKUP_CAP = 240;
 
+export function obstacleTrailingEdge(o: Obstacle): number {
+  if (o.motion === Motion.RotateYaw) return o.cs + Math.hypot(o.hx, o.hs);
+  if (o.motion === Motion.OrbitXZ) {
+    return o.s + Math.abs(o.m0) + Math.max(o.hx, o.hs);
+  }
+  const extent = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
+  return o.cs + extent;
+}
+
+export interface DeathCause {
+  patternId: string;
+  obstacleKind: ObstacleKind;
+  motion: MotionType;
+}
+
+export interface PrecisionReward {
+  grade: PrecisionGrade;
+  precision: number;
+  flowPoints: number;
+  baseScore: number;
+}
+
+export function precisionRewardAt(clearance: number): PrecisionReward {
+  const safeClearance = clamp(clearance, 0, FLOW.NEAR_MISS_CLEARANCE);
+  const precision = clamp01(1 - safeClearance / FLOW.NEAR_MISS_CLEARANCE);
+  if (safeClearance <= FLOW.PERFECT_CLEARANCE) {
+    return {
+      grade: "perfect",
+      precision,
+      flowPoints: FLOW.PERFECT_POINTS,
+      baseScore: FLOW.PERFECT_SCORE,
+    };
+  }
+  if (safeClearance <= FLOW.RAZOR_CLEARANCE) {
+    return {
+      grade: "razor",
+      precision,
+      flowPoints: FLOW.RAZOR_POINTS,
+      baseScore: FLOW.RAZOR_SCORE,
+    };
+  }
+  return {
+    grade: "close",
+    precision,
+    flowPoints: FLOW.CLOSE_POINTS,
+    baseScore: FLOW.CLOSE_SCORE,
+  };
+}
+
 export interface RunStats {
   score: number;
   distance: number;
   nearMisses: number;
+  closePasses: number;
+  razorPasses: number;
+  perfectPasses: number;
   shards: number;
+  bestShardCombo: number;
+  bestFlowChain: number;
   maxFlowPoints: number;
   maxFlowTier: number;
   boosts: number;
+  obstacleDrops: number;
+  pickupDrops: number;
   duration: number;
   seed: string;
   daily: boolean;
+  deathCause: DeathCause | null;
 }
 
 /**
@@ -66,7 +126,9 @@ export class SimWorld {
   flowPoints = 0;
   flowTier = 0;
   flowTimer = 0;
-  energy = 30;
+  flowChain = 0;
+  flowChainTimer = FLOW.CHAIN_WINDOW + 1;
+  energy: number = ENERGY.START;
   boosting = false;
   boostCharge = 0;
   hasShield = false;
@@ -88,6 +150,7 @@ export class SimWorld {
 
   private generator: TrackGenerator | null = null;
   private accumulator = 0;
+  private lastBiomeIndex = 0;
   /** Interpolation snapshot for buttery rendering. */
   prevX = 0;
   prevDistance = 0;
@@ -104,14 +167,15 @@ export class SimWorld {
         motion: Motion.None, m0: 0, m1: 0, m2: 0,
         role: "primary", glow: 1, collidable: true, inner: 0,
         cx: 0, cy: 0, cs: 0, cyaw: 0,
-        state: 0, landed: false, nearMissed: false, spawnTime: 0,
+        state: 0, landed: false, nearMissed: false, nearMissClearance: Infinity,
+        patternId: "", spawnTime: 0,
       });
       this.obstacleFree.push(OBSTACLE_CAP - 1 - i);
     }
     for (let i = 0; i < PICKUP_CAP; i++) {
       this.pickups.push({
         id: i, active: false, type: "shard", s: 0, x: 0, y: 0,
-        seeking: false, spawnTime: 0,
+        seeking: false, magnetic: true, spawnTime: 0,
       });
       this.pickupFree.push(PICKUP_CAP - 1 - i);
     }
@@ -120,8 +184,11 @@ export class SimWorld {
   private emptyStats(): RunStats {
     return {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
-      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, duration: 0,
-      seed: "", daily: false,
+      closePasses: 0, razorPasses: 0, perfectPasses: 0,
+      bestShardCombo: 0, bestFlowChain: 0,
+      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0,
+      obstacleDrops: 0, pickupDrops: 0, duration: 0,
+      seed: "", daily: false, deathCause: null,
     };
   }
 
@@ -151,7 +218,9 @@ export class SimWorld {
     this.flowPoints = 0;
     this.flowTier = 0;
     this.flowTimer = 0;
-    this.energy = 30;
+    this.flowChain = 0;
+    this.flowChainTimer = FLOW.CHAIN_WINDOW + 1;
+    this.energy = ENERGY.START;
     this.boosting = false;
     this.boostCharge = 0;
     this.hasShield = false;
@@ -163,6 +232,7 @@ export class SimWorld {
     this.prevX = 0;
     this.prevDistance = 0;
     this.prevBank = 0;
+    this.lastBiomeIndex = 0;
     this.stats = this.emptyStats();
     this.stats.seed = seed;
     this.stats.daily = daily;
@@ -198,9 +268,18 @@ export class SimWorld {
       this.prevX = this.x;
       this.prevDistance = this.distance;
       this.prevBank = this.bank;
+      const wasRunning = this.status === "running";
       this.step(FIXED_DT, input);
       this.accumulator -= FIXED_DT;
       steps++;
+      if (wasRunning && this.status === "dead") {
+        // The rest of this render frame happened after impact. Convert its
+        // unprocessed wall time into slow-mo time so frame partitioning cannot
+        // skip the crash beat.
+        const remainingWallTime = Math.max(0, this.accumulator);
+        this.deathTimer += remainingWallTime;
+        this.accumulator = remainingWallTime * RUN.DEATH_SLOWMO;
+      }
     }
     if (steps === MAX_STEPS_PER_FRAME) this.accumulator = 0;
   }
@@ -266,6 +345,13 @@ export class SimWorld {
     this.speedNorm = clamp01((this.speed - SPEED.BASE) / (SPEED.MAX * SPEED.BOOST_MULT - SPEED.BASE));
 
     if (alive) this.distance += this.speed * dt;
+    if (alive) {
+      const biome = biomeIndexAt(this.distance);
+      if (biome !== this.lastBiomeIndex) {
+        this.lastBiomeIndex = biome;
+        this.events.emit("biome", { index: biome, name: BIOMES[biome].label });
+      }
+    }
 
     // --- Steering (speed-proportional, momentum-based) -------------------
     const maxLat = Math.max(10, this.speed) * STEER.RATIO;
@@ -299,6 +385,7 @@ export class SimWorld {
 
     // --- Obstacles: motion + collision + near miss ----------------------
     this.updateObstacles(dt, alive);
+    if (alive && this.status !== "running") return;
 
     // --- Pickups ---------------------------------------------------------
     if (alive) this.updatePickups(dt);
@@ -306,13 +393,21 @@ export class SimWorld {
     // --- Flow / combo timers ---------------------------------------------
     if (alive) {
       this.flowTimer += dt;
-      if (this.flowTimer > FLOW.DECAY_GRACE && this.flowPoints > 0) {
-        this.flowPoints = Math.max(0, this.flowPoints - FLOW.DECAY_RATE * dt);
+      this.flowChainTimer += dt;
+      if (this.flowChainTimer > FLOW.CHAIN_WINDOW) this.flowChain = 0;
+      const highTiers = Math.max(0, this.flowTier - 2);
+      const decayGrace = Math.max(
+        1.8,
+        FLOW.DECAY_GRACE - highTiers * FLOW.GRACE_LOSS_PER_HIGH_TIER,
+      );
+      if (this.flowTimer > decayGrace && this.flowPoints > 0) {
+        const decayRate = FLOW.DECAY_RATE * (1 + highTiers * FLOW.DECAY_RATE_PER_HIGH_TIER);
+        this.flowPoints = Math.max(0, this.flowPoints - decayRate * dt);
       }
       this.setFlowTier(Math.floor(this.flowPoints / FLOW.POINTS_PER_TIER));
 
       this.shardComboTimer += dt;
-      if (this.shardComboTimer > 2.4) this.shardCombo = 0;
+      if (this.shardComboTimer > ENERGY.COMBO_WINDOW) this.shardCombo = 0;
 
       if (this.iframes > 0) this.iframes -= dt;
 
@@ -329,6 +424,15 @@ export class SimWorld {
 
   get flowMultiplier(): number {
     return 1 + this.flowPoints * FLOW.MULT_PER_POINT;
+  }
+
+  get flowDecayGrace(): number {
+    const highTiers = Math.max(0, this.flowTier - 2);
+    return Math.max(1.8, FLOW.DECAY_GRACE - highTiers * FLOW.GRACE_LOSS_PER_HIGH_TIER);
+  }
+
+  get flowGraceRemaining(): number {
+    return clamp01(1 - this.flowTimer / this.flowDecayGrace);
   }
 
   private setFlowTier(tier: number): void {
@@ -349,10 +453,13 @@ export class SimWorld {
   }
 
   private spawnChunk(chunk: GeneratedChunk): void {
-    for (const spec of chunk.obstacles) this.spawnObstacle(spec);
+    for (const spec of chunk.obstacles) this.spawnObstacle(spec, chunk.patternId);
     for (const p of chunk.pickups) {
       const idx = this.pickupFree.pop();
-      if (idx === undefined) break;
+      if (idx === undefined) {
+        this.stats.pickupDrops++;
+        continue;
+      }
       const pk = this.pickups[idx];
       pk.active = true;
       pk.type = p.type;
@@ -360,6 +467,7 @@ export class SimWorld {
       pk.x = p.x;
       pk.y = p.y;
       pk.seeking = false;
+      pk.magnetic = p.magnet ?? true;
       pk.spawnTime = this.time;
     }
     if (chunk.announce) {
@@ -371,9 +479,12 @@ export class SimWorld {
     }
   }
 
-  private spawnObstacle(spec: ObstacleSpec): void {
+  private spawnObstacle(spec: ObstacleSpec, patternId: string): void {
     const idx = this.obstacleFree.pop();
-    if (idx === undefined) return;
+    if (idx === undefined) {
+      this.stats.obstacleDrops++;
+      return;
+    }
     const o = this.obstacles[idx];
     o.active = true;
     o.kind = spec.kind;
@@ -399,6 +510,8 @@ export class SimWorld {
     o.state = 0;
     o.landed = false;
     o.nearMissed = false;
+    o.nearMissClearance = Infinity;
+    o.patternId = patternId;
     o.spawnTime = this.time;
   }
 
@@ -410,7 +523,7 @@ export class SimWorld {
     for (const o of this.obstacles) {
       if (!o.active) continue;
 
-      if (o.cs < behind && o.s < behind) {
+      if (obstacleTrailingEdge(o) < behind) {
         o.active = false;
         this.obstacleFree.push(o.id);
         continue;
@@ -488,8 +601,10 @@ export class SimWorld {
               const dx = this.x - o.cx;
               const dy = CRAFT.HOVER_HEIGHT - o.cy;
               const r = Math.hypot(dx, dy);
-              if (r > o.inner - CRAFT.RADIUS * 0.4 && r < o.hx + CRAFT.RADIUS * 0.6) hit = true;
-              clearance = o.inner - Math.abs(dx);
+              const innerEdge = o.inner - CRAFT.RADIUS * 0.4;
+              const outerEdge = o.hx + CRAFT.RADIUS * 0.6;
+              if (r > innerEdge && r < outerEdge) hit = true;
+              else clearance = r <= innerEdge ? innerEdge - r : r - outerEdge;
             }
           } else {
             const distSq = circleObbDistSq(
@@ -500,21 +615,26 @@ export class SimWorld {
             );
             const rr = CRAFT.RADIUS;
             if (distSq < rr * rr) hit = true;
-            clearance = Math.sqrt(distSq);
+            clearance = Math.max(0, Math.sqrt(distSq) - rr);
           }
 
-          if (hit && this.iframes <= 0) {
-            // FallY slabs still in the air far above can't hit the craft
-            // (yOverlap already filtered), so any hit here is real.
-            this.onHit();
-            if (this.status !== "running") return;
+          if (hit) {
+            // A collision cannot also pay out as a precision pass, including
+            // contacts absorbed during shield iframes.
+            o.nearMissed = true;
+            if (this.iframes <= 0) {
+              // FallY slabs still in the air far above can't hit the craft
+              // (yOverlap already filtered), so any hit here is real.
+              this.onHit(o);
+              if (this.status !== "running") return;
+            }
           } else if (
             !o.nearMissed &&
             o.motion !== Motion.FallY && // state doubles as fall velocity there
-            clearance < FLOW.NEAR_MISS_CLEARANCE + CRAFT.RADIUS
+            clearance < FLOW.NEAR_MISS_CLEARANCE
           ) {
-            // Track candidate near miss; confirmed once fully passed.
-            o.state = Math.max(o.state, 1);
+            // Keep the true closest approach; payout happens once fully passed.
+            o.nearMissClearance = Math.min(o.nearMissClearance, clearance);
           }
         }
       }
@@ -522,9 +642,9 @@ export class SimWorld {
       // Near-miss confirmation: obstacle fully behind the craft.
       if (
         !o.nearMissed &&
-        o.state >= 1 &&
+        o.nearMissClearance < FLOW.NEAR_MISS_CLEARANCE &&
         o.motion !== Motion.FallY && // Falling slabs feel arbitrary for near-miss credit.
-        o.cs + o.hs < craftS - CRAFT.RADIUS
+        obstacleTrailingEdge(o) < craftS - CRAFT.RADIUS
       ) {
         o.nearMissed = true;
         if (alive) this.onNearMiss(o);
@@ -533,29 +653,67 @@ export class SimWorld {
   }
 
   private onNearMiss(o: Obstacle): void {
-    this.flowPoints = Math.min(FLOW.MAX_POINTS, this.flowPoints + FLOW.POINTS_PER_NEAR_MISS);
+    const clearance = clamp(o.nearMissClearance, 0, FLOW.NEAR_MISS_CLEARANCE);
+    const reward = precisionRewardAt(clearance);
+    if (reward.grade === "perfect") {
+      this.stats.perfectPasses++;
+    } else if (reward.grade === "razor") {
+      this.stats.razorPasses++;
+    } else {
+      this.stats.closePasses++;
+    }
+
+    this.flowChain = this.flowChainTimer <= FLOW.CHAIN_WINDOW ? this.flowChain + 1 : 1;
+    this.flowChainTimer = 0;
+    this.stats.bestFlowChain = Math.max(this.stats.bestFlowChain, this.flowChain);
+    this.flowPoints = Math.min(FLOW.MAX_POINTS, this.flowPoints + reward.flowPoints);
     this.flowTimer = 0;
     this.stats.nearMisses++;
-    this.score += 25 * this.flowMultiplier;
+    const chainBonus = 1 + Math.min(
+      FLOW.CHAIN_SCORE_CAP,
+      Math.max(0, this.flowChain - 1) * FLOW.CHAIN_SCORE_STEP,
+    );
+    const scoreAward = Math.round(reward.baseScore * this.flowMultiplier * chainBonus);
+    this.score += scoreAward;
     this.events.emit("nearMiss", {
       x: o.cx, s: o.cs,
-      clearance: Math.abs(this.x - o.cx) - o.hx,
+      clearance,
+      precision: reward.precision,
+      grade: reward.grade,
+      chain: this.flowChain,
+      scoreAward,
       flowPoints: this.flowPoints,
     });
   }
 
-  private onHit(): void {
+  private onHit(o: Obstacle): void {
     if (this.hasShield) {
       this.hasShield = false;
       this.iframes = RUN.SHIELD_IFRAMES;
-      this.flowPoints = Math.max(0, this.flowPoints - 6);
+      this.flowPoints = Math.max(0, this.flowPoints - FLOW.SHIELD_PENALTY);
+      this.flowChain = 0;
+      this.flowChainTimer = FLOW.CHAIN_WINDOW + 1;
       this.events.emit("shieldBreak", { x: this.x });
       return;
     }
     this.status = "dead";
     this.deathTimer = 0;
     this.deathX = this.x;
-    this.events.emit("death", { x: this.x, speed: this.speed });
+    this.stats.score = Math.floor(this.score);
+    this.stats.distance = this.distance;
+    this.stats.duration = this.time;
+    this.stats.deathCause = {
+      patternId: o.patternId,
+      obstacleKind: o.kind,
+      motion: o.motion,
+    };
+    this.events.emit("death", {
+      x: this.x,
+      speed: this.speed,
+      patternId: o.patternId,
+      obstacleKind: o.kind,
+      motion: o.motion,
+    });
   }
 
   private updatePickups(dt: number): void {
@@ -575,7 +733,7 @@ export class SimWorld {
       const distSq = dS * dS + dx * dx;
 
       if (p.type === "shard") {
-        if (!p.seeking && distSq < ENERGY.MAGNET_RADIUS * ENERGY.MAGNET_RADIUS) {
+        if (p.magnetic && !p.seeking && distSq < ENERGY.MAGNET_RADIUS * ENERGY.MAGNET_RADIUS) {
           p.seeking = true;
         }
         if (p.seeking) {
@@ -592,14 +750,39 @@ export class SimWorld {
         p.active = false;
         this.pickupFree.push(p.id);
         if (p.type === "shard") {
-          this.shardCombo++;
+          this.shardCombo = this.shardComboTimer <= ENERGY.COMBO_WINDOW
+            ? Math.min(ENERGY.COMBO_CAP, this.shardCombo + 1)
+            : 1;
           this.shardComboTimer = 0;
-          this.energy = Math.min(ENERGY.MAX, this.energy + ENERGY.PER_SHARD);
-          this.flowPoints = Math.min(FLOW.MAX_POINTS, this.flowPoints + 0.5);
+          this.stats.bestShardCombo = Math.max(this.stats.bestShardCombo, this.shardCombo);
+          const risk = !p.magnetic;
+          const riskBonus = risk ? 1.6 : 1;
+          const nominalEnergy =
+            (ENERGY.PER_SHARD + (this.shardCombo - 1) * ENERGY.COMBO_ENERGY_STEP) * riskBonus;
+          const energyBefore = this.energy;
+          this.energy = Math.min(ENERGY.MAX, this.energy + nominalEnergy);
+          const energyAward = this.energy - energyBefore;
+          this.flowPoints = Math.min(
+            FLOW.MAX_POINTS,
+            this.flowPoints + FLOW.POINTS_PER_SHARD * riskBonus,
+          );
           this.flowTimer = 0;
-          this.score += ENERGY.SHARD_SCORE * this.flowMultiplier;
+          const scoreAward = Math.round(
+            ENERGY.SHARD_SCORE *
+            (1 + (this.shardCombo - 1) * ENERGY.COMBO_SCORE_STEP) *
+            this.flowMultiplier *
+            riskBonus,
+          );
+          this.score += scoreAward;
           this.stats.shards++;
-          this.events.emit("shard", { x: p.x, y: p.y, combo: this.shardCombo });
+          this.events.emit("shard", {
+            x: p.x,
+            y: p.y,
+            combo: this.shardCombo,
+            scoreAward,
+            energyAward,
+            risk,
+          });
         } else {
           this.hasShield = true;
           this.events.emit("shieldPickup", { x: p.x });

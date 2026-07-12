@@ -8,7 +8,7 @@ import {
   type PatternResult,
   type PickupSpec,
 } from "../core/types";
-import { PATH_SLOPE } from "./validator";
+import { PATH_SLOPE, pathSlopeAt } from "./validator";
 
 const XP = TRACK.X_PATTERN;
 /** Working slope for pattern authoring (margin under the validator slope). */
@@ -41,10 +41,42 @@ export function gateRow(
   return out;
 }
 
-export function shardLine(s0: number, x: number, count: number, spacing = 3.2): PickupSpec[] {
+/** Wall segments leaving multiple authored gaps, ordered left to right. */
+function multiGapRow(
+  s: number,
+  gaps: { x: number; half: number }[],
+  hy: number,
+  hs = 1,
+  extra: Partial<ObstacleSpec> = {},
+): ObstacleSpec[] {
+  const out: ObstacleSpec[] = [];
+  let cursor = -XP;
+  for (const gap of [...gaps].sort((a, b) => a.x - b.x)) {
+    const start = clamp(gap.x - gap.half, -XP, XP);
+    const end = clamp(gap.x + gap.half, -XP, XP);
+    if (start > cursor) {
+      const half = (start - cursor) / 2;
+      out.push(box(cursor + half, s, half, hy, hs, extra));
+    }
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < XP) {
+    const half = (XP - cursor) / 2;
+    out.push(box(cursor + half, s, half, hy, hs, extra));
+  }
+  return out;
+}
+
+export function shardLine(
+  s0: number,
+  x: number,
+  count: number,
+  spacing = 3.2,
+  magnet = true,
+): PickupSpec[] {
   const out: PickupSpec[] = [];
   for (let i = 0; i < count; i++) {
-    out.push({ type: "shard", s: s0 + i * spacing, x, y: 1.3 });
+    out.push({ type: "shard", s: s0 + i * spacing, x, y: 1.3, magnet });
   }
   return out;
 }
@@ -102,6 +134,8 @@ export function funnelTo(
 const openField: PatternDef = {
   id: "openField",
   category: "breather",
+  intensity: 1,
+  skills: ["navigation"],
   weight: 1,
   minDifficulty: 0,
   maxDifficulty: 1,
@@ -134,6 +168,8 @@ const openField: PatternDef = {
 const pillarForest: PatternDef = {
   id: "pillarForest",
   category: "field",
+  intensity: 2,
+  skills: ["navigation", "reaction"],
   weight: 1.6,
   minDifficulty: 0,
   maxDifficulty: 1,
@@ -169,6 +205,8 @@ const pillarForest: PatternDef = {
 const chaosField: PatternDef = {
   id: "chaosField",
   category: "field",
+  intensity: 3,
+  skills: ["navigation", "reaction"],
   weight: 2.4,
   minDifficulty: 0.04,
   maxDifficulty: 1,
@@ -254,6 +292,8 @@ const chaosField: PatternDef = {
 const asteroidDrift: PatternDef = {
   id: "asteroidDrift",
   category: "field",
+  intensity: 4,
+  skills: ["reaction", "rhythm"],
   weight: 1.1,
   minDifficulty: 0.18,
   maxDifficulty: 1,
@@ -322,6 +362,8 @@ const asteroidDrift: PatternDef = {
 const slalomGates: PatternDef = {
   id: "slalomGates",
   category: "normal",
+  intensity: 1,
+  skills: ["precision"],
   weight: 1.2,
   minDifficulty: 0.05,
   maxDifficulty: 1,
@@ -352,6 +394,8 @@ const slalomGates: PatternDef = {
 const narrowGates: PatternDef = {
   id: "narrowGates",
   category: "normal",
+  intensity: 3,
+  skills: ["precision", "commitment"],
   weight: 1,
   minDifficulty: 0.22,
   maxDifficulty: 1,
@@ -381,6 +425,8 @@ const narrowGates: PatternDef = {
 const sCurveCanyon: PatternDef = {
   id: "sCurveCanyon",
   category: "normal",
+  intensity: 2,
+  skills: ["commitment", "navigation"],
   weight: 1.1,
   minDifficulty: 0.15,
   maxDifficulty: 1,
@@ -417,6 +463,8 @@ const sCurveCanyon: PatternDef = {
 const zipper: PatternDef = {
   id: "zipper",
   category: "normal",
+  intensity: 3,
+  skills: ["commitment"],
   weight: 1,
   minDifficulty: 0.1,
   maxDifficulty: 0.9,
@@ -454,6 +502,8 @@ const zipper: PatternDef = {
 const combTeeth: PatternDef = {
   id: "combTeeth",
   category: "normal",
+  intensity: 3,
+  skills: ["precision", "reaction"],
   weight: 0.9,
   minDifficulty: 0.18,
   maxDifficulty: 1,
@@ -491,6 +541,8 @@ const combTeeth: PatternDef = {
 const oscillatingWalls: PatternDef = {
   id: "oscillatingWalls",
   category: "normal",
+  intensity: 4,
+  skills: ["rhythm", "reaction"],
   weight: 0.9,
   minDifficulty: 0.3,
   maxDifficulty: 1,
@@ -531,9 +583,12 @@ const oscillatingWalls: PatternDef = {
 const pistonCorridor: PatternDef = {
   id: "pistonCorridor",
   category: "normal",
+  intensity: 4,
+  skills: ["rhythm", "commitment"],
   weight: 0.9,
   minDifficulty: 0.35,
   maxDifficulty: 1,
+  maxEntryHalf: 20,
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
     const count = rng.int(3, 5);
@@ -583,6 +638,8 @@ const pistonCorridor: PatternDef = {
 const pendulumAlley: PatternDef = {
   id: "pendulumAlley",
   category: "normal",
+  intensity: 3,
+  skills: ["rhythm"],
   weight: 0.8,
   minDifficulty: 0.3,
   maxDifficulty: 1,
@@ -621,6 +678,8 @@ const pendulumAlley: PatternDef = {
 const bladeRotors: PatternDef = {
   id: "bladeRotors",
   category: "normal",
+  intensity: 4,
+  skills: ["rhythm", "precision"],
   weight: 0.8,
   minDifficulty: 0.4,
   maxDifficulty: 1,
@@ -660,6 +719,8 @@ const bladeRotors: PatternDef = {
 const collapsingBridge: PatternDef = {
   id: "collapsingBridge",
   category: "normal",
+  intensity: 3,
+  skills: ["reaction", "commitment"],
   weight: 0.85,
   minDifficulty: 0.25,
   maxDifficulty: 1,
@@ -699,6 +760,8 @@ const collapsingBridge: PatternDef = {
 const meteorShower: PatternDef = {
   id: "meteorShower",
   category: "normal",
+  intensity: 4,
+  skills: ["reaction"],
   weight: 0.85,
   minDifficulty: 0.3,
   maxDifficulty: 1,
@@ -740,6 +803,8 @@ const meteorShower: PatternDef = {
 const crystalChicane: PatternDef = {
   id: "crystalChicane",
   category: "normal",
+  intensity: 3,
+  skills: ["precision"],
   weight: 1,
   minDifficulty: 0.12,
   maxDifficulty: 1,
@@ -775,6 +840,8 @@ const crystalChicane: PatternDef = {
 const buoySlalom: PatternDef = {
   id: "buoySlalom",
   category: "normal",
+  intensity: 2,
+  skills: ["navigation"],
   weight: 1,
   minDifficulty: 0.1,
   maxDifficulty: 0.95,
@@ -812,6 +879,8 @@ const buoySlalom: PatternDef = {
 const ringTunnel: PatternDef = {
   id: "ringTunnel",
   category: "normal",
+  intensity: 3,
+  skills: ["precision"],
   weight: 1,
   minDifficulty: 0.15,
   maxDifficulty: 1,
@@ -853,6 +922,8 @@ const ringTunnel: PatternDef = {
 const hyperRings: PatternDef = {
   id: "hyperRings",
   category: "normal",
+  intensity: 4,
+  skills: ["precision", "commitment"],
   weight: 1.1,
   minDifficulty: 0.35,
   maxDifficulty: 1,
@@ -892,6 +963,191 @@ const hyperRings: PatternDef = {
   },
 };
 
+/** Alternating narrow gates with near-edge shard lines for deliberate grazes. */
+const precisionLadder: PatternDef = {
+  id: "precisionLadder",
+  category: "normal",
+  intensity: 4,
+  skills: ["precision", "commitment"],
+  weight: 1,
+  minDifficulty: 0.4,
+  maxDifficulty: 1,
+  maxEntryHalf: 28,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const rows = rng.int(6, 8);
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const gapHalf = lerp(4.1, 3.05, d);
+    const slope = pathSlopeAt(d) * 0.82;
+    let gx = clamp(ctx.entryX + rng.range(-2, 2), -8, 8);
+    let side = rng.sign();
+    let s = s0 + leadInDist(ctx, gx, gapHalf);
+    for (let i = 0; i < rows; i++) {
+      obstacles.push(...gateRow(s, gx, gapHalf, rng.range(3.2, 5.2), 1.25, {
+        role: i % 3 === 2 ? "warn" : "primary",
+        glow: i % 3 === 2 ? 1.55 : 1.15,
+      }));
+      // This line sits just inside the collision edge: valuable, but optional.
+      pickups.push({
+        type: "shard",
+        s,
+        x: gx + side * (gapHalf - 0.3),
+        y: 1.3,
+        magnet: false,
+      });
+      if (i === rows - 1) break;
+      side = -side;
+      const nx = clamp(gx + side * rng.range(4.5, 7.5), -11, 11);
+      s += Math.max(21, Math.abs(nx - gx) / slope + 8);
+      gx = nx;
+    }
+    return { length: s - s0 + 18, exitX: gx, exitHalf: gapHalf + 0.8, obstacles, pickups };
+  },
+};
+
+/** Rapid side pistons; center survives while edge shards invite phase reads. */
+const pulseWeave: PatternDef = {
+  id: "pulseWeave",
+  category: "normal",
+  intensity: 4,
+  skills: ["rhythm", "reaction"],
+  weight: 0.9,
+  minDifficulty: 0.48,
+  maxDifficulty: 1,
+  maxEntryHalf: 20,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    // Leave a generous open read before the first timed threat so every
+    // surviving entry lane can converge, even after a split-exit pattern.
+    const corridorStart = s0 + Math.max(58, leadInDist(ctx, 0, 8) + 24);
+    const count = rng.int(5, 7);
+    const gap = lerp(36, 27, d);
+    let side = rng.sign();
+    let s = corridorStart + 18;
+    for (let i = 0; i < count; i++) {
+      const baseX = side * 24;
+      obstacles.push({
+        kind: "box",
+        x: baseX,
+        s,
+        y: 2.4,
+        hx: 3.2,
+        hy: 2.4,
+        hs: 2.2,
+        role: "warn",
+        glow: 1.8,
+        motion: Motion.Piston,
+        m0: lerp(0.5, 0.78, d),
+        m1: i * 0.41 + rng.range(-0.08, 0.08),
+        m2: -side * lerp(11.5, 13.5, d),
+      });
+      pickups.push({ type: "shard", s, x: side * 7, y: 1.3, magnet: false });
+      if (rng.chance(0.82)) side = -side;
+      s += gap * rng.range(0.9, 1.12);
+    }
+    return { length: s - s0 + 16, exitX: 0, exitHalf: 8, obstacles, pickups };
+  },
+};
+
+/** Paired rotors create a readable center rhythm and razor-thin reward edges. */
+const rotorRhythm: PatternDef = {
+  id: "rotorRhythm",
+  category: "normal",
+  intensity: 4,
+  skills: ["rhythm", "precision"],
+  weight: 0.85,
+  minDifficulty: 0.52,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const rows = rng.int(4, 6);
+    const gap = lerp(40, 29, d);
+    const first = s0 + leadInDist(ctx, 0, 6);
+    for (let row = 0; row < rows; row++) {
+      const s = first + row * gap;
+      for (const side of [-1, 1] as const) {
+        const x = side * 14;
+        obstacles.push(box(x, s, 1, 6.5, 1, { kind: "pillar", role: "dim" }));
+        obstacles.push({
+          kind: "box",
+          x,
+          s,
+          y: 1.35,
+          hx: 7,
+          hy: 0.62,
+          hs: 0.55,
+          role: "warn",
+          glow: 1.7,
+          motion: Motion.RotateYaw,
+          m0: side * (row % 2 ? -1 : 1) * lerp(1.35, 2.1, d),
+          m1: row * 0.72 + (side > 0 ? Math.PI * 0.5 : 0),
+        });
+      }
+      const rewardSide = row % 2 === 0 ? -1 : 1;
+      pickups.push({ type: "shard", s: s + 2, x: rewardSide * 5.2, y: 1.3, magnet: false });
+    }
+    return {
+      length: first + rows * gap - s0 + 14,
+      exitX: 0,
+      exitHalf: 6,
+      obstacles,
+      pickups,
+    };
+  },
+};
+
+/** Alternating wide and narrow forks force early route commitments. */
+const splitDecision: PatternDef = {
+  id: "splitDecision",
+  category: "normal",
+  intensity: 5,
+  skills: ["commitment", "navigation", "precision"],
+  weight: 0.75,
+  minDifficulty: 0.66,
+  maxDifficulty: 1,
+  maxEntryHalf: 16,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const safeHalf = lerp(5, 4.2, d);
+    const riskHalf = lerp(3.1, 2.45, d);
+    const laneX = 7.5;
+    const slope = pathSlopeAt(d) * 0.82;
+    let safeSide = rng.sign();
+    let s = s0 + leadInDist(ctx, safeSide * laneX, safeHalf);
+    for (let row = 0; row < 4; row++) {
+      const safeX = safeSide * laneX;
+      const riskX = -safeSide * laneX;
+      obstacles.push(...multiGapRow(
+        s,
+        [{ x: -laneX, half: safeSide < 0 ? safeHalf : riskHalf },
+          { x: laneX, half: safeSide > 0 ? safeHalf : riskHalf }],
+        5,
+        1.4,
+        { role: row === 3 ? "warn" : "primary", glow: row === 3 ? 1.6 : 1.2 },
+      ));
+      pickups.push(...shardLine(s - 5, riskX, 4, 3.2, false));
+      if (row === 3) break;
+      safeSide = -safeSide;
+      const nextSafeX = safeSide * laneX;
+      s += Math.max(42, Math.abs(nextSafeX - safeX) / slope + 9);
+    }
+    return {
+      length: s - s0 + 20,
+      exitX: safeSide * laneX,
+      exitHalf: safeHalf,
+      obstacles,
+      pickups,
+    };
+  },
+};
+
 export const NORMAL_PATTERNS: PatternDef[] = [
   slalomGates,
   narrowGates,
@@ -908,6 +1164,10 @@ export const NORMAL_PATTERNS: PatternDef[] = [
   buoySlalom,
   ringTunnel,
   hyperRings,
+  precisionLadder,
+  pulseWeave,
+  rotorRhythm,
+  splitDecision,
 ];
 
 /** Long free-navigation scatter sections. */

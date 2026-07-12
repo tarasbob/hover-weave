@@ -7,19 +7,28 @@ export const LANE_COUNT = Math.round((TRACK.X_LIMIT * 2) / LANE_W) + 1; // 121
 /** Along-track slice size for the reachability DP (meters). */
 const DS = 4;
 /**
- * Path slope the validator plans with: lateral meters per forward meter.
- * Steering is speed-proportional (max lateral speed = RATIO * forward speed,
- * RATIO 0.58), so the craft's true achievable slope is ~0.5 after
- * acceleration lag; planning at 0.25 leaves a 2x human-error margin, and
- * validation is completely speed-independent.
+ * Baseline path slope in lateral meters per forward meter. Steering is
+ * speed-proportional (RATIO 0.58), so the craft's true achievable slope is
+ * ~0.5 after acceleration lag. Early play uses this conservative 0.25 plan;
+ * expert chunks may use the bounded late profile below.
  */
 export const PATH_SLOPE = 0.25;
-const REACH_LANES = Math.round((PATH_SLOPE * DS) / LANE_W); // 2
+const EARLY_REACH_LANES = 2;
+const LATE_REACH_LANES = 3;
 
-// PATH_SLOPE must stay well under the physical slope; compile-time-ish guard.
+/** Late patterns may demand more of the craft while retaining a human margin. */
+export function reachLanesAt(difficulty: number): number {
+  return difficulty >= 0.64 ? LATE_REACH_LANES : EARLY_REACH_LANES;
+}
+
+export function pathSlopeAt(difficulty: number): number {
+  return (reachLanesAt(difficulty) * LANE_W) / DS;
+}
+
+// The hardest planned slope must stay below 65% of physical steering.
 const PHYSICAL_SLOPE = STEER.RATIO;
-if (PATH_SLOPE > PHYSICAL_SLOPE * 0.6) {
-  throw new Error("Validator PATH_SLOPE too aggressive for craft steering");
+if (pathSlopeAt(1) > PHYSICAL_SLOPE * 0.65) {
+  throw new Error("Validator late-game reach too aggressive for craft steering");
 }
 
 export const laneToX = (lane: number) => -TRACK.X_LIMIT + lane * LANE_W;
@@ -143,7 +152,7 @@ export function dilateLanes(mask: Uint8Array, lanes: number): Uint8Array {
  *
  * Guarantees on success:
  *  - EVERY lane of the entry corridor has a collision-free line to the exit,
- *    steering no harder than LAT_FACTOR of the craft's max lateral speed,
+ *    steering no harder than the selected difficulty reach profile,
  *    assuming worst-case envelopes for all moving obstacles.
  *
  * `runway` is extra obstacle-free distance before slice 0 (inter-chunk seam);
@@ -156,10 +165,11 @@ export function validatePattern(
   entryLanes: Uint8Array,
   runway = 0,
   collectDebug = false,
+  difficulty = 0,
 ): ValidationResult {
   const steps = Math.max(2, Math.ceil(length / DS));
-  const reachLanes = REACH_LANES;
-  const runwayLanes = Math.floor((PATH_SLOPE * Math.max(0, runway)) / LANE_W);
+  const reachLanes = reachLanesAt(difficulty);
+  const runwayLanes = Math.floor((pathSlopeAt(difficulty) * Math.max(0, runway)) / LANE_W);
   const entry = dilateLanes(entryLanes, runwayLanes);
 
   // Rasterize blocked masks.

@@ -4,6 +4,7 @@
  */
 
 export type ObstacleKind = "box" | "pillar" | "crystal" | "sphere" | "ring" | "decor";
+export type PrecisionGrade = "close" | "razor" | "perfect";
 
 export const Motion = {
   None: 0,
@@ -62,6 +63,8 @@ export interface PickupSpec {
   s: number;
   x: number;
   y: number;
+  /** Risk-route shards can disable the generous collection magnet. */
+  magnet?: boolean;
 }
 
 /** Live pooled obstacle instance. */
@@ -93,6 +96,10 @@ export interface Obstacle {
   state: number;
   landed: boolean;
   nearMissed: boolean;
+  /** Closest collision-hull clearance observed during this pass. */
+  nearMissClearance: number;
+  /** Authored chunk that produced this obstacle, used for useful death feedback. */
+  patternId: string;
   /** Sim time when spawned (for scale-in animation). */
   spawnTime: number;
 }
@@ -105,6 +112,7 @@ export interface Pickup {
   x: number;
   y: number;
   seeking: boolean;
+  magnetic: boolean;
   spawnTime: number;
 }
 
@@ -131,11 +139,16 @@ export interface PatternResult {
 }
 
 export type PatternCategory = "normal" | "setpiece" | "breather" | "field";
+export type PatternSkill = "precision" | "rhythm" | "reaction" | "commitment" | "navigation";
+export type PatternIntensity = 1 | 2 | 3 | 4 | 5;
 
 export interface PatternDef {
   id: string;
   category: PatternCategory;
   weight: number;
+  /** Challenge-director metadata. Existing patterns may use inferred defaults. */
+  intensity?: PatternIntensity;
+  skills?: PatternSkill[];
   minDifficulty: number;
   maxDifficulty: number;
   /** Restrict to biome indices (undefined = all). */

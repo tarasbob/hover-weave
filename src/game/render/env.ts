@@ -81,6 +81,7 @@ export class EnvState {
   uBoost = uniform(0);
   uFlow = uniform(0);
   uDeath = uniform(0);
+  uContrast = uniform(0);
 
   // Light (read on CPU too).
   lightColor = new Color();
@@ -96,6 +97,7 @@ export class EnvState {
   private strikeListeners: ((i: number) => void)[] = [];
 
   reduceFlash = false;
+  highContrast = false;
 
   onStrike(fn: (i: number) => void): () => void {
     this.strikeListeners.push(fn);
@@ -149,6 +151,7 @@ export class EnvState {
     this.flowSmooth = damp(this.flowSmooth, Math.min(world.flowTier / 4, 1.25), 3, dt);
     this.uFlow.value = this.flowSmooth;
     this.uDeath.value = world.status === "dead" ? clamp01(world.deathTimer * 1.6) : 0;
+    this.uContrast.value = this.highContrast ? 1 : 0;
 
     // Lightning in stormy stretches.
     const stormW = lerp(A.lightning ? 1 : 0, B.lightning ? 1 : 0, t);

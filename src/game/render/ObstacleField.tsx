@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
-import { TRACK } from "../core/constants";
+import { POOL_SIZES, TRACK } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import type { Obstacle, ObstacleKind } from "../core/types";
 import { createObstacleMaterial } from "./obstacleMaterial";
@@ -56,13 +56,17 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
     const ring = new THREE.TorusGeometry(1, 0.22, 12, 48);
 
     return [
-      make("box", box, 512, true),
-      make("pillar", pillar, 256, true),
-      make("crystal", crystal, 256, true),
-      make("sphere", sphere, 96, true),
-      make("ring", ring, 64, false),
+      make("box", box, POOL_SIZES.box, true),
+      make("pillar", pillar, POOL_SIZES.pillar, true),
+      make("crystal", crystal, POOL_SIZES.crystal, true),
+      make("sphere", sphere, POOL_SIZES.sphere, true),
+      make("ring", ring, POOL_SIZES.ring, false),
     ] as KindPool[];
   }, [env, shadows]);
+  const poolByKind = useMemo(
+    () => new Map(pools.map((pool) => [pool.kind, pool])),
+    [pools],
+  );
 
   useEffect(() => {
     return () => {
@@ -79,7 +83,7 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
 
     for (const o of world.obstacles) {
       if (!o.active) continue;
-      const pool = pools.find((p) => p.kind === o.kind) ?? pools[0];
+      const pool = poolByKind.get(o.kind) ?? pools[0];
       if (pool.count >= pool.capacity) continue;
       writeInstance(pool, pool.count++, o, dist);
     }

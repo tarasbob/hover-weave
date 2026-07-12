@@ -1,11 +1,35 @@
 /** Minimal typed event emitter used to decouple sim -> audio/fx/ui. */
 
+import type { MotionType, ObstacleKind, PrecisionGrade } from "./types";
+
 export type GameEvents = {
-  nearMiss: { x: number; s: number; clearance: number; flowPoints: number };
-  shard: { x: number; y: number; combo: number };
+  nearMiss: {
+    x: number;
+    s: number;
+    clearance: number;
+    precision: number;
+    grade: PrecisionGrade;
+    chain: number;
+    scoreAward: number;
+    flowPoints: number;
+  };
+  shard: {
+    x: number;
+    y: number;
+    combo: number;
+    scoreAward: number;
+    energyAward: number;
+    risk: boolean;
+  };
   shieldPickup: { x: number };
   shieldBreak: { x: number };
-  death: { x: number; speed: number };
+  death: {
+    x: number;
+    speed: number;
+    patternId: string;
+    obstacleKind: ObstacleKind;
+    motion: MotionType;
+  };
   boostStart: undefined;
   boostEnd: undefined;
   flowTier: { tier: number; prev: number };
