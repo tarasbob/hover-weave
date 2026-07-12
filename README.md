@@ -1,7 +1,7 @@
-# CUBEFIELD — Neon Horizon Runner
+# Hover Weave — Thread the Impossible
 
 An endless hovercraft runner for the browser. Race across a procedurally
-sequenced alien landscape, thread neon geometry at speed, build Flow with
+sequenced alien landscape, weave through impossible gaps at speed, build Flow with
 near misses, and chase the daily seeded course.
 
 Built with **Next.js 16**, **React Three Fiber v9**, and **three.js

@@ -105,11 +105,32 @@ function BootScreen() {
 function Logo() {
   return (
     <div className="font-display">
-      <div className="bg-gradient-to-br from-cyan-200 via-white to-fuchsia-400 bg-clip-text text-4xl font-black tracking-[0.16em] text-transparent drop-shadow-[0_0_30px_rgba(110,60,255,0.6)] sm:text-6xl sm:tracking-[0.24em] md:text-7xl">
-        CUBEFIELD
-      </div>
-      <div className="mt-2 text-[11px] tracking-[0.62em] text-cyan-200/70">
-        NEON HORIZON RUNNER
+      <div className="inline-flex max-w-full flex-col items-center">
+        <div className="whitespace-nowrap bg-gradient-to-br from-cyan-200 via-white to-fuchsia-400 bg-clip-text text-[clamp(1.75rem,8.5vw,4.5rem)] font-black leading-none tracking-[0.08em] text-transparent drop-shadow-[0_0_30px_rgba(110,60,255,0.6)] sm:tracking-[0.14em] md:tracking-[0.18em]">
+          HOVER WEAVE
+        </div>
+        <svg
+          aria-hidden="true"
+          className="mt-1.5 h-3 w-[min(76vw,24rem)] overflow-visible"
+          viewBox="0 0 320 20"
+          fill="none"
+        >
+          <path
+            d="M2 5C45 5 55 15 88 15S133 5 160 5 207 15 232 15 278 5 318 5"
+            className="stroke-cyan-300/80"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+          <path
+            d="M2 15C45 15 55 5 88 5S133 15 160 15 207 5 232 5 278 15 318 15"
+            className="stroke-fuchsia-400/70"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
+        <div className="mt-1.5 whitespace-nowrap text-[8px] tracking-[0.28em] text-cyan-200/70 sm:text-[10px] sm:tracking-[0.5em]">
+          THREAD THE IMPOSSIBLE
+        </div>
       </div>
     </div>
   );

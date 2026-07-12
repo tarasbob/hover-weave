@@ -11,7 +11,7 @@ const GameRoot = dynamic(() => import("@/game/GameRoot"), {
   loading: () => (
     <div className="fixed inset-0 grid place-items-center bg-[#07060f]">
       <div className="text-center font-mono text-sm tracking-[0.4em] text-cyan-200/60">
-        LOADING FIELD…
+        WEAVING COURSE…
       </div>
     </div>
   ),

@@ -14,12 +14,15 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "CUBEFIELD — Neon Horizon Runner",
+  title: "Hover Weave — Thread the Impossible",
+  applicationName: "Hover Weave",
   description:
-    "Race a hovercraft through an endless neon alien landscape. Thread impossible gaps, build flow, chase the daily course. WebGPU-powered, free, skill-only.",
+    "Race a hovercraft through an endless neon landscape. Weave impossible gaps, build Flow, and chase the daily course in this free, skill-only browser runner.",
   openGraph: {
-    title: "CUBEFIELD — Neon Horizon Runner",
-    description: "An endless neon hovercraft runner. Survive the geometry.",
+    title: "Hover Weave — Thread the Impossible",
+    description:
+      "Thread impossible gaps, build Flow, and chase the daily course in an endless neon hovercraft runner.",
+    siteName: "Hover Weave",
     type: "website",
   },
 };
