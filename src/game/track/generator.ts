@@ -3,17 +3,15 @@ import { clamp01, lerp } from "../core/mathUtils";
 import type { Rng } from "../core/rng";
 import type { BuildCtx, ObstacleSpec, PatternDef, PatternResult, PickupSpec } from "../core/types";
 import { biomeIndexAt } from "./biomes";
-import { BREATHER, NORMAL_PATTERNS } from "./patterns";
+import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
 import { SETPIECES } from "./setpieces";
+import { mutatePattern } from "./mutators";
 import {
   openLanes,
   validatePattern,
   widestCorridor,
   type ValidationResult,
 } from "./validator";
-
-/** Obstacle-free runway between consecutive patterns (meters). */
-const SEAM_RUNWAY = 26;
 
 export interface GeneratedChunk {
   s0: number;
@@ -42,19 +40,24 @@ export interface GeneratorEmit {
 }
 
 /**
- * Streams patterns ahead of the craft. Every chunk is validated by the
- * lane-reachability solver before being accepted; corridors chain so the
- * exit of one pattern always feeds legal entries of the next.
+ * Streams patterns ahead of the craft. Every chunk — including all random
+ * mutations — is validated by the lane-reachability solver before being
+ * accepted; corridors chain so the exit of one pattern always feeds legal
+ * entries of the next.
  */
 export class TrackGenerator {
   private rng: Rng;
   generatedUpTo = 0;
   private exitLanes: Uint8Array;
   private sinceSetpiece = 0;
+  private sinceField = 0;
   private forceBreather = true;
   private lastPatternId = "";
   private shieldCooldown = 900;
   private nextSetpieceAt: number;
+  private nextFieldAt: number;
+  /** Track distance at which each pattern was last used (novelty weighting). */
+  private lastUsedAt = new Map<string, number>();
   readonly debug: boolean;
   /** Stats for tests. */
   rejections = 0;
@@ -65,6 +68,7 @@ export class TrackGenerator {
     this.debug = debug;
     this.exitLanes = openLanes();
     this.nextSetpieceAt = rng.range(650, 950);
+    this.nextFieldAt = rng.range(250, 500);
   }
 
   fill(target: number, emit: GeneratorEmit): void {
@@ -75,15 +79,21 @@ export class TrackGenerator {
   }
 
   private nextChunk(): GeneratedChunk {
-    // Leave a clean seam between patterns: the runway gives the craft slack
-    // to reposition, and lets the validator dilate the entry corridor.
-    const s0 = this.generatedUpTo + SEAM_RUNWAY;
-    const difficulty = difficultyAt(s0);
+    // Randomized obstacle-free seam between patterns: repositioning slack for
+    // the craft and dilation room for the validator.
+    const runway = this.rng.range(18, 34);
+    const s0 = this.generatedUpTo + runway;
+
+    // Per-chunk difficulty surprise (after the opening stretch) keeps the
+    // same distance from playing identically across runs.
+    const baseDifficulty = difficultyAt(s0);
+    const difficulty =
+      s0 > 300 ? clamp01(baseDifficulty + this.rng.range(-0.08, 0.12)) : baseDifficulty;
     const speed = speedAt(s0);
     const biome = biomeIndexAt(s0);
 
     const corridor = widestCorridor(this.exitLanes);
-    const pattern = this.choosePattern(difficulty, biome, corridor.half);
+    const pattern = this.choosePattern(difficulty, biome, corridor.half, s0);
     const baseCtx: BuildCtx = {
       rng: this.rng,
       s0,
@@ -104,12 +114,13 @@ export class TrackGenerator {
         difficulty: Math.max(0, difficulty * (1 - attempt * 0.18)),
       };
       const built = tryPattern.build(tryCtx);
+      mutatePattern(this.rng, built, s0, tryPattern.category, baseCtx.entryX);
       const v = validatePattern(
         built.obstacles,
         s0,
         built.length,
         this.exitLanes,
-        SEAM_RUNWAY,
+        runway,
         this.debug,
       );
       if (v.ok) {
@@ -125,7 +136,7 @@ export class TrackGenerator {
       // Truly unreachable in practice; emit an empty stretch as a last resort.
       this.fallbacks++;
       result = { length: 90, exitX: 0, exitHalf: TRACK.X_LIMIT - 2, obstacles: [], pickups: [] };
-      validation = validatePattern([], s0, 90, openLanes(), SEAM_RUNWAY, this.debug);
+      validation = validatePattern([], s0, 90, openLanes(), runway, this.debug);
       usedPattern = BREATHER;
     }
 
@@ -136,15 +147,24 @@ export class TrackGenerator {
     if (!hasAny) exitLanes = openLanes();
     this.exitLanes = exitLanes;
 
+    // Pacing bookkeeping.
+    const span = result.length + runway;
     if (usedPattern.category === "setpiece") {
       this.sinceSetpiece = 0;
       this.nextSetpieceAt = this.rng.range(650, 1000);
       this.forceBreather = true;
     } else {
-      this.sinceSetpiece += result.length + SEAM_RUNWAY;
+      this.sinceSetpiece += span;
       this.forceBreather = false;
     }
+    if (usedPattern.category === "field") {
+      this.sinceField = 0;
+      this.nextFieldAt = this.rng.range(450, 800);
+    } else {
+      this.sinceField += span;
+    }
     this.lastPatternId = usedPattern.id;
+    this.lastUsedAt.set(usedPattern.id, s0);
 
     const pickups = [...result.pickups];
     this.placePathPickups(validation, pickups, s0);
@@ -162,22 +182,44 @@ export class TrackGenerator {
     return chunk;
   }
 
-  private choosePattern(difficulty: number, biome: number, entryHalf: number): PatternDef {
+  private choosePattern(
+    difficulty: number,
+    biome: number,
+    entryHalf: number,
+    s0: number,
+  ): PatternDef {
     if (this.forceBreather) return BREATHER;
 
+    const eligible = (p: PatternDef) =>
+      difficulty >= p.minDifficulty - 0.02 &&
+      difficulty <= p.maxDifficulty + 0.35 &&
+      (!p.biomes || p.biomes.includes(biome)) &&
+      (p.maxEntryHalf === undefined || entryHalf <= p.maxEntryHalf) &&
+      (p.minEntryHalf === undefined || entryHalf >= p.minEntryHalf) &&
+      p.id !== this.lastPatternId;
+
+    // Cadence guarantees: set-pieces trump, then overdue field sections.
     const setpieceDue = this.sinceSetpiece > this.nextSetpieceAt;
-    const pool = (setpieceDue ? SETPIECES : NORMAL_PATTERNS).filter(
-      (p) =>
-        difficulty >= p.minDifficulty - 0.02 &&
-        difficulty <= p.maxDifficulty + 0.35 &&
-        (!p.biomes || p.biomes.includes(biome)) &&
-        (p.maxEntryHalf === undefined || entryHalf <= p.maxEntryHalf) &&
-        (p.minEntryHalf === undefined || entryHalf >= p.minEntryHalf) &&
-        p.id !== this.lastPatternId,
-    );
-    if (pool.length === 0) return setpieceDue ? this.rng.pick(SETPIECES) : BREATHER;
-    const idx = this.rng.weighted(pool.map((p) => p.weight));
-    return pool[idx];
+    const fieldDue = this.sinceField > this.nextFieldAt;
+    let pool: PatternDef[];
+    if (setpieceDue) {
+      pool = SETPIECES.filter(eligible);
+      if (pool.length === 0) return this.rng.pick(SETPIECES);
+    } else if (fieldDue) {
+      pool = FIELD_PATTERNS.filter(eligible);
+      if (pool.length === 0) pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
+    } else {
+      pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
+    }
+    if (pool.length === 0) return BREATHER;
+
+    // Novelty bonus: the longer since a pattern last appeared, the likelier.
+    const weights = pool.map((p) => {
+      const last = this.lastUsedAt.get(p.id);
+      const staleness = last === undefined ? 3000 : s0 - last;
+      return p.weight * (1 + Math.min(1.5, staleness / 3000));
+    });
+    return pool[this.rng.weighted(weights)];
   }
 
   private placePathPickups(v: ValidationResult, pickups: PickupSpec[], s0: number): void {

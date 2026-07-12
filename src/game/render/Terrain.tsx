@@ -56,7 +56,13 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const ridgeMod = sin(x.mul(0.021).add(s.mul((TAU / P) * 2)).add(0.8)).mul(0.35).add(0.75);
       const mega = sin(x.mul(0.006).add(1.3)).mul(sin(s.mul(TAU / P).add(x.mul(0.004)))).mul(1.6);
       const valley = smoothstep(36, 120, abs(x));
-      return float(wave.mul(ridgeMod).add(mega).mul(env.uDispAmp).mul(valley));
+      const near = wave.mul(ridgeMod).add(mega).mul(env.uDispAmp).mul(valley);
+      // Distant mountain range framing the corridor (sharper, taller ridges).
+      const farMask = smoothstep(150, 330, abs(x));
+      const ridgeShape = float(1).sub(abs(sin(x.mul(0.011).add(s.mul((TAU / P) * 2)).add(2.1)))).pow(1.6)
+        .add(float(1).sub(abs(sin(x.mul(0.0053).sub(s.mul(TAU / P)).add(0.6)))).pow(2.2).mul(1.4));
+      const farRidge = ridgeShape.mul(farMask).mul(env.uDispAmp.mul(1.15).add(13));
+      return float(near.add(farRidge));
     };
 
     const worldX: NodeAny = positionLocal.x;

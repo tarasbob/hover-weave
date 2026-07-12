@@ -45,10 +45,13 @@ The simulation is plain TypeScript stepped at a fixed 120 Hz, fully decoupled
 from rendering; React/R3F is a view layer reading interpolated sim state.
 
 - `src/game/core/` — sim world, steering physics, collision, input, events
-- `src/game/track/` — 22 handcrafted pattern generators, biome definitions,
-  and a lane-reachability validator that proves every generated chunk has a
-  flyable path (worst-case envelopes for all moving obstacles) before it is
-  accepted
+- `src/game/track/` — 24 handcrafted pattern generators (including long
+  "chaos field" free-navigation scatter sections), a post-build mutator
+  pipeline (mirroring, extra scatter, rhythm jitter, mover speed-ups) that
+  keeps layouts unpredictable across runs, biome definitions, and a
+  lane-reachability validator that proves every generated chunk — including
+  every mutation — has a flyable path (worst-case envelopes for all moving
+  obstacles) before it is accepted
 - `src/game/render/` — R3F components; all materials are TSL node materials
   (terrain displacement, procedural sky, planar-reflection ocean, neon
   fresnel obstacles, pooled particles, post chain: bloom, chromatic

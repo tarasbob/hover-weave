@@ -1,64 +1,66 @@
 /**
- * Headless sim smoke test: runs an autopilot craft through generated tracks
- * and reports survival, pattern mix, validation retries and pool usage.
+ * Headless sim smoke test: a conservative band-scan autopilot (avoids the
+ * full worst-case envelope of every mover, like the validator plans with)
+ * plus determinism and pool-pressure checks.
+ *
+ * Fairness itself is enforced at generation time — every accepted chunk is
+ * proven passable by the reachability solver (see gentest.ts). Bot deaths
+ * here reflect bot skill (it cannot time gaps through movers like a human);
+ * the metric that matters is that distances stay reasonable and nothing
+ * degenerates (all runs dying instantly = broken generation).
+ *
  * Run: npx tsx scripts/simtest.ts
  */
 import { SimWorld } from "../src/game/core/world";
 import type { InputState } from "../src/game/core/input";
-import { FIXED_DT, TRACK, STEER, CRAFT } from "../src/game/core/constants";
+import { CRAFT, FIXED_DT, STEER, TRACK } from "../src/game/core/constants";
 import { blockedRanges } from "../src/game/track/validator";
-import { Motion } from "../src/game/core/types";
+import { Motion, type ObstacleSpec } from "../src/game/core/types";
+
+function specOf(o: SimWorld["obstacles"][number]): ObstacleSpec {
+  return {
+    kind: o.kind, s: o.s, x: o.x, y: o.y, hx: o.hx, hy: o.hy, hs: o.hs,
+    yaw: o.yaw, motion: o.motion, m0: o.m0, m1: o.m1, m2: o.m2,
+    inner: o.inner, collidable: o.collidable,
+  };
+}
 
 function autopilot(world: SimWorld, input: InputState): void {
-  // Look ahead, find the best gap at each of a few horizons, steer toward it.
   const craftS = world.distance;
-  const horizons = [18, 34, 55];
-  let targetX = world.x;
-  let found = false;
+  const bandStart = craftS + 2;
+  const bandEnd = craftS + 10 + Math.max(world.speed, 20) * 1.35;
 
-  for (const h of horizons) {
-    const s = craftS + h;
-    // Collect blocked intervals near this horizon slice.
-    const blocked: [number, number][] = [];
-    for (const o of world.obstacles) {
-      if (!o.active || !o.collidable) continue;
-      const sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx + 3;
-      if (Math.abs(o.cs - s) > sExt + 6) continue;
-      const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
-      if (restY - o.hy > CRAFT.Y_MAX || restY + o.hy < CRAFT.Y_MIN) continue;
-      for (const r of blockedRanges({
-        kind: o.kind, s: o.s, x: o.x, y: o.y, hx: o.hx, hy: o.hy, hs: o.hs,
-        yaw: o.yaw, motion: o.motion, m0: o.m0, m1: o.m1, m2: o.m2,
-        inner: o.inner, collidable: o.collidable,
-      })) {
-        blocked.push(r);
-      }
-    }
-    blocked.sort((a, b) => a[0] - b[0]);
-    // Find gaps.
-    const gaps: [number, number][] = [];
-    let cursor = -TRACK.X_LIMIT;
-    for (const [b0, b1] of blocked) {
-      if (b0 > cursor + 2.2) gaps.push([cursor, b0]);
-      cursor = Math.max(cursor, b1);
-    }
-    if (cursor < TRACK.X_LIMIT - 2.2) gaps.push([cursor, TRACK.X_LIMIT]);
-    if (gaps.length === 0) continue;
-    // Pick reachable gap closest to current x.
-    const reach = world.speed * STEER.RATIO * (h / Math.max(world.speed, 1)) * 0.85;
-    let best: number | null = null;
+  const blocked: [number, number][] = [];
+  for (const o of world.obstacles) {
+    if (!o.active || !o.collidable) continue;
+    const sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx + 2;
+    if (o.cs + sExt < bandStart || o.cs - sExt > bandEnd) continue;
+    const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
+    const vHalf = o.kind === "ring" ? o.hx : o.hy;
+    if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
+    for (const r of blockedRanges(specOf(o))) blocked.push(r);
+  }
+  blocked.sort((a, b) => a[0] - b[0]);
+
+  const gaps: [number, number][] = [];
+  let cursor = -TRACK.X_LIMIT;
+  for (const [b0, b1] of blocked) {
+    if (b0 > cursor + 2) gaps.push([cursor, b0]);
+    cursor = Math.max(cursor, b1);
+  }
+  if (cursor < TRACK.X_LIMIT - 2) gaps.push([cursor, TRACK.X_LIMIT]);
+
+  let targetX = world.x;
+  if (gaps.length > 0) {
     let bestCost = Infinity;
     for (const [g0, g1] of gaps) {
-      const gx = Math.min(Math.max(world.x, g0 + 1.4), g1 - 1.4);
-      const cost = Math.abs(gx - world.x) > reach ? Math.abs(gx - world.x) * 10 : Math.abs(gx - world.x);
+      const gx = Math.min(Math.max(world.x, g0 + 1.2), g1 - 1.2);
+      const width = g1 - g0;
+      const cost = Math.abs(gx - world.x) - Math.min(width, 10) * 0.4;
       if (cost < bestCost) {
         bestCost = cost;
-        best = gx;
+        targetX = gx;
       }
-    }
-    if (best !== null && !found) {
-      targetX = best;
-      found = true;
     }
   }
 
@@ -70,7 +72,9 @@ function autopilot(world: SimWorld, input: InputState): void {
 }
 
 let totalDeaths = 0;
-const runs = 6;
+let totalDist = 0;
+let peakActive = 0;
+const runs = 8;
 for (let r = 0; r < runs; r++) {
   const world = new SimWorld();
   const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
@@ -78,7 +82,6 @@ for (let r = 0; r < runs; r++) {
   world.start(seed, false);
   let killer = "";
   world.events.on("death", () => {
-    // Find nearest collidable obstacle to blame.
     let best = Infinity;
     for (const o of world.obstacles) {
       if (!o.active || !o.collidable) continue;
@@ -89,26 +92,35 @@ for (let r = 0; r < runs; r++) {
       }
     }
   });
-  const targetTime = 180; // 3 minutes of sim.
+
+  const targetTime = 180;
   let steps = 0;
+  let runPeak = 0;
   const maxSteps = Math.floor(targetTime / FIXED_DT);
   while (world.status === "running" && steps < maxSteps) {
     autopilot(world, input);
     world.update(FIXED_DT, input);
+    if (steps % 60 === 0) {
+      const active = world.obstacles.filter((o) => o.active).length;
+      if (active > runPeak) runPeak = active;
+    }
     steps++;
   }
-  const active = world.obstacles.filter((o) => o.active).length;
-  const activeP = world.pickups.filter((p) => p.active).length;
+  peakActive = Math.max(peakActive, runPeak);
   if (world.status === "dead") totalDeaths++;
+  totalDist += world.distance;
   console.log(
     `run ${r}: ${world.status.padEnd(7)} dist=${world.distance.toFixed(0).padStart(6)}m ` +
     `score=${Math.floor(world.score).toString().padStart(7)} speed=${world.speed.toFixed(1)} ` +
     `nearMiss=${world.stats.nearMisses} shards=${world.stats.shards} ` +
-    `activeObs=${active} activePickups=${activeP}` +
+    `peakActive=${runPeak}` +
     (killer ? ` killer: ${killer}` : ""),
   );
 }
-console.log(`\ndeaths: ${totalDeaths}/${runs} (autopilot is imperfect; some deaths ok, all-death = broken)`);
+console.log(
+  `\ndeaths: ${totalDeaths}/${runs}, avg dist=${Math.round(totalDist / runs)}m, ` +
+  `peak active obstacles=${peakActive} (render pools: box 512 / pillar 256 / crystal 256)`,
+);
 
 // Determinism check.
 {

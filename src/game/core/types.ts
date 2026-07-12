@@ -130,7 +130,7 @@ export interface PatternResult {
   announce?: string;
 }
 
-export type PatternCategory = "normal" | "setpiece" | "breather";
+export type PatternCategory = "normal" | "setpiece" | "breather" | "field";
 
 export interface PatternDef {
   id: string;

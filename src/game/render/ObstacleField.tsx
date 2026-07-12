@@ -4,6 +4,8 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
+import { TRACK } from "../core/constants";
+import { smoothstep } from "../core/mathUtils";
 import type { Obstacle, ObstacleKind } from "../core/types";
 import { createObstacleMaterial } from "./obstacleMaterial";
 
@@ -99,8 +101,13 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
 }
 
 function writeInstance(pool: KindPool, i: number, o: Obstacle, dist: number): void {
-  const z = -(o.cs - dist);
+  const ahead = o.cs - dist;
+  const z = -ahead;
   _p.set(o.cx, o.cy, z);
+
+  // Materialize deep inside the fog: scale up across the far band so nothing
+  // ever pops into view.
+  const grow = smoothstep(TRACK.MATERIALIZE_START, TRACK.MATERIALIZE_END, ahead);
 
   switch (o.kind) {
     case "pillar":
@@ -125,6 +132,7 @@ function writeInstance(pool: KindPool, i: number, o: Obstacle, dist: number): vo
       _s.set(o.hx, o.hy, o.hs);
       _e.set(0, o.cyaw, 0);
   }
+  if (grow < 1) _s.multiplyScalar(Math.max(grow, 0.001));
 
   _q.setFromEuler(_e);
   _m.compose(_p, _q, _s);

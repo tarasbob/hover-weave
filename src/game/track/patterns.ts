@@ -133,16 +133,16 @@ const openField: PatternDef = {
 
 const pillarForest: PatternDef = {
   id: "pillarForest",
-  category: "normal",
-  weight: 1.3,
+  category: "field",
+  weight: 1.6,
   minDifficulty: 0,
   maxDifficulty: 1,
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
-    const length = rng.range(90, 150);
+    const length = rng.range(120, 220);
     const obstacles: ObstacleSpec[] = [];
     const spacing = lerp(19, 11, d);
-    for (let s = 16; s < length - 6; s += spacing * rng.range(0.8, 1.3)) {
+    for (let s = 16; s < length - 6; s += spacing * rng.range(0.75, 1.35)) {
       const count = rng.int(1, d > 0.5 ? 3 : 2);
       for (let i = 0; i < count; i++) {
         const x = rng.range(-XP + 3, XP - 3);
@@ -158,6 +158,164 @@ const pillarForest: PatternDef = {
       }
     }
     return { length, exitX: 0, exitHalf: XP - 4, obstacles, pickups: [] };
+  },
+};
+
+/**
+ * The signature "everything field": a long stretch of randomly scattered
+ * objects of every kind. Density ramps with difficulty; movers sneak in at
+ * higher levels. Long enough that the player has to read and improvise.
+ */
+const chaosField: PatternDef = {
+  id: "chaosField",
+  category: "field",
+  weight: 2.4,
+  minDifficulty: 0.04,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const length = rng.range(220, 420);
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const rowStep = lerp(17, 9.5, d);
+
+    for (let s = 18; s < length - 10; s += rowStep * rng.range(0.7, 1.45)) {
+      const count = rng.weighted([lerp(3, 1, d), 2.2, lerp(0.4, 1.6, d)]) + 1; // 1..3
+      for (let i = 0; i < count; i++) {
+        const x = rng.range(-XP + 2.5, XP - 2.5);
+        const as = s0 + s + rng.range(-3, 3);
+        const roll = rng.next();
+
+        if (roll < 0.3) {
+          // Cube / slab.
+          const w = rng.range(0.8, 2.4);
+          obstacles.push(box(x, as, w, rng.range(1.2, 4.5) * rng.range(0.7, 1.6), w * rng.range(0.8, 1.5), {
+            yaw: rng.chance(0.4) ? rng.range(-0.6, 0.6) : 0,
+            role: rng.chance(0.12) ? "accent" : "primary",
+          }));
+        } else if (roll < 0.52) {
+          // Pillar.
+          obstacles.push(box(x, as, rng.range(0.8, 1.7), rng.range(3, 10), rng.range(0.8, 1.7), {
+            kind: "pillar",
+            role: rng.chance(0.2) ? "dim" : "primary",
+          }));
+        } else if (roll < 0.76) {
+          // Crystal, tilted.
+          const w = rng.range(0.9, 2.2);
+          obstacles.push(box(x, as, w, rng.range(2, 6.5), w, {
+            kind: "crystal",
+            yaw: rng.range(0, Math.PI),
+            role: rng.chance(0.25) ? "accent" : "primary",
+          }));
+        } else if (roll < 0.9) {
+          // Sphere — drifting at higher difficulty.
+          const drift = d > 0.35 && rng.chance(lerp(0, 0.55, d));
+          obstacles.push({
+            kind: "sphere", x, s: as, y: rng.range(1.2, 1.9),
+            hx: rng.range(1, 1.9), hy: rng.range(1, 1.9), hs: rng.range(1, 1.9),
+            role: drift ? "warn" : rng.chance(0.5) ? "accent" : "primary",
+            glow: drift ? 1.4 : 1.1,
+            motion: drift ? Motion.SweepX : Motion.None,
+            m0: rng.range(0.5, 1),
+            m1: rng.range(0, Math.PI * 2),
+            m2: drift ? rng.range(1.5, 3.2) : 0,
+          });
+        } else if (roll < 0.965 || d < 0.5) {
+          // Ring gate dropped into the chaos.
+          const inner = rng.range(3, 4.4);
+          obstacles.push({
+            kind: "ring", x: clamp(x, -XP + 8, XP - 8), s: as, y: 1.2,
+            hx: inner + rng.range(1.3, 1.9), hy: 0.5, hs: 0.5, inner,
+            role: rng.chance(0.5) ? "accent" : "primary", glow: 1.3,
+          });
+        } else {
+          // Rare short rotor blade (high difficulty only).
+          obstacles.push(box(x, as, 1, 5, 1, { kind: "pillar", role: "dim" }));
+          obstacles.push({
+            kind: "box", x, s: as, y: 1.3,
+            hx: rng.range(3.6, 5), hy: 0.6, hs: 0.5,
+            role: "warn", glow: 1.6,
+            motion: Motion.RotateYaw,
+            m0: rng.sign() * rng.range(1, 1.7),
+            m1: rng.range(0, Math.PI * 2),
+            m2: 0,
+          });
+        }
+      }
+      if (rng.chance(0.16)) {
+        pickups.push({ type: "shard", s: s0 + s + rowStep * 0.5, x: rng.range(-18, 18), y: 1.3 });
+      }
+    }
+    return { length, exitX: 0, exitHalf: XP - 4, obstacles, pickups };
+  },
+};
+
+/** Sparser all-moving field: everything drifts, bobs, or orbits. */
+const asteroidDrift: PatternDef = {
+  id: "asteroidDrift",
+  category: "field",
+  weight: 1.1,
+  minDifficulty: 0.18,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const length = rng.range(200, 320);
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const rowStep = lerp(24, 14, d);
+
+    for (let s = 20; s < length - 12; s += rowStep * rng.range(0.75, 1.4)) {
+      const x = rng.range(-XP + 5, XP - 5);
+      const as = s0 + s + rng.range(-3, 3);
+      if (rng.chance(0.6)) {
+        // Drifting asteroid (sphere or crystal).
+        const isCrystal = rng.chance(0.45);
+        obstacles.push({
+          kind: isCrystal ? "crystal" : "sphere",
+          x, s: as, y: rng.range(1.2, 1.9),
+          hx: rng.range(1.1, 2.1), hy: rng.range(1.1, 2.4), hs: rng.range(1.1, 2.1),
+          yaw: isCrystal ? rng.range(0, Math.PI) : 0,
+          role: rng.chance(0.35) ? "accent" : "primary",
+          glow: 1.15,
+          motion: Motion.SweepX,
+          m0: rng.range(0.35, 0.85),
+          m1: rng.range(0, Math.PI * 2),
+          m2: rng.range(1.8, 4),
+        });
+      } else if (rng.chance(0.55)) {
+        // Orbiting pair around an empty center.
+        const r = rng.range(4, 6.5);
+        const angSpeed = rng.sign() * rng.range(0.5, 0.9);
+        const phase = rng.range(0, Math.PI);
+        for (let k = 0; k < 2; k++) {
+          obstacles.push({
+            kind: "sphere", x, s: as, y: 1.5,
+            hx: 1.1, hy: 1.1, hs: 1.1,
+            role: "warn", glow: 1.4,
+            motion: Motion.OrbitXZ,
+            m0: r,
+            m1: angSpeed,
+            m2: k * Math.PI + phase,
+          });
+        }
+      } else {
+        // Slow pendulum boulder.
+        obstacles.push({
+          kind: "sphere",
+          x: clamp(x, -XP + 10, XP - 10), s: as, y: 11,
+          hx: 1.5, hy: 1.5, hs: 1.5,
+          role: "warn", glow: 1.3,
+          motion: Motion.Pendulum,
+          m0: 9.6,
+          m1: rng.range(0.4, 0.65),
+          m2: rng.range(0.9, 1.5),
+        });
+      }
+      if (rng.chance(0.2)) {
+        pickups.push({ type: "shard", s: as + rowStep * 0.5, x: rng.range(-16, 16), y: 1.3 });
+      }
+    }
+    return { length, exitX: 0, exitHalf: XP - 5, obstacles, pickups };
   },
 };
 
@@ -183,7 +341,7 @@ const slalomGates: PatternDef = {
       const shift = rng.range(6, 12) * rng.sign();
       const nx = clamp(gx + shift, -13, 13);
       const nh = lerp(6.6, 4, d) + rng.range(-0.3, 0.5);
-      s += Math.max(lerp(30, 22, d), rowRun(nx - gx, gh, nh) + 6);
+      s += Math.max(lerp(30, 22, d) * rng.range(0.85, 1.4), rowRun(nx - gx, gh, nh) + 6);
       gx = nx;
       gh = nh;
     }
@@ -212,7 +370,7 @@ const narrowGates: PatternDef = {
       if (r === rows - 1) break;
       const shift = rng.range(4, 8) * rng.sign();
       const nx = clamp(gx + shift, -11, 11);
-      s += Math.max(lerp(30, 24, d), rowRun(nx - gx, gh, gh) + 6);
+      s += Math.max(lerp(30, 24, d) * rng.range(0.85, 1.4), rowRun(nx - gx, gh, gh) + 6);
       gx = nx;
     }
     return { length: s - s0 + 16, exitX: gx, exitHalf: gh + 1, obstacles, pickups };
@@ -287,7 +445,7 @@ const zipper: PatternDef = {
         obstacles.push(box(end - hx, s, hx, hy, 1, { role: r % 2 ? "primary" : "accent" }));
       }
       side = -side;
-      s += rowGap;
+      s += rowGap * rng.range(1, 1.35);
     }
     return { length: s - s0 + 12, exitX: 0, exitHalf: 12, obstacles, pickups: [] };
   },
@@ -302,30 +460,30 @@ const combTeeth: PatternDef = {
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
     const rows = rng.int(3, 4);
-    const rowGap = lerp(40, 30, d);
-    const length = rows * rowGap + 20;
     const obstacles: ObstacleSpec[] = [];
     const pickups: PickupSpec[] = [];
-    const pitch = lerp(14.5, 11, d);
+    let s = s0 + 18;
     for (let r = 0; r < rows; r++) {
+      // Per-row pitch/gap so no two combs read the same.
+      const pitch = lerp(14.5, 11, d) * rng.range(0.9, 1.15);
       const offset = rng.range(-pitch / 2, pitch / 2);
-      // Teeth leave gaps ~2.2x the pitch shift needed between rows.
       const toothHalf = pitch / 2 - lerp(4.1, 3.2, d);
       for (let x = -XP + offset; x < XP; x += pitch) {
         const cx = x + pitch / 2;
         if (Math.abs(cx) > XP) continue;
         obstacles.push(
-          box(cx, s0 + 18 + r * rowGap, toothHalf, rng.range(3, 6), 0.8, {
+          box(cx, s, toothHalf, rng.range(3, 6), 0.8, {
             role: "primary",
             kind: rng.chance(0.3) ? "pillar" : "box",
           }),
         );
       }
       if (rng.chance(0.5)) {
-        pickups.push({ type: "shard", s: s0 + 18 + r * rowGap, x: rng.range(-16, 16), y: 1.3 });
+        pickups.push({ type: "shard", s, x: rng.range(-16, 16), y: 1.3 });
       }
+      s += lerp(40, 30, d) * rng.range(0.85, 1.3);
     }
-    return { length, exitX: 0, exitHalf: XP - 5, obstacles, pickups };
+    return { length: s - s0 + 14, exitX: 0, exitHalf: XP - 5, obstacles, pickups };
   },
 };
 
@@ -384,13 +542,8 @@ const pistonCorridor: PatternDef = {
     const pickups: PickupSpec[] = [];
     const wallX = 20;
     const corridorStart = funnelTo(ctx, obstacles, 0, wallX, 5);
-    const innerLen = count * gap + 14;
-    // Corridor walls.
-    for (let s = 0; s < innerLen; s += 12) {
-      obstacles.push(box(-(wallX + 5.5), corridorStart + s, 5, 5, 6.2, { role: "dim" }));
-      obstacles.push(box(wallX + 5.5, corridorStart + s, 5, 5, 6.2, { role: "dim" }));
-    }
     let side = rng.sign();
+    let ps = corridorStart + 16;
     for (let i = 0; i < count; i++) {
       const stroke = lerp(12, 15, d); // Rest gap on the far side stays >= ~9m wide.
       const headHalf = 3.4;
@@ -398,7 +551,7 @@ const pistonCorridor: PatternDef = {
       obstacles.push({
         kind: "box",
         x: baseX,
-        s: corridorStart + 16 + i * gap,
+        s: ps,
         y: 2.2,
         hx: headHalf,
         hy: 2.2,
@@ -410,8 +563,16 @@ const pistonCorridor: PatternDef = {
         m1: rng.range(0, 1),
         m2: -side * stroke,
       });
-      pickups.push({ type: "shard", s: corridorStart + 16 + i * gap, x: -side * (wallX - 7), y: 1.3 });
-      side = -side;
+      pickups.push({ type: "shard", s: ps, x: -side * (wallX - 7), y: 1.3 });
+      // Occasionally repeat the same side to punish autopilot rhythm.
+      if (rng.chance(0.75)) side = -side;
+      ps += gap * rng.range(0.8, 1.3);
+    }
+    // Corridor walls covering the actual (jittered) piston extent.
+    const innerLen = ps - corridorStart - gap * 0.4;
+    for (let s = 0; s < innerLen; s += 12) {
+      obstacles.push(box(-(wallX + 5.5), corridorStart + s, 5, 5, 6.2, { role: "dim" }));
+      obstacles.push(box(wallX + 5.5, corridorStart + s, 5, 5, 6.2, { role: "dim" }));
     }
     const length = corridorStart + innerLen - s0 + 12;
     return { length, exitX: 0, exitHalf: wallX - 5, obstacles, pickups };
@@ -429,15 +590,15 @@ const pendulumAlley: PatternDef = {
     const { rng, s0, difficulty: d } = ctx;
     const count = rng.int(3, 5);
     const gap = lerp(40, 30, d);
-    const length = count * gap + 22;
     const obstacles: ObstacleSpec[] = [];
     let side = rng.sign();
+    let s = s0 + 20;
     for (let i = 0; i < count; i++) {
-      const pivotX = side * rng.range(11, 14);
+      const pivotX = side * rng.range(9, 15);
       obstacles.push({
         kind: "sphere",
         x: pivotX,
-        s: s0 + 20 + i * gap,
+        s,
         y: 12,
         hx: 1.4,
         hy: 1.4,
@@ -449,9 +610,10 @@ const pendulumAlley: PatternDef = {
         m1: rng.range(0.55, 0.72),
         m2: rng.range(1.3, 1.9),
       });
-      side = -side;
+      if (rng.chance(0.8)) side = -side;
+      s += gap * rng.range(0.8, 1.35);
     }
-    return { length, exitX: 0, exitHalf: 12, obstacles, pickups: [] };
+    return { length: s - s0 + 14, exitX: 0, exitHalf: 12, obstacles, pickups: [] };
   },
 };
 
@@ -466,12 +628,11 @@ const bladeRotors: PatternDef = {
     const { rng, s0, difficulty: d } = ctx;
     const count = rng.int(2, 4);
     const gap = lerp(52, 40, d);
-    const length = count * gap + 26;
     const obstacles: ObstacleSpec[] = [];
     let side = rng.sign();
+    let s = s0 + 24;
     for (let i = 0; i < count; i++) {
-      const cx = side * rng.range(8, 11);
-      const s = s0 + 24 + i * gap;
+      const cx = side * rng.range(7, 12);
       obstacles.push(box(cx, s, 1.1, 6, 1.1, { kind: "pillar", role: "dim" }));
       obstacles.push({
         kind: "box",
@@ -488,9 +649,10 @@ const bladeRotors: PatternDef = {
         m1: rng.range(0, Math.PI * 2),
         m2: 0,
       });
-      side = -side;
+      if (rng.chance(0.8)) side = -side;
+      s += gap * rng.range(0.8, 1.35);
     }
-    return { length, exitX: 0, exitHalf: 12, obstacles, pickups: [] };
+    return { length: s - s0 + 14, exitX: 0, exitHalf: 12, obstacles, pickups: [] };
   },
 };
 
@@ -526,7 +688,7 @@ const collapsingBridge: PatternDef = {
       if (r === rows - 1) break;
       const shift = rng.range(5, 9) * rng.sign();
       const nx = clamp(gx + shift, -10, 10);
-      s += Math.max(lerp(36, 27, d), rowRun(nx - gx, gh, gh) + 6);
+      s += Math.max(lerp(36, 27, d) * rng.range(0.85, 1.35), rowRun(nx - gx, gh, gh) + 6);
       gx = nx;
     }
     return { length: s - s0 + 16, exitX: gx, exitHalf: gh + 1, obstacles, pickups: [] };
@@ -585,7 +747,7 @@ const crystalChicane: PatternDef = {
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
     const count = rng.int(4, 6);
-    const gap = lerp(34, 26, d);
+    const gap = lerp(34, 26, d) * rng.range(0.9, 1.2);
     const length = count * gap + 20;
     const obstacles: ObstacleSpec[] = [];
     const pickups: PickupSpec[] = [];
@@ -731,7 +893,6 @@ const hyperRings: PatternDef = {
 };
 
 export const NORMAL_PATTERNS: PatternDef[] = [
-  pillarForest,
   slalomGates,
   narrowGates,
   sCurveCanyon,
@@ -747,6 +908,13 @@ export const NORMAL_PATTERNS: PatternDef[] = [
   buoySlalom,
   ringTunnel,
   hyperRings,
+];
+
+/** Long free-navigation scatter sections. */
+export const FIELD_PATTERNS: PatternDef[] = [
+  pillarForest,
+  chaosField,
+  asteroidDrift,
 ];
 
 export const BREATHER = openField;

@@ -9,6 +9,7 @@ import { useGame } from "../state/game";
 import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
 import { CameraRig } from "./CameraRig";
 import { Craft } from "./Craft";
+import { Decor } from "./Decor";
 import { ObstacleField } from "./ObstacleField";
 import { Particles } from "./Particles";
 import { Pickups } from "./Pickups";
@@ -34,9 +35,10 @@ export function GameScene() {
   const drs = useRef({ scale: 1, cooldown: 0 });
 
   // Height-aware exponential fog from env uniforms (denser near the ground,
-  // clearing overhead so the sky stays crisp).
+  // thinning overhead so the sky stays crisp — but never so thin that tall
+  // obstacles escape the fog and pop in at the generation horizon).
   useEffect(() => {
-    const heightFactor = smoothstep(64, 3, positionWorld.y).mul(0.82).add(0.18);
+    const heightFactor = smoothstep(64, 3, positionWorld.y).mul(0.72).add(0.28);
     const factor = densityFogFactor(env.uFogDensity.mul(heightFactor));
     const s = scene as THREE.Scene & { fogNode: unknown };
     s.fogNode = fog(env.uFogColor, factor);
@@ -138,6 +140,7 @@ export function GameScene() {
       <SkyDome />
       <Terrain segments={quality.terrainSegments} />
       {quality.reflections && <Ocean />}
+      <Decor />
       <ObstacleField shadows={quality.shadows} />
       <Pickups />
       <Craft />

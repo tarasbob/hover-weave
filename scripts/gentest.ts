@@ -4,14 +4,15 @@
  */
 import { createRng } from "../src/game/core/rng";
 import { TrackGenerator, difficultyAt, speedAt } from "../src/game/track/generator";
-import { NORMAL_PATTERNS } from "../src/game/track/patterns";
+import { FIELD_PATTERNS, NORMAL_PATTERNS } from "../src/game/track/patterns";
 import { SETPIECES } from "../src/game/track/setpieces";
+import { mutatePattern } from "../src/game/track/mutators";
 import { validatePattern, corridorLanes } from "../src/game/track/validator";
 import type { BuildCtx } from "../src/game/core/types";
 
 // Per-pattern validation rate with a consistent entry corridor.
-console.log("== standalone validation rates (100 tries each) ==");
-for (const p of [...NORMAL_PATTERNS, ...SETPIECES]) {
+console.log("== standalone validation rates, mutators on (100 tries each) ==");
+for (const p of [...NORMAL_PATTERNS, ...FIELD_PATTERNS, ...SETPIECES]) {
   let ok = 0;
   const rng = createRng("standalone-" + p.id);
   for (let i = 0; i < 100; i++) {
@@ -26,6 +27,7 @@ for (const p of [...NORMAL_PATTERNS, ...SETPIECES]) {
       biome: p.biomes ? p.biomes[0] : 0,
     };
     const built = p.build(ctx);
+    mutatePattern(rng, built, s0, p.category, entryX);
     const v = validatePattern(
       built.obstacles, s0, built.length,
       corridorLanes(entryX, entryHalf), 26,

@@ -9,10 +9,16 @@ export const TRACK = {
   X_LIMIT: 30,
   /** Patterns may place geometry within this half width. */
   X_PATTERN: 33,
-  /** Distance ahead of the craft that must always be generated. */
-  GEN_HORIZON: 420,
+  /**
+   * Distance ahead of the craft that must always be generated. Deep enough
+   * that everything materializes fully buried in fog — no visible pop-in.
+   */
+  GEN_HORIZON: 720,
   /** Obstacles further behind than this are recycled. */
   DESPAWN_BEHIND: 26,
+  /** Instances scale from 0 to full size across this band inside the horizon. */
+  MATERIALIZE_START: 680,
+  MATERIALIZE_END: 540,
 } as const;
 
 export const SPEED = {

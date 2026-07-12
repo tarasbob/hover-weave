@@ -14,6 +14,8 @@ import {
   sin,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
+import { TRACK } from "../core/constants";
+import { smoothstep } from "../core/mathUtils";
 
 const SHARD_CAP = 128;
 const SHIELD_CAP = 8;
@@ -73,15 +75,17 @@ export function Pickups() {
 
     for (const p of world.pickups) {
       if (!p.active) continue;
-      const z = -(p.s - dist);
-      if (z > 30 || z < -400) continue;
+      const ahead = p.s - dist;
+      const z = -ahead;
+      if (z > 30 || ahead > TRACK.GEN_HORIZON) continue;
+      const grow = smoothstep(TRACK.MATERIALIZE_START, TRACK.MATERIALIZE_END, ahead);
 
       if (p.type === "shard" && si < SHARD_CAP) {
         const bob = Math.sin(t * 3.1 + p.id * 1.7) * 0.16;
         _p.set(p.x, p.y + bob, z);
         _e.set(0, t * 2.4 + p.id, Math.PI * 0.13);
         _q.setFromEuler(_e);
-        const sc = p.seeking ? 0.72 : 1;
+        const sc = (p.seeking ? 0.72 : 1) * Math.max(grow, 0.001);
         _s.set(sc, 1.5 * sc, sc);
         _m.compose(_p, _q, _s);
         shardMesh.setMatrixAt(si++, _m);
@@ -90,7 +94,8 @@ export function Pickups() {
         _p.set(p.x, p.y + 0.4 + bob, z);
         _e.set(t * 1.4, t * 0.9, 0);
         _q.setFromEuler(_e);
-        _s.set(1.4, 1.4, 1.4);
+        const sc = 1.4 * Math.max(grow, 0.001);
+        _s.set(sc, sc, sc);
         _m.compose(_p, _q, _s);
         shieldMesh.setMatrixAt(hi++, _m);
       }

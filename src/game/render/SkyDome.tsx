@@ -64,13 +64,20 @@ export function SkyDome() {
       const h = hash(dot(cell, vec3(127.1, 311.7, 74.7)));
       const local = fract(sCoord).sub(0.5);
       const starDist = local.length();
-      const starCore = smoothstep(0.28, 0.04, starDist);
-      const isStar = smoothstep(0.982, 0.998, h);
+      const starCore = smoothstep(0.2, 0.03, starDist);
+      const isStar = smoothstep(0.978, 0.998, h);
       const twinkle = sin(env.uTime.mul(2.2).add(h.mul(80))).mul(0.4).add(0.7);
       const starLum = isStar.mul(starCore).mul(twinkle)
         .mul(smoothstep(0.02, 0.24, up))
         .mul(env.uStars);
-      col.addAssign(vec3(0.95, 0.97, 1).mul(starLum).mul(1.6));
+      col.addAssign(vec3(0.95, 0.97, 1).mul(starLum).mul(2));
+
+      // Faint tilted milky-way band with denser micro-stars inside it.
+      const bandN = vec3(0.36, 0.7, 0.62).normalize();
+      const bandDist = abs(dot(dir, bandN));
+      const bandGlow = pow(float(1).sub(bandDist), 5.5).mul(smoothstep(0.0, 0.18, up));
+      const bandNoise = mx_fractal_noise_float(dir.mul(7.5).add(vec3(3.3)), 3, 2.2, 0.55).mul(0.5).add(0.5);
+      col.addAssign(vec3(0.72, 0.78, 1).mul(bandGlow).mul(bandNoise).mul(env.uStars).mul(0.32));
 
       // Aurora ribbons: ridged sine bands warped by noise.
       const warp = mx_fractal_noise_float(dir.mul(3.2).add(vec3(0, env.uTime.mul(0.02), 0)), 3, 2, 0.5);
