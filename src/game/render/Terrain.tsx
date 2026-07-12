@@ -43,6 +43,8 @@ export function Terrain({ segments }: { segments: [number, number] }) {
     const mat = new THREE.MeshStandardNodeMaterial();
     mat.metalness = 0.55;
     mat.roughness = 0.42;
+    mat.metalnessNode = mix(float(0.5), float(0.82), env.uBiomeMix.y.mul(env.uReflectivity));
+    mat.roughnessNode = mix(float(0.46), float(0.16), env.uBiomeMix.y.mul(env.uReflectivity));
 
     const P = SCROLL_PERIOD;
     const TAU = Math.PI * 2;
@@ -94,13 +96,53 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const coverage = vec2(1).sub(
         smoothstep(lineWidth.sub(pixelWidth), lineWidth.add(pixelWidth), edgeDistance),
       );
-      const line = max(coverage.x, coverage.y);
+      const squareGrid = max(coverage.x, coverage.y);
+
+      // Crystal Desert: a layered diamond lattice.
+      const diamondCoord = vec2(worldX.add(sCoord), worldX.sub(sCoord)).div(5.7);
+      const diamondDistance = vec2(0.5).sub(abs(fract(diamondCoord).sub(0.5)));
+      const diamondAA = max(fwidth(diamondCoord), vec2(0.001)).mul(0.8);
+      const diamondCoverage = vec2(1).sub(
+        smoothstep(
+          vec2(0.028).sub(diamondAA),
+          vec2(0.028).add(diamondAA),
+          diamondDistance,
+        ),
+      );
+      const crystalGrid = max(squareGrid, max(diamondCoverage.x, diamondCoverage.y).mul(0.52));
+
+      // Digital Ocean: long luminous wave fronts instead of a rigid lattice.
+      const waveSignal = abs(
+        sin(sCoord.mul(0.17).add(sin(worldX.mul(0.045)).mul(1.8)).sub(env.uTime.mul(1.7))),
+      );
+      const waveAA = fwidth(waveSignal).mul(1.5);
+      const oceanWaves = smoothstep(float(0.91).sub(waveAA), float(0.99).add(waveAA), waveSignal);
+      const oceanGrid = max(squareGrid.mul(0.24), oceanWaves);
+
+      // Storm Front: damaged circuitry that reconnects during lightning.
+      const stormCell = floor(gridCoord.div(3));
+      const circuitGate = step(0.36, hash(dot(stormCell, vec2(37.1, 91.7))));
+      const stormGrid = squareGrid
+        .mul(circuitGate)
+        .mul(float(0.58).add(env.uFlash.mul(1.25)));
+
+      // Void Tunnel: sparse radial marks and faint crosshair traces.
+      const voidSignal = abs(sin(vec2(worldX, sCoord).length().mul(0.19).sub(env.uTime.mul(0.55))));
+      const voidAA = fwidth(voidSignal).mul(1.8);
+      const voidRings = smoothstep(float(0.94).sub(voidAA), float(1).add(voidAA), voidSignal);
+      const voidGrid = max(squareGrid.mul(0.12), voidRings.mul(0.82));
+
+      const line = crystalGrid.mul(env.uBiomeMix.x)
+        .add(oceanGrid.mul(env.uBiomeMix.y))
+        .add(stormGrid.mul(env.uBiomeMix.z))
+        .add(voidGrid.mul(env.uBiomeMix.w));
       const trackFade = smoothstep(150, 20, abs(worldX));
       const grid = line.mul(trackFade).mul(env.uGridIntensity);
 
       // Track edge rails with a traveling pulse.
       const edge = smoothstep(1.6, 0.25, abs(abs(worldX).sub(31)));
-      const railPulse = sin(sCoord.mul(0.35).sub(env.uTime.mul(6))).mul(0.25).add(0.75);
+      const railSpeed = env.uSpeedNorm.mul(5).add(6);
+      const railPulse = sin(sCoord.mul(0.35).sub(env.uTime.mul(railSpeed))).mul(0.25).add(0.75);
 
       // Crystal facet sparkle: tiny glints, not whole cells.
       const cellCoord = vec2(worldX, sCoord).div(3);
@@ -114,7 +156,9 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const e = env.uGridColor.mul(grid).mul(0.55)
         .add(env.uPrimary.mul(edge).mul(railPulse).mul(1.4))
         .add(env.uAccent.mul(sparkle).mul(2.2))
-        .add(env.uGridColor.mul(env.uFlash).mul(0.12));
+        .add(env.uGridColor.mul(env.uFlash).mul(0.12))
+        .add(env.uAccent.mul(env.uTransition).mul(edge).mul(0.48))
+        .add(env.uPrimary.mul(env.uFlowPulse).mul(grid).mul(0.22));
 
       return e.mul(env.uFlow.mul(0.5).add(1));
     })();

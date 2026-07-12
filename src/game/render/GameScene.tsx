@@ -11,6 +11,8 @@ import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
 import { CameraRig } from "./CameraRig";
 import { Craft } from "./Craft";
 import { Decor } from "./Decor";
+import { HorizonLandmarks } from "./HorizonLandmarks";
+import { Lightning } from "./Lightning";
 import { ObstacleField } from "./ObstacleField";
 import { Particles } from "./Particles";
 import { Pickups } from "./Pickups";
@@ -18,6 +20,7 @@ import { PostFX } from "./PostFX";
 import { SkyDome } from "./SkyDome";
 import { Terrain } from "./Terrain";
 import { Ocean } from "./Ocean";
+import { SUN_DIRECTION } from "./visualConstants";
 
 const HUD_INTERVAL = 1 / 12;
 
@@ -26,6 +29,7 @@ export function GameScene() {
   const { world, input, env, audio, ambient } = bundle;
   const scene = useThree((s) => s.scene);
   const setDpr = useThree((s) => s.setDpr);
+  const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
 
   const tier = useSettings((s) => resolveTier(s));
   const quality = QUALITY_CONFIGS[tier];
@@ -34,11 +38,13 @@ export function GameScene() {
   const hudClock = useRef(0);
   const fpsEma = useRef(16.7);
   const drs = useRef({ scale: 1, cooldown: 0 });
+  const perfSample = useRef({ calls: 0, triangles: 0, frames: 0, sampledFrames: 0 });
 
   useEffect(() => {
     drs.current = { scale: 1, cooldown: 2 };
+    env.uDrsScale.value = 1;
     setDpr(Math.min(quality.maxDpr, window.devicePixelRatio));
-  }, [quality.maxDpr, setDpr, tier]);
+  }, [env, quality.maxDpr, setDpr, tier]);
 
   // Height-aware exponential fog from env uniforms (denser near the ground,
   // thinning overhead so the sky stays crisp — but never so thin that tall
@@ -60,19 +66,36 @@ export function GameScene() {
     l.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize);
     l.shadow.camera.near = 8;
     l.shadow.camera.far = 220;
-    l.shadow.camera.left = -70;
-    l.shadow.camera.right = 70;
-    l.shadow.camera.top = 90;
-    l.shadow.camera.bottom = -60;
+    l.shadow.camera.left = -58;
+    l.shadow.camera.right = 58;
+    l.shadow.camera.top = 74;
+    l.shadow.camera.bottom = -38;
     l.shadow.bias = -0.0015;
+    l.shadow.normalBias = quality.shadowNormalBias;
+    l.shadow.radius = quality.shadowRadius;
+    l.target.position.set(0, 0, -46);
     return l;
-  }, [quality.shadows, quality.shadowMapSize]);
+  }, [
+    quality.shadowMapSize,
+    quality.shadowNormalBias,
+    quality.shadowRadius,
+    quality.shadows,
+  ]);
 
-  const ambientLight = useMemo(() => new THREE.AmbientLight("#8f9bff", 0.5), []);
+  const hemisphereLight = useMemo(
+    () => new THREE.HemisphereLight("#8f9bff", "#160b31", 0.5),
+    [],
+  );
+  const rimLight = useMemo(() => {
+    const light = new THREE.DirectionalLight("#43f6ff", 0.35);
+    light.position.set(-32, 20, 28);
+    return light;
+  }, []);
 
   useFrame((state, rawDt) => {
     const dt = Math.min(rawDt, 0.25);
     const g = useGame.getState();
+    perfSample.current.frames++;
 
     // --- Input edges ---------------------------------------------------
     input.poll(sensitivity);
@@ -101,9 +124,22 @@ export function GameScene() {
     // --- Environment + audio ----------------------------------------------
     env.update(world, dt, ambient.value);
     audio.update(world, dt);
+    const lightX = world.status === "idle" ? 0 : world.renderX * 0.28;
+    dirLight.target.position.set(lightX, 0, -46);
+    dirLight.position.set(
+      lightX + SUN_DIRECTION[0] * 82,
+      SUN_DIRECTION[1] * 82,
+      -46 + SUN_DIRECTION[2] * 82,
+    );
+    rimLight.position.set(lightX - SUN_DIRECTION[0] * 45, 20, 18);
+    rimLight.target.position.copy(dirLight.target.position);
     dirLight.color.copy(env.lightColor);
     dirLight.intensity = env.lightIntensity + env.uFlash.value * 3.2;
-    ambientLight.intensity = env.ambient + env.uFlash.value * 0.8;
+    hemisphereLight.color.copy(env.uSkyTop.value);
+    hemisphereLight.groundColor.copy(env.uTerrainA.value);
+    hemisphereLight.intensity = env.ambient + env.uFlash.value * 0.55;
+    rimLight.color.copy(env.uAccent.value);
+    rimLight.intensity = 0.25 + env.uFlow.value * 0.32 + env.uFlash.value * 0.7;
 
     // --- HUD snapshot (throttled) -----------------------------------------
     hudClock.current += dt;
@@ -131,16 +167,37 @@ export function GameScene() {
       fpsEma.current = fpsEma.current * 0.9 + rawDt * 1000 * 0.1;
       g.setFps(Math.round(1000 / fpsEma.current));
       const d = drs.current;
+      const info = renderer.info;
+      const perf = perfSample.current;
+      const frames = Math.max(1, perf.frames - perf.sampledFrames);
+      const callDelta =
+        info.render.calls >= perf.calls ? info.render.calls - perf.calls : info.render.calls;
+      const triangleDelta =
+        info.render.triangles >= perf.triangles
+          ? info.render.triangles - perf.triangles
+          : info.render.triangles;
+      g.setGraphics({
+        dpr: renderer.getPixelRatio(),
+        drsScale: d.scale,
+        drawCalls: Math.round(callDelta / frames),
+        triangles: Math.round(triangleDelta / frames),
+        textures: info.memory.textures,
+      });
+      perf.calls = info.render.calls;
+      perf.triangles = info.render.triangles;
+      perf.sampledFrames = perf.frames;
       d.cooldown -= HUD_INTERVAL;
       if (d.cooldown <= 0) {
         const baseDpr = Math.min(quality.maxDpr, window.devicePixelRatio);
         if (fpsEma.current > 20 && d.scale > quality.minDprScale) {
           d.scale = Math.max(quality.minDprScale, d.scale - 0.1);
           d.cooldown = 1.5;
+          env.uDrsScale.value = d.scale;
           setDpr(baseDpr * d.scale);
         } else if (fpsEma.current < 18 && d.scale < 1) {
           d.scale = Math.min(1, d.scale + 0.1);
           d.cooldown = 2.5;
+          env.uDrsScale.value = d.scale;
           setDpr(baseDpr * d.scale);
         }
       }
@@ -150,21 +207,27 @@ export function GameScene() {
   return (
     <>
       <primitive object={dirLight} />
-      <primitive object={dirLight.target} position={[0, 0, -40]} />
-      <primitive object={ambientLight} />
-      <SkyDome />
+      <primitive object={dirLight.target} />
+      <primitive object={hemisphereLight} />
+      <primitive object={rimLight} />
+      <primitive object={rimLight.target} />
+      <SkyDome detail={quality.skyDetail} />
       <Terrain segments={quality.terrainSegments} />
-      {quality.reflections && <Ocean />}
+      {quality.reflections && <Ocean resolutionScale={quality.reflectionScale} />}
+      <HorizonLandmarks />
       <Decor />
       <ObstacleField shadows={quality.shadows} />
       <Pickups />
       <Craft />
       <Particles max={quality.maxParticles} />
+      <Lightning />
       <CameraRig />
       <PostFX
         aa={quality.aa}
         bloomQuality={quality.bloomQuality}
+        bloomResolutionScale={quality.bloomResolutionScale}
         msaaSamples={quality.msaaSamples}
+        premiumPost={quality.premiumPost}
       />
     </>
   );

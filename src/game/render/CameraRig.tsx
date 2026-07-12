@@ -22,20 +22,38 @@ export function CameraRig() {
     fov: 68,
     trauma: 0,
     roll: 0,
+    nearWhip: 0,
+    boostKick: 0,
+    flowKick: 0,
+    deathSpeed: 0,
   });
 
   const target = useMemo(() => new THREE.Vector3(), []);
 
   useEffect(() => {
     const offs = [
-      world.events.on("death", () => {
+      world.events.on("death", (event) => {
         state.current.trauma = 1;
+        state.current.deathSpeed = event.speed;
       }),
       world.events.on("shieldBreak", () => {
         state.current.trauma = Math.max(state.current.trauma, 0.65);
       }),
       world.events.on("nearMiss", (e) => {
         state.current.trauma = Math.max(state.current.trauma, 0.12 + e.precision * 0.2);
+        state.current.nearWhip =
+          Math.sign(e.x - world.x) * (0.35 + e.precision * 0.65);
+      }),
+      world.events.on("boostStart", () => {
+        state.current.boostKick = 1;
+      }),
+      world.events.on("boostEnd", () => {
+        state.current.boostKick = Math.min(state.current.boostKick, -0.35);
+      }),
+      world.events.on("flowTier", (event) => {
+        if (event.tier > event.prev) {
+          state.current.flowKick = Math.max(state.current.flowKick, 0.55 + event.tier * 0.1);
+        }
       }),
       world.events.on("slabFall", (e) => {
         const d = Math.abs(e.s - world.distance);
@@ -51,13 +69,18 @@ export function CameraRig() {
     const idle = world.status === "idle";
     const dead = world.status === "dead";
     const craftX = idle ? 0 : world.renderX;
+    s.nearWhip = damp(s.nearWhip, 0, 9, dt);
+    s.boostKick = damp(s.boostKick, 0, 7.5, dt);
+    s.flowKick = damp(s.flowKick, 0, 3.6, dt);
 
     s.x = damp(s.x, craftX * 0.92, 7.5, dt);
-    s.lookX = damp(s.lookX, craftX * 0.55, 6, dt);
+    const whipScale = reduceMotion ? 0.18 : 1;
+    s.lookX = damp(s.lookX, craftX * 0.55 + s.nearWhip * whipScale, 6, dt);
 
     const speedK = world.speedNorm;
-    const baseY = 4.5 + speedK * 0.8;
-    const baseZ = 8.6 - speedK * 0.7;
+    const motionScale = reduceMotion ? 0.25 : 1;
+    const baseY = 4.5 + speedK * 0.8 - s.flowKick * 0.22 * motionScale;
+    const baseZ = 8.6 - speedK * 0.7 + s.flowKick * 0.48 * motionScale;
 
     let px = s.x;
     let py = baseY;
@@ -67,8 +90,9 @@ export function CameraRig() {
       // Slow pull up + back while the wreck tumbles.
       const t = Math.min(world.deathTimer / 1.6, 1);
       const e = 1 - Math.pow(1 - t, 3);
-      py += e * 4.2;
-      pz += e * 7;
+      const impactScale = Math.min(1.35, 0.7 + s.deathSpeed / 140);
+      py += e * 4.2 * impactScale;
+      pz += e * 7 * impactScale;
       px = damp(s.x, world.deathX, 4, dt);
     }
     if (idle) {
@@ -99,7 +123,8 @@ export function CameraRig() {
 
     // FOV: speed + boost kick, slight tunnel on death.
     const targetFov =
-      66 + speedK * 13 + world.boostCharge * 9 - (dead ? 6 : 0) + world.flowTier * 0.7;
+      66 + speedK * 13 + world.boostCharge * 9 - (dead ? 6 : 0) +
+      world.flowTier * 0.7 + s.boostKick * 4.2 * motionScale + s.flowKick * 1.4 * motionScale;
     s.fov = damp(s.fov, reduceMotion ? lerp(66, targetFov, 0.4) : targetFov, 4, dt);
     if (Math.abs(camera.fov - s.fov) > 0.01) {
       camera.fov = s.fov;

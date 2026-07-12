@@ -1,6 +1,6 @@
 "use client";
 
-import { Color } from "three/webgpu";
+import { Color, Vector4 } from "three/webgpu";
 import { uniform } from "three/tsl";
 import { BIOMES, biomeBlendAt, type BiomeSpec } from "../track/biomes";
 import type { SimWorld } from "../core/world";
@@ -61,6 +61,8 @@ export class EnvState {
   uAuroraB = uniform(new Color());
   uAuroraAmt = uniform(0.5);
   uHorizon = uniform(new Color());
+  uBiomeMix = uniform(new Vector4(1, 0, 0, 0));
+  uSkyEnergy = uniform(1);
   uFlash = uniform(0);
 
   // Terrain.
@@ -82,6 +84,17 @@ export class EnvState {
   uFlow = uniform(0);
   uDeath = uniform(0);
   uContrast = uniform(0);
+  uPostSaturation = uniform(1);
+  uPostContrast = uniform(1);
+  uTransition = uniform(0);
+  uImpact = uniform(0);
+  uNearMiss = uniform(0);
+  uNearMissSide = uniform(0);
+  uShieldPulse = uniform(0);
+  uBoostPulse = uniform(0);
+  uFlowPulse = uniform(0);
+  /** Set by the dynamic-resolution controller for secondary effects. */
+  uDrsScale = uniform(1);
 
   // Light (read on CPU too).
   lightColor = new Color();
@@ -94,16 +107,40 @@ export class EnvState {
   private flashV = 0;
   private nextStrike = 4;
   private rng: Rng = createRng("env-lightning");
-  private strikeListeners: ((i: number) => void)[] = [];
+  private transitionV = 0;
+  private impactV = 0;
+  private nearMissV = 0;
+  private nearMissSide = 0;
+  private shieldV = 0;
+  private boostV = 0;
+  private flowPulseV = 0;
 
   reduceFlash = false;
   highContrast = false;
 
-  onStrike(fn: (i: number) => void): () => void {
-    this.strikeListeners.push(fn);
-    return () => {
-      this.strikeListeners = this.strikeListeners.filter((f) => f !== fn);
-    };
+  triggerTransition(): void {
+    this.transitionV = 1;
+  }
+
+  triggerImpact(amount = 1): void {
+    this.impactV = Math.max(this.impactV, amount);
+  }
+
+  triggerNearMiss(precision: number, side: number): void {
+    this.nearMissV = Math.max(this.nearMissV, 0.45 + precision * 0.55);
+    this.nearMissSide = Math.sign(side);
+  }
+
+  triggerShield(amount = 1): void {
+    this.shieldV = Math.max(this.shieldV, amount);
+  }
+
+  triggerBoost(amount = 1): void {
+    this.boostV = Math.max(this.boostV, amount);
+  }
+
+  triggerFlow(amount = 1): void {
+    this.flowPulseV = Math.max(this.flowPulseV, amount);
   }
 
   update(world: SimWorld, dt: number, ambientScroll: number): void {
@@ -111,6 +148,10 @@ export class EnvState {
     const [ai, bi, t] = biomeBlendAt(dist);
     const A = BIOMES[ai], B = BIOMES[bi];
     const CA = biomeColors[ai], CB = biomeColors[bi];
+
+    this.uBiomeMix.value.set(0, 0, 0, 0);
+    this.uBiomeMix.value.setComponent(ai, 1 - t);
+    this.uBiomeMix.value.setComponent(bi, this.uBiomeMix.value.getComponent(bi) + t);
 
     lerpColor(this.uBody.value, CA.body, CB.body, t);
     lerpColor(this.uPrimary.value, CA.primary, CB.primary, t);
@@ -138,6 +179,9 @@ export class EnvState {
     this.uDispFreq.value = lerp(A.dispFreq, B.dispFreq, t);
     this.uReflectivity.value = lerp(A.reflectivity, B.reflectivity, t);
     this.uSparkle.value = lerp(A.name === "crystal" ? 1 : 0, B.name === "crystal" ? 1 : 0, t);
+    this.uSkyEnergy.value = lerp(A.skyEnergy, B.skyEnergy, t);
+    this.uPostSaturation.value = lerp(A.postSaturation, B.postSaturation, t);
+    this.uPostContrast.value = lerp(A.postContrast, B.postContrast, t);
     this.lightIntensity = lerp(A.lightIntensity, B.lightIntensity, t);
     this.ambient = lerp(A.ambient, B.ambient, t);
 
@@ -162,7 +206,7 @@ export class EnvState {
         const intensity = this.rng.range(0.5, 1);
         this.flashV = Math.max(this.flashV, intensity);
         this.nextStrike = this.rng.range(2.5, 8);
-        for (const fn of this.strikeListeners) fn(intensity);
+        world.events.emit("lightning", { intensity });
       }
     }
     this.flashV = Math.max(0, this.flashV - dt * 2.6);
@@ -170,7 +214,30 @@ export class EnvState {
     const pulse = this.flashV > 0.01
       ? this.flashV * (0.72 + 0.28 * Math.sin(this.flashV * 34))
       : 0;
-    this.uFlash.value = this.reduceFlash ? Math.min(pulse, 0.22) : pulse;
+
+    this.transitionV = Math.max(0, this.transitionV - dt * 0.72);
+    this.impactV = Math.max(0, this.impactV - dt * 2.4);
+    this.nearMissV = Math.max(0, this.nearMissV - dt * 3.8);
+    this.shieldV = Math.max(0, this.shieldV - dt * 2.1);
+    this.boostV = Math.max(0, this.boostV - dt * 3.4);
+    this.flowPulseV = Math.max(0, this.flowPulseV - dt * 1.5);
+    if (this.nearMissV <= 0) this.nearMissSide = 0;
+
+    this.uTransition.value = this.transitionV;
+    this.uImpact.value = this.impactV;
+    this.uNearMiss.value = this.nearMissV;
+    this.uNearMissSide.value = this.nearMissSide;
+    this.uShieldPulse.value = this.shieldV;
+    this.uBoostPulse.value = this.boostV;
+    this.uFlowPulse.value = this.flowPulseV;
+
+    const reactiveFlash = Math.max(
+      pulse,
+      this.impactV * 0.5,
+      this.shieldV * 0.18,
+      this.transitionV * 0.08,
+    );
+    this.uFlash.value = this.reduceFlash ? Math.min(reactiveFlash, 0.22) : reactiveFlash;
   }
 
   biomeLabelAt(dist: number): string {

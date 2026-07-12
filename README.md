@@ -39,6 +39,7 @@ Useful dev tools:
 
 - `npx tsx scripts/simtest.ts` — headless autopilot runs + determinism check
 - `npx tsx scripts/gentest.ts` — pattern validation rates and generation mix
+- `npm run test:graphics` — quality-tier render budget invariants
 - `?gl=webgl` URL param — force the WebGL2 backend
 
 ## Architecture
@@ -56,9 +57,10 @@ from rendering; React/R3F is a view layer reading interpolated sim state.
   every mutation — has a flyable path (worst-case envelopes for all moving
   obstacles) before it is accepted
 - `src/game/render/` — R3F components; all materials are TSL node materials
-  (terrain displacement, procedural sky, planar-reflection ocean, neon
-  fresnel obstacles, pooled particles, post chain: bloom, chromatic
-  aberration, vignette, grain, FXAA/SMAA)
+  (biome-specific terrain circuits and skies, horizon megastructures,
+  planar-reflection ocean, reactive premium materials, pooled spectacle
+  particles and lightning, selective bloom, cinematic grading, depth moments,
+  chromatic aberration, vignette, grain, FXAA/SMAA)
 - `src/game/audio/` — Tone.js generative music director (layered stems mixed
   by speed and flow tier) and synthesized SFX
 - `src/game/state/` — Zustand stores (transient game state; persisted
@@ -66,5 +68,8 @@ from rendering; React/R3F is a view layer reading interpolated sim state.
 - `src/ui/` — HUD and menu screens (Tailwind v4 + motion)
 
 Quality tiers (auto-detected via `detect-gpu`, overridable in settings) gate
-shadows, reflections, particle counts, AA mode and terrain density; a dynamic
-resolution scaler holds frame rate on weaker GPUs.
+shadows, sky detail, reflection and bloom resolution, premium post, particle
+counts, AA mode and terrain density. A dynamic resolution scaler also reduces
+secondary effect resolution while preserving the high-tier clarity floor.
+The optional FPS overlay exposes effective DPR/DRS, draw calls, triangles and
+post-processing CPU submission time for profiling.

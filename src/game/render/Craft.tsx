@@ -88,6 +88,7 @@ export function Craft() {
   const selectedCraft = useMeta((s) => s.selectedCraft);
   const selectedTrail = useMeta((s) => s.selectedTrail);
   const reduceMotion = useSettings((s) => s.reduceMotion);
+  const reduceFlash = useSettings((s) => s.reduceFlash);
   const design = CRAFTS.find((c) => c.id === selectedCraft) ?? CRAFTS[0];
   const trail = TRAILS.find((t) => t.id === selectedTrail) ?? TRAILS[0];
 
@@ -112,7 +113,11 @@ export function Craft() {
     hullMat.emissiveNode = Fn(() => {
       const fresnel = pow(saturate(float(1).sub(saturate(dot(normalView, positionViewDirection)))), 2.6);
       const pulse = sin(env.uTime.mul(5)).mul(0.1).add(0.95);
-      return tslColor(trimColor.getHex()).mul(fresnel).mul(pulse).mul(env.uBoost.mul(1.4).add(1));
+      return tslColor(trimColor.getHex())
+        .mul(fresnel)
+        .mul(pulse)
+        .mul(env.uBoost.mul(1.4).add(1))
+        .add(env.uAccent.mul(env.uFlowPulse).mul(0.38));
     })();
 
     // Hull: stretched octahedron dart.
@@ -157,7 +162,12 @@ export function Craft() {
       const flick = sin(env.uTime.mul(30)).mul(0.08).add(0.92);
       return tslColor(engineColor.getHex())
         .mul(flick)
-        .mul(env.uSpeedNorm.mul(1.4).add(env.uBoost.mul(2.2)).add(0.9));
+        .mul(
+          env.uSpeedNorm.mul(1.4)
+            .add(env.uBoost.mul(2.2))
+            .add(env.uBoostPulse.mul(1.4))
+            .add(0.9),
+        );
     })();
 
     for (const side of [-1, 1]) {
@@ -180,9 +190,12 @@ export function Craft() {
     shieldMat.colorNode = Fn(() => {
       const fresnel = pow(saturate(float(1).sub(saturate(dot(normalView, positionViewDirection)))), 3.2);
       const scan = sin(env.uTime.mul(14)).mul(0.12).add(0.88);
-      return env.uAccent.mul(fresnel).mul(scan).mul(1.1);
+      return env.uAccent
+        .mul(fresnel)
+        .mul(scan)
+        .mul(env.uShieldPulse.mul(reduceFlash ? 0.16 : 0.48).add(1.1));
     })();
-    shieldMat.opacityNode = float(0.5);
+    shieldMat.opacityNode = float(0.42).add(env.uShieldPulse.mul(reduceFlash ? 0.04 : 0.16));
     const shield = new THREE.Mesh(new THREE.IcosahedronGeometry(1.35, 2), shieldMat);
     shield.scale.setScalar(0.001);
     g.add(shield);
@@ -193,7 +206,7 @@ export function Craft() {
 
     return { group: g, engineLight: light, shieldMesh: shield };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [design.id, env]);
+  }, [design.id, env, reduceFlash]);
 
   const trails = useMemo(() => {
     const mat = new THREE.MeshBasicNodeMaterial();
@@ -202,8 +215,12 @@ export function Craft() {
     mat.depthWrite = false;
     mat.side = THREE.DoubleSide;
     const aT = attribute<"float">("aT", "float");
-    mat.colorNode = uTrailColor.mul(float(1).sub(aT).pow(1.4)).mul(uTrailBoost.mul(1.8).add(1.1));
-    mat.opacityNode = float(1).sub(aT).pow(1.6).mul(env.uSpeedNorm.mul(0.55).add(0.35));
+    mat.colorNode = uTrailColor
+      .mul(float(1).sub(aT).pow(1.4))
+      .mul(uTrailBoost.mul(1.65).add(env.uFlow.mul(0.45)).add(1.1));
+    mat.opacityNode = float(1).sub(aT).pow(1.6).mul(
+      env.uSpeedNorm.mul(0.55).add(env.uFlow.mul(0.16)).add(0.35),
+    );
 
     const left = new TrailRibbon();
     const right = new TrailRibbon();
@@ -215,13 +232,38 @@ export function Craft() {
   }, [env, uTrailColor, uTrailBoost]);
 
   const shieldAnim = useRef(0);
+  const shieldKick = useRef(0);
+  const trailFlash = useRef(0);
+  const deathSpin = useRef(new THREE.Vector3(2.3, 3.1, Math.PI * 2.4));
 
   useEffect(() => {
-    const off = world.events.on("runStart", () => {
-      trails.left.reset();
-      trails.right.reset();
-    });
-    return off;
+    const offs = [
+      world.events.on("runStart", () => {
+        trails.left.reset();
+        trails.right.reset();
+        trailFlash.current = 0;
+      }),
+      world.events.on("nearMiss", (event) => {
+        if (event.grade === "perfect") trailFlash.current = 1;
+      }),
+      world.events.on("boostStart", () => {
+        trailFlash.current = Math.max(trailFlash.current, 0.6);
+      }),
+      world.events.on("shieldPickup", () => {
+        shieldKick.current = 1;
+      }),
+      world.events.on("shieldBreak", () => {
+        shieldKick.current = -0.85;
+      }),
+      world.events.on("death", (event) => {
+        deathSpin.current.set(
+          event.obstacleKind === "ring" ? 1.2 : 2.3,
+          event.obstacleKind === "pillar" ? 4.2 : 3.1,
+          event.obstacleKind === "crystal" ? Math.PI * 3.1 : Math.PI * 2.4,
+        );
+      }),
+    ];
+    return () => offs.forEach((off) => off());
   }, [world, trails]);
 
   // Free GPU resources when a different craft design is selected.
@@ -237,6 +279,7 @@ export function Craft() {
   }, [group]);
 
   useFrame((_, dt) => {
+    const frameDt = Math.min(dt, 0.08);
     const idle = world.status === "idle";
     const dead = world.status === "dead";
     const dist = idle ? 0 : world.renderDistance;
@@ -250,16 +293,16 @@ export function Craft() {
       const motion = reduceMotion ? 0.28 : 1;
       group.position.set(x + world.latVel * t * 0.025, y + t * 1.2 * motion, t * 3.4);
       group.rotation.set(
-        -0.12 - t * 2.3 * motion,
-        -world.latVel * 0.006 + t * 3.1 * motion,
-        bank + t * Math.PI * 2.4 * motion,
+        -0.12 - t * deathSpin.current.x * motion,
+        -world.latVel * 0.006 + t * deathSpin.current.y * motion,
+        bank + t * deathSpin.current.z * motion,
       );
       group.scale.setScalar(1 - t * 0.18);
       group.visible = world.deathTimer < 1.08;
     } else {
       group.position.set(x, y, 0);
       group.rotation.set(
-        world.boosting ? -0.07 : 0.02 - world.speedNorm * 0.04,
+        0.02 - world.speedNorm * 0.04 - world.boostCharge * 0.09,
         -world.latVel * 0.006,
         bank,
       );
@@ -267,13 +310,18 @@ export function Craft() {
       group.visible = true;
     }
 
-    engineLight.intensity = 10 + world.speedNorm * 14 + world.boostCharge * 26;
-    uTrailBoost.value = world.boostCharge;
+    trailFlash.current = Math.max(0, trailFlash.current - frameDt * 3.4);
+    shieldKick.current += (0 - shieldKick.current) * Math.min(1, frameDt * 5.5);
+    engineLight.intensity =
+      10 + world.speedNorm * 14 + world.boostCharge * 26 + env.uBoostPulse.value * 12;
+    uTrailBoost.value =
+      world.boostCharge + env.uFlow.value * 0.25 + trailFlash.current * (reduceFlash ? 0.2 : 0.65);
 
     // Shield bubble scale animation.
     const target = world.hasShield ? 1 : 0;
     shieldAnim.current += (target - shieldAnim.current) * Math.min(1, dt * 8);
-    shieldMesh.scale.setScalar(Math.max(0.001, shieldAnim.current));
+    const shieldScale = shieldAnim.current * (1 + Math.max(0, shieldKick.current) * 0.18);
+    shieldMesh.scale.setScalar(Math.max(0.001, shieldScale));
 
     // Trails follow the engine pods.
     if (!dead) {
@@ -285,8 +333,10 @@ export function Craft() {
       trails.left.push(x + -off * c, podY + -off * s, dist - 0.55 * sz);
       trails.right.push(x + off * c, podY + off * s, dist - 0.55 * sz);
     }
-    trails.left.write(dist, 0.09 + world.boostCharge * 0.1);
-    trails.right.write(dist, 0.09 + world.boostCharge * 0.1);
+    const trailWidth =
+      0.09 + world.boostCharge * 0.1 + env.uFlow.value * 0.025 + trailFlash.current * 0.035;
+    trails.left.write(dist, trailWidth);
+    trails.right.write(dist, trailWidth);
   });
 
   return (

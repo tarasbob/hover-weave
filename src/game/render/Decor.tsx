@@ -6,7 +6,7 @@ import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
 import { TRACK } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
-import { biomeIndexAt } from "../track/biomes";
+import { BIOMES, biomeIndexAt } from "../track/biomes";
 import { createObstacleMaterial } from "./obstacleMaterial";
 
 /**
@@ -66,7 +66,7 @@ function groundSlot(i: number, side: number, biome: number): SlotDesc | null {
   const h1 = hash01(i * 7919 + 13);
   const h2 = hash01(i * 104729 + 29);
   const h3 = hash01(i * 6151 + 47);
-  if (h0 < 0.3) return null; // Leave gaps so it never reads as a wall.
+  if (h0 > BIOMES[biome].decorDensity) return null;
 
   const x = side * (48 + h1 * 125);
   const far = h1; // 0 near track .. 1 far out.
@@ -129,7 +129,7 @@ function floatSlot(i: number, biome: number): SlotDesc | null {
   const h1 = hash01(i * 12289 + 7);
   const h2 = hash01(i * 24593 + 3);
   const h3 = hash01(i * 49157 + 11);
-  if (h0 < 0.42) return null;
+  if (h0 > BIOMES[biome].decorDensity * 0.76) return null;
 
   const side = h1 < 0.5 ? -1 : 1;
   const x = side * (40 + h1 * 110);
@@ -181,7 +181,10 @@ export function Decor() {
       const attr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
       attr.setUsage(THREE.DynamicDrawUsage);
       geo.setAttribute("aData", attr);
-      const mat = createObstacleMaterial(env, attr, { emissiveBase: 0.12 });
+      const mat = createObstacleMaterial(env, attr, {
+        emissiveBase: 0.12,
+        profile: kind === "crystal" ? "crystal" : kind === "ring" ? "ring" : "metal",
+      });
       const mesh = new THREE.InstancedMesh(geo, mat, capacity);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -197,6 +200,10 @@ export function Decor() {
       make("ring", new THREE.TorusGeometry(1, 0.16, 10, 36), 48),
     ] as DecorPool[];
   }, [env]);
+  const poolByKind = useMemo(
+    () => new Map(pools.map((pool) => [pool.kind, pool])),
+    [pools],
+  );
 
   useEffect(() => {
     return () => {
@@ -213,7 +220,7 @@ export function Decor() {
     for (const p of pools) p.count = 0;
 
     const place = (slot: SlotDesc, s: number) => {
-      const pool = pools.find((p) => p.kind === slot.kind);
+      const pool = poolByKind.get(slot.kind);
       if (!pool || pool.count >= pool.capacity) return;
       const ahead = s - dist;
       const grow = smoothstep(TRACK.MATERIALIZE_START, TRACK.MATERIALIZE_END, ahead);

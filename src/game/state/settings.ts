@@ -10,10 +10,16 @@ export type QualityTier = 0 | 1 | 2;
 export interface QualityConfig {
   shadows: boolean;
   shadowMapSize: number;
+  shadowRadius: number;
+  shadowNormalBias: number;
   reflections: boolean;
+  reflectionScale: number;
   terrainSegments: [number, number];
+  skyDetail: 0 | 1 | 2;
   maxParticles: number;
   bloomQuality: number;
+  bloomResolutionScale: number;
+  premiumPost: boolean;
   aa: "none" | "fxaa" | "smaa";
   msaaSamples: 0 | 4;
   maxDpr: number;
@@ -24,10 +30,16 @@ export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
   0: {
     shadows: false,
     shadowMapSize: 512,
+    shadowRadius: 0,
+    shadowNormalBias: 0.02,
     reflections: false,
+    reflectionScale: 0,
     terrainSegments: [96, 72],
+    skyDetail: 0,
     maxParticles: 384,
     bloomQuality: 0.5,
+    bloomResolutionScale: 0.3,
+    premiumPost: false,
     aa: "fxaa",
     msaaSamples: 0,
     maxDpr: 1.25,
@@ -36,10 +48,16 @@ export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
   1: {
     shadows: true,
     shadowMapSize: 1024,
+    shadowRadius: 2,
+    shadowNormalBias: 0.015,
     reflections: true,
+    reflectionScale: 0.42,
     terrainSegments: [160, 120],
+    skyDetail: 1,
     maxParticles: 768,
     bloomQuality: 0.75,
+    bloomResolutionScale: 0.42,
+    premiumPost: false,
     aa: "fxaa",
     msaaSamples: 0,
     maxDpr: 1.75,
@@ -48,10 +66,16 @@ export const QUALITY_CONFIGS: Record<QualityTier, QualityConfig> = {
   2: {
     shadows: true,
     shadowMapSize: 2048,
+    shadowRadius: 3,
+    shadowNormalBias: 0.012,
     reflections: true,
+    reflectionScale: 0.65,
     terrainSegments: [224, 168],
+    skyDetail: 2,
     maxParticles: 1280,
     bloomQuality: 1,
+    bloomResolutionScale: 0.55,
+    premiumPost: true,
     aa: "smaa",
     msaaSamples: 4,
     maxDpr: 2,

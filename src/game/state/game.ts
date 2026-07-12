@@ -40,6 +40,15 @@ export interface RunOutcome {
   unlocked: { kind: "craft" | "trail"; id: string; name: string }[];
 }
 
+export interface GraphicsStats {
+  dpr: number;
+  drsScale: number;
+  drawCalls: number;
+  triangles: number;
+  textures: number;
+  postCpuMs: number;
+}
+
 interface GameState {
   phase: GamePhase;
   mode: GameMode;
@@ -51,6 +60,7 @@ interface GameState {
   overlay: "none" | "hangar" | "settings" | "help";
   webgpu: boolean | null;
   fps: number;
+  graphics: GraphicsStats;
   setPhase(p: GamePhase): void;
   setMode(m: GameMode): void;
   setHud(h: HudSnapshot): void;
@@ -61,6 +71,7 @@ interface GameState {
   setOverlay(o: GameState["overlay"]): void;
   setWebgpu(v: boolean): void;
   setFps(v: number): void;
+  setGraphics(v: Partial<GraphicsStats>): void;
 }
 
 export const useGame = create<GameState>((set) => ({
@@ -78,6 +89,14 @@ export const useGame = create<GameState>((set) => ({
   overlay: "none",
   webgpu: null,
   fps: 0,
+  graphics: {
+    dpr: 1,
+    drsScale: 1,
+    drawCalls: 0,
+    triangles: 0,
+    textures: 0,
+    postCpuMs: 0,
+  },
   setPhase: (phase) => set({ phase }),
   setMode: (mode) => set({ mode }),
   setHud: (hud) => set({ hud }),
@@ -89,4 +108,6 @@ export const useGame = create<GameState>((set) => ({
   setOverlay: (overlay) => set({ overlay }),
   setWebgpu: (webgpu) => set({ webgpu }),
   setFps: (fps) => set({ fps }),
+  setGraphics: (graphics) =>
+    set((state) => ({ graphics: { ...state.graphics, ...graphics } })),
 }));

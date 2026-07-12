@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:game": "tsx scripts/gentest.ts && tsx scripts/simtest.ts",
-    "test": "npm run test:game"
+    "test:graphics": "tsx scripts/graphicstest.ts",
+    "test": "npm run test:game && npm run test:graphics"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",

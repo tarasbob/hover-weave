@@ -14,6 +14,7 @@ export function Hud() {
   const callout = useGame((s) => s.callout);
   const skillMoment = useGame((s) => s.skillMoment);
   const fps = useGame((s) => s.fps);
+  const graphics = useGame((s) => s.graphics);
   const showFps = useSettings((s) => s.showFps);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const bestScore = useMeta((s) => s.bestScore);
@@ -81,7 +82,15 @@ export function Hud() {
         <div className="mt-1 text-[11px] tabular-nums text-white/40">
           BEST {bestScore.toLocaleString()}
         </div>
-        {showFps && <div className="mt-1 text-[11px] tabular-nums text-emerald-300/80">{fps} FPS</div>}
+        {showFps && (
+          <div className="mt-1 font-mono text-[10px] tabular-nums text-emerald-300/80">
+            <div>{fps} FPS · DPR {graphics.dpr.toFixed(2)} · DRS {graphics.drsScale.toFixed(2)}</div>
+            <div>
+              {graphics.drawCalls} calls · {(graphics.triangles / 1000).toFixed(0)}k tris ·{" "}
+              {graphics.textures} tex · {graphics.postCpuMs.toFixed(2)}ms post
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Distance + speed */}
@@ -173,6 +182,9 @@ function CalloutToast({ text, sub, at }: { text?: string; sub?: string; at?: num
     <AnimatePresence>
       {visible && text && (
         <motion.div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
           initial={{ opacity: 0, y: 18, scale: 0.92 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -14, scale: 1.04 }}
@@ -215,6 +227,9 @@ function SkillMomentToast({
     <AnimatePresence>
       {visible && moment && (
         <motion.div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
           initial={{ opacity: 0, y: 8, scale: 0.94 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -10, scale: 1.03 }}

@@ -36,6 +36,15 @@ export interface BiomeSpec {
   lightIntensity: number;
   ambient: number;
   lightning: boolean;
+  /** Probability that a deterministic scenery slot is populated. */
+  decorDensity: number;
+  /** Extra energy for biome-specific sky features. */
+  skyEnergy: number;
+  /** Cinematic post-grade controls, blended through transitions. */
+  postSaturation: number;
+  postContrast: number;
+  /** Scale multiplier for distant megastructures. */
+  landmarkScale: number;
 }
 
 export const BIOMES: BiomeSpec[] = [
@@ -71,6 +80,11 @@ export const BIOMES: BiomeSpec[] = [
     lightIntensity: 1.5,
     ambient: 0.5,
     lightning: false,
+    decorDensity: 0.78,
+    skyEnergy: 1.08,
+    postSaturation: 1.12,
+    postContrast: 1.06,
+    landmarkScale: 1.05,
   },
   {
     name: "ocean",
@@ -104,6 +118,11 @@ export const BIOMES: BiomeSpec[] = [
     lightIntensity: 1.6,
     ambient: 0.55,
     lightning: false,
+    decorDensity: 0.7,
+    skyEnergy: 0.95,
+    postSaturation: 1.04,
+    postContrast: 1.02,
+    landmarkScale: 0.9,
   },
   {
     name: "storm",
@@ -137,6 +156,11 @@ export const BIOMES: BiomeSpec[] = [
     lightIntensity: 1.15,
     ambient: 0.4,
     lightning: true,
+    decorDensity: 0.66,
+    skyEnergy: 1.12,
+    postSaturation: 0.94,
+    postContrast: 1.16,
+    landmarkScale: 1.12,
   },
   {
     name: "void",
@@ -170,6 +194,11 @@ export const BIOMES: BiomeSpec[] = [
     lightIntensity: 1.2,
     ambient: 0.42,
     lightning: false,
+    decorDensity: 0.52,
+    skyEnergy: 1.25,
+    postSaturation: 1.16,
+    postContrast: 1.12,
+    landmarkScale: 1.3,
   },
 ];
 

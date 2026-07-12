@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import {
   Fn,
@@ -27,16 +28,16 @@ import { useGameBundle } from "../GameController";
  * Uses three's ReflectorNode; opacity follows the biome's reflectivity so it
  * fades in/out through transitions and reads as wet sheen elsewhere.
  */
-export function Ocean() {
+export function Ocean({ resolutionScale }: { resolutionScale: number }) {
   const { env } = useGameBundle();
 
-  const group = useMemo(() => {
+  const { group, reflection } = useMemo(() => {
     const g = new THREE.Group();
 
-    const reflection = reflector({ resolutionScale: 0.5 });
-    reflection.target.rotateX(-Math.PI / 2);
-    reflection.target.position.y = 0.05;
-    g.add(reflection.target);
+    const reflectionNode = reflector({ resolutionScale });
+    reflectionNode.target.rotateX(-Math.PI / 2);
+    reflectionNode.target.position.y = 0.05;
+    g.add(reflectionNode.target);
 
     // Ripple distortion on the reflection UVs.
     const ripple = Fn(() => {
@@ -45,7 +46,7 @@ export function Ocean() {
       const n2 = mx_noise_float(vec3(p.mul(2.7), env.uTime.mul(0.8).add(9)));
       return vec2(n1, n2).mul(0.022);
     })();
-    reflection.uvNode = reflection.uvNode!.add(ripple);
+    reflectionNode.uvNode = reflectionNode.uvNode!.add(ripple);
 
     const mat = new THREE.MeshBasicNodeMaterial();
     mat.transparent = true;
@@ -55,11 +56,16 @@ export function Ocean() {
       const view = normalize(cameraPosition.sub(positionWorld));
       const fresnel = pow(saturate(float(1).sub(view.y)), 2.4).mul(0.75).add(0.25);
       const deep = mix(env.uTerrainA, env.uTerrainB, 0.35);
-      const refl = reflection.rgb;
+      const refl = reflectionNode.rgb;
       const col = mix(deep, refl, fresnel.mul(0.85));
       // Faint scrolling wave bands for motion when reflections are subtle.
-      const band = sin(positionWorld.z.add(env.uScroll).mul(0.6).add(env.uTime.mul(2))).mul(0.5).add(0.5);
-      return col.add(env.uAccent.mul(band).mul(0.045));
+      const bandSpeed = env.uSpeedNorm.mul(1.8).add(2);
+      const band = sin(
+        positionWorld.z.add(env.uScroll).mul(0.6).add(env.uTime.mul(bandSpeed)),
+      ).mul(0.5).add(0.5);
+      return col
+        .add(env.uAccent.mul(band).mul(0.07))
+        .add(env.uPrimary.mul(env.uTransition).mul(0.12));
     })();
 
     // Fade at the strip's outer edges + biome-driven visibility.
@@ -75,8 +81,27 @@ export function Ocean() {
     mesh.frustumCulled = false;
     mesh.renderOrder = -1;
     g.add(mesh);
-    return g;
-  }, [env]);
+    return { group: g, reflection: reflectionNode };
+  }, [env, resolutionScale]);
+
+  useFrame(() => {
+    reflection.reflector.resolutionScale = Math.max(
+      0.22,
+      resolutionScale * env.uDrsScale.value,
+    );
+  });
+
+  useEffect(() => {
+    return () => {
+      reflection.dispose();
+      group.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.geometry.dispose();
+          (object.material as THREE.Material).dispose();
+        }
+      });
+    };
+  }, [group, reflection]);
 
   return <primitive object={group} />;
 }

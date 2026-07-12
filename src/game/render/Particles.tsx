@@ -88,6 +88,8 @@ export function Particles({ max }: { max: number }) {
     };
   }, [sys]);
 
+  const emit = useMemo(() => ({ ember: 0, streak: 0, mote: 0, magnet: 0 }), []);
+
   // --- Event-driven bursts -------------------------------------------------
   useEffect(() => {
     const c = new THREE.Color();
@@ -97,7 +99,8 @@ export function Particles({ max }: { max: number }) {
       world.events.on("nearMiss", (e) => {
         c.copy(env.uWarn.value);
         const gradeCount = e.grade === "perfect" ? 24 : e.grade === "razor" ? 16 : 10;
-        const count = Math.max(4, Math.round(gradeCount * burstScale));
+        const chainBonus = Math.min(16, Math.max(0, e.chain - 1) * 3);
+        const count = Math.max(4, Math.round((gradeCount + chainBonus) * burstScale));
         const energy = reduceFlash ? 1.35 : 2 + e.precision * 0.7;
         for (let i = 0; i < count; i++) {
           sys.spawn({
@@ -146,6 +149,98 @@ export function Particles({ max }: { max: number }) {
           });
         }
       }),
+      world.events.on("shieldPickup", () => {
+        c.copy(env.uWarn.value);
+        const count = Math.max(6, Math.round(18 * burstScale));
+        for (let i = 0; i < count; i++) {
+          const ang = (i / count) * Math.PI * 2;
+          sys.spawn({
+            x: world.x + Math.cos(ang) * 0.7,
+            y: CRAFT.HOVER_HEIGHT + Math.sin(ang) * 0.45,
+            s: world.distance,
+            vx: Math.cos(ang) * rng.range(1.5, 4),
+            vy: rng.range(2, 7),
+            vs: Math.sin(ang) * rng.range(1, 4),
+            grav: -4,
+            drag: 2.1,
+            life: rng.range(0.45, 0.9),
+            size0: rng.range(0.08, 0.2),
+            size1: 0.01,
+            r: c.r * 2.4 * brightness,
+            g: c.g * 2.4 * brightness,
+            b: c.b * 2.4 * brightness,
+          });
+        }
+      }),
+      world.events.on("boostStart", () => {
+        c.copy(env.uAccent.value);
+        const count = Math.max(6, Math.round(16 * burstScale));
+        for (let i = 0; i < count; i++) {
+          const ang = (i / count) * Math.PI * 2;
+          sys.spawn({
+            x: world.x + Math.cos(ang) * 0.55,
+            y: CRAFT.HOVER_HEIGHT + Math.sin(ang) * 0.25,
+            s: world.distance - 0.7,
+            vx: Math.cos(ang) * rng.range(1, 4),
+            vy: Math.sin(ang) * rng.range(1, 3),
+            vs: rng.range(-18, -8),
+            drag: 1.2,
+            life: rng.range(0.28, 0.55),
+            size0: rng.range(0.07, 0.18),
+            size1: 0.01,
+            r: c.r * 2.8 * brightness,
+            g: c.g * 2.8 * brightness,
+            b: c.b * 2.8 * brightness,
+          });
+        }
+      }),
+      world.events.on("boostEnd", () => {
+        emit.ember = Math.min(emit.ember, 0.25);
+      }),
+      world.events.on("flowTier", (event) => {
+        if (event.tier <= event.prev) return;
+        c.copy(env.uPrimary.value);
+        const count = Math.max(8, Math.round((10 + event.tier * 4) * burstScale));
+        for (let i = 0; i < count; i++) {
+          sys.spawn({
+            x: world.x + rng.range(-1.2, 1.2),
+            y: CRAFT.HOVER_HEIGHT + rng.range(-0.2, 0.5),
+            s: world.distance + rng.range(-1, 1),
+            vx: rng.range(-6, 6),
+            vy: rng.range(3, 11),
+            vs: rng.range(-10, 3),
+            grav: -8,
+            drag: 1.8,
+            life: rng.range(0.45, 0.9),
+            size0: rng.range(0.07, 0.2),
+            size1: 0.01,
+            r: c.r * 2.2 * brightness,
+            g: c.g * 2.2 * brightness,
+            b: c.b * 2.2 * brightness,
+          });
+        }
+      }),
+      world.events.on("lightning", ({ intensity }) => {
+        c.copy(env.uWarn.value);
+        const count = Math.max(4, Math.round(14 * burstScale * intensity));
+        for (let i = 0; i < count; i++) {
+          sys.spawn({
+            x: world.x + rng.range(-28, 28),
+            y: rng.range(5, 16),
+            s: world.distance + rng.range(35, 140),
+            vy: rng.range(-18, -8),
+            kind: 1,
+            stretch: rng.range(5, 11),
+            life: rng.range(0.25, 0.55),
+            size0: rng.range(0.02, 0.05),
+            size1: 0.01,
+            r: c.r * 1.8 * brightness,
+            g: c.g * 1.8 * brightness,
+            b: c.b * 1.8 * brightness,
+            a: 0.65,
+          });
+        }
+      }),
       world.events.on("death", () => {
         const count = Math.max(18, Math.round(70 * burstScale));
         for (let i = 0; i < count; i++) {
@@ -180,10 +275,9 @@ export function Particles({ max }: { max: number }) {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [world, env, sys, reduceMotion, reduceFlash]);
+  }, [world, env, sys, emit, reduceMotion, reduceFlash]);
 
   // --- Per-frame: continuous emitters + simulation --------------------------
-  const emit = useMemo(() => ({ ember: 0, streak: 0, mote: 0 }), []);
   const _q = new THREE.Quaternion();
   const _m = new THREE.Matrix4();
   const _p = new THREE.Vector3();
@@ -213,6 +307,35 @@ export function Particles({ max }: { max: number }) {
       }
     }
 
+    // Magnetic collection wakes make shards visibly arc toward the craft.
+    if (running && !reduceMotion) {
+      const seeking = world.pickups.filter(
+        (pickup) => pickup.active && pickup.type === "shard" && pickup.seeking,
+      );
+      emit.magnet += dt * Math.min(36, seeking.length * 14);
+      while (emit.magnet >= 1 && seeking.length > 0) {
+        emit.magnet -= 1;
+        const pickup = seeking[Math.floor(rng.next() * seeking.length)];
+        const c = env.uAccent.value;
+        sys.spawn({
+          x: pickup.x + rng.range(-0.1, 0.1),
+          y: pickup.y + rng.range(-0.1, 0.1),
+          s: pickup.s,
+          vx: (world.x - pickup.x) * 1.4,
+          vy: (CRAFT.HOVER_HEIGHT - pickup.y) * 1.4,
+          vs: (world.distance - pickup.s) * 1.4,
+          drag: 4.5,
+          life: rng.range(0.18, 0.34),
+          size0: rng.range(0.035, 0.075),
+          size1: 0.01,
+          r: c.r * 2.2,
+          g: c.g * 2.2,
+          b: c.b * 2.2,
+          a: 0.8,
+        });
+      }
+    }
+
     // Speed streaks (stronger with speed/flow/boost).
     if (running) {
       const rate = 6 + world.speedNorm * 26 + world.boostCharge * 60 + world.flowTier * 4;
@@ -225,13 +348,21 @@ export function Particles({ max }: { max: number }) {
           vs: 0, kind: 1, stretch: rng.range(6, 16),
           life: rng.range(0.8, 1.6),
           size0: rng.range(0.02, 0.05), size1: 0.02,
-          r: 0.6, g: 0.75, b: 1, a: 0.5 + world.boostCharge * 0.5,
+          r: env.uAccent.value.r * 1.45,
+          g: env.uAccent.value.g * 1.45,
+          b: env.uAccent.value.b * 1.45,
+          a: 0.5 + world.boostCharge * 0.5,
         });
       }
     }
 
     // Ambient motes drifting near the ground.
-    emit.mote += dt * (reduceMotion ? 3 : 10);
+    const biomeMotes =
+      env.uBiomeMix.value.x * 1.15 +
+      env.uBiomeMix.value.y * 0.72 +
+      env.uBiomeMix.value.z * 0.5 +
+      env.uBiomeMix.value.w * 1.35;
+    emit.mote += dt * (reduceMotion ? 3 : 10) * biomeMotes;
     while (emit.mote >= 1) {
       emit.mote -= 1;
       const c = env.uAccent.value;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
 import { POOL_SIZES, TRACK } from "../core/constants";
@@ -10,6 +10,15 @@ import type { Obstacle, ObstacleKind } from "../core/types";
 import { createObstacleMaterial } from "./obstacleMaterial";
 
 const ROLE_INDEX: Record<string, number> = { primary: 0, accent: 1, warn: 2, dim: 3 };
+const SETPIECE_IDS = new Set([
+  "monolithKeyhole",
+  "colossalArch",
+  "gravityWell",
+  "closingCanyon",
+  "breathingRings",
+  "turbineField",
+  "apexGauntlet",
+]);
 
 interface KindPool {
   kind: ObstacleKind;
@@ -31,6 +40,7 @@ const _e = new THREE.Euler();
  */
 export function ObstacleField({ shadows }: { shadows: boolean }) {
   const { world, env } = useGameBundle();
+  const nearFlash = useRef({ x: 0, s: 0, value: 0 });
 
   const pools = useMemo(() => {
     const make = (kind: ObstacleKind, geo: THREE.BufferGeometry, capacity: number, castShadow: boolean): KindPool => {
@@ -39,6 +49,7 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
       geo.setAttribute("aData", attr);
       const mat = createObstacleMaterial(env, attr, {
         emissiveBase: kind === "ring" ? 0.5 : 0.05,
+        profile: kind === "crystal" ? "crystal" : kind === "ring" ? "ring" : "metal",
       });
       const mesh = new THREE.InstancedMesh(geo, mat, capacity);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -77,15 +88,26 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
     };
   }, [pools]);
 
-  useFrame(() => {
+  useEffect(() => {
+    return world.events.on("nearMiss", (event) => {
+      nearFlash.current = {
+        x: event.x,
+        s: event.s,
+        value: 0.65 + event.precision * 0.85,
+      };
+    });
+  }, [world]);
+
+  useFrame((_, rawDt) => {
     const dist = world.renderDistance;
+    nearFlash.current.value = Math.max(0, nearFlash.current.value - Math.min(rawDt, 0.08) * 4.2);
     for (const p of pools) p.count = 0;
 
     for (const o of world.obstacles) {
       if (!o.active) continue;
       const pool = poolByKind.get(o.kind) ?? pools[0];
       if (pool.count >= pool.capacity) continue;
-      writeInstance(pool, pool.count++, o, dist);
+      writeInstance(pool, pool.count++, o, dist, nearFlash.current);
     }
 
     for (const p of pools) {
@@ -104,7 +126,13 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
   );
 }
 
-function writeInstance(pool: KindPool, i: number, o: Obstacle, dist: number): void {
+function writeInstance(
+  pool: KindPool,
+  i: number,
+  o: Obstacle,
+  dist: number,
+  nearFlash: { x: number; s: number; value: number },
+): void {
   const ahead = o.cs - dist;
   const z = -ahead;
   _p.set(o.cx, o.cy, z);
@@ -141,5 +169,11 @@ function writeInstance(pool: KindPool, i: number, o: Obstacle, dist: number): vo
   _q.setFromEuler(_e);
   _m.compose(_p, _q, _s);
   pool.mesh.setMatrixAt(i, _m);
-  pool.attr.setXY(i, ROLE_INDEX[o.role] ?? 0, o.glow);
+  const isNearFlash =
+    nearFlash.value > 0 &&
+    Math.abs(o.cs - nearFlash.s) < Math.max(3, o.hs + 1.5) &&
+    Math.abs(o.cx - nearFlash.x) < Math.max(4, o.hx + 2);
+  const setpieceGlow = SETPIECE_IDS.has(o.patternId) ? 1.3 : 1;
+  const reactiveGlow = isNearFlash ? nearFlash.value * 2.1 : 0;
+  pool.attr.setXY(i, ROLE_INDEX[o.role] ?? 0, o.glow * setpieceGlow + reactiveGlow);
 }

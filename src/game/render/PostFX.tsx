@@ -6,24 +6,31 @@ import * as THREE from "three/webgpu";
 import {
   distance,
   float,
+  luminance,
   mix,
   nodeObject,
   pass,
+  pow,
   renderOutput,
+  saturate,
   screenUV,
   smoothstep,
   uniform,
   vec2,
   vec3,
+  vec4,
 } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { chromaticAberration } from "three/addons/tsl/display/ChromaticAberrationNode.js";
 import { film } from "three/addons/tsl/display/FilmNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
 import { smaa } from "three/addons/tsl/display/SMAANode.js";
+import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
 import { useGameBundle } from "../GameController";
 import { damp } from "../core/mathUtils";
+import { useGame } from "../state/game";
 import { useSettings } from "../state/settings";
+import type { NodeAny } from "./tsl-utils";
 
 /**
  * WebGPU-native post chain: bloom, speed-driven chromatic aberration,
@@ -33,11 +40,15 @@ import { useSettings } from "../state/settings";
 export function PostFX({
   aa,
   bloomQuality,
+  bloomResolutionScale,
   msaaSamples,
+  premiumPost,
 }: {
   aa: "none" | "fxaa" | "smaa";
   bloomQuality: number;
+  bloomResolutionScale: number;
   msaaSamples: 0 | 4;
+  premiumPost: boolean;
 }) {
   const { world, env } = useGameBundle();
   const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
@@ -49,6 +60,8 @@ export function PostFX({
 
   const uCA = useMemo(() => uniform(0.6), []);
   const uVignette = useMemo(() => uniform(0.62), []);
+  const uMotionBlur = useMemo(() => uniform(0), []);
+  const uShafts = useMemo(() => uniform(0), []);
 
   const setup = useMemo(() => {
     // r18x renamed PostProcessing to RenderPipeline; support both.
@@ -64,21 +77,72 @@ export function PostFX({
       samples: msaaSamples,
     });
     const color = scenePass.getTextureNode("output");
+    let sceneColor: NodeAny = color;
 
-    const bloomNode = bloom(color, 0.85, 0.42, 0.82);
+    if (premiumPost) {
+      // Subtle radial accumulation sells boost speed while retaining a sharp base.
+      const radial = screenUV.sub(vec2(0.5));
+      const sampleA = color.sample(screenUV.sub(radial.mul(uMotionBlur.mul(0.012))));
+      const sampleB = color.sample(screenUV.sub(radial.mul(uMotionBlur.mul(0.024))));
+      sceneColor = color.mul(0.64).add(sampleA.mul(0.24)).add(sampleB.mul(0.12));
+    }
 
-    const withBloom = color.add(bloomNode);
+    // Extract only the luminous HDR regions so neon blooms without washing fog.
+    const brightMask = pow(
+      smoothstep(0.38, 1.15, luminance(sceneColor.rgb)),
+      0.82,
+    );
+    const bloomInput = nodeObject(sceneColor.mul(brightMask));
+    const bloomNode = bloom(
+      bloomInput,
+      0.85,
+      0.42,
+      0.68 + (1 - bloomQuality) * 0.12,
+    );
+    bloomNode.smoothWidth.value = 0.1;
+    bloomNode.setResolutionScale(bloomResolutionScale);
+
+    const withBloom = sceneColor.add(bloomNode);
     // Note: center must be explicit — the addon crashes on its null default.
-    const ca = nodeObject(
-      chromaticAberration(withBloom, uCA, vec2(0.5, 0.5), float(1.06)) as unknown as ReturnType<typeof float>,
+    const ca: NodeAny = nodeObject(
+      chromaticAberration(withBloom, uCA, vec2(0.5, 0.5), float(1.06)) as NodeAny,
     );
 
-    // Vignette + subtle edge glow tint driven by boost.
+    // Biome-aware cinematic grade, then vignette and reactive edge tint.
     const d = distance(screenUV, vec2(0.5));
     const vig = float(1).sub(smoothstep(0.34, 1, d.mul(uVignette.add(0.4))));
-    const graded = ca
-      .mul(mix(vec3(0.3, 0.28, 0.4), vec3(1), vig))
-      .add(env.uAccent.mul(env.uBoost).mul(smoothstep(0.4, 0.9, d)).mul(0.12));
+    const luma = luminance(ca.rgb);
+    const saturated = mix(vec3(luma), ca.rgb, env.uPostSaturation);
+    const contrasted = saturated
+      .sub(vec3(0.18))
+      .mul(env.uPostContrast.add(env.uContrast.mul(0.08)))
+      .add(vec3(0.18));
+    const shadowTint = float(1).sub(smoothstep(0.12, 0.58, luma));
+    const highlightTint = smoothstep(0.5, 1.15, luma);
+    let graded: NodeAny = vec4(
+      contrasted
+        .add(env.uFogColor.mul(shadowTint).mul(0.075))
+        .add(env.uAccent.mul(highlightTint).mul(0.045))
+        .mul(mix(vec3(0.3, 0.28, 0.4), vec3(1), vig))
+        .add(env.uAccent.mul(env.uBoost).mul(smoothstep(0.4, 0.9, d)).mul(0.12))
+        .add(env.uPrimary.mul(env.uNearMiss).mul(0.035)),
+      ca.a,
+    );
+
+    if (premiumPost) {
+      // A cheap, stable light-shaft impression around the coherent sky source.
+      const shaftDistance = distance(screenUV, vec2(0.72, 0.22));
+      const shaft = pow(saturate(float(1).sub(shaftDistance.mul(1.7))), 3.4)
+        .mul(uShafts);
+      graded = vec4(graded.rgb.add(env.uHorizon.mul(shaft).mul(0.32)), graded.a);
+      graded = dof(
+        graded,
+        scenePass.getViewZNode(),
+        14,
+        28,
+        env.uDeath.mul(1.25),
+      );
+    }
 
     if (aa === "smaa") {
       // SMAA expects tone-mapped linear input, before conversion to sRGB.
@@ -94,22 +158,43 @@ export function PostFX({
     }
 
     return { post, bloomNode };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [renderer, scene, camera, aa, bloomQuality, msaaSamples, env, uCA, uVignette]);
+  }, [
+    renderer,
+    scene,
+    camera,
+    aa,
+    bloomQuality,
+    bloomResolutionScale,
+    msaaSamples,
+    premiumPost,
+    env,
+    uCA,
+    uMotionBlur,
+    uShafts,
+    uVignette,
+  ]);
 
   useEffect(() => {
     return () => setup.post.dispose();
   }, [setup]);
 
   const caSmooth = useRef(0.5);
+  const motionSmooth = useRef(0);
+  const postMs = useRef(0);
+  const telemetryFrame = useRef(0);
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.08);
     // Bloom breathes with flow, spikes on boost and lightning.
     setup.bloomNode.strength.value =
       (0.72 + env.uFlow.value * 0.45 + world.boostCharge * 0.55 +
-        env.uFlash.value * (reduceFlash ? 0.1 : 0.4)) * bloomQuality;
+        env.uFlash.value * (reduceFlash ? 0.1 : 0.4) +
+        env.uFlowPulse.value * 0.24 +
+        env.uShieldPulse.value * 0.12) * bloomQuality;
     setup.bloomNode.radius.value = 0.4 + world.boostCharge * (reduceMotion ? 0.08 : 0.25);
+    setup.bloomNode.setResolutionScale(
+      Math.max(0.22, bloomResolutionScale * env.uDrsScale.value),
+    );
 
     const caScale = reduceMotion ? 0.28 : highContrast ? 0.35 : 1;
     const targetCA =
@@ -117,8 +202,24 @@ export function PostFX({
     caSmooth.current = damp(caSmooth.current, targetCA, 6, dt);
     uCA.value = caSmooth.current;
     uVignette.value = 0.6 + world.boostCharge * 0.3 + env.uDeath.value * 0.5;
+    const motionTarget = reduceMotion
+      ? 0
+      : Math.max(0, world.speedNorm - 0.45) * 0.45 + world.boostCharge * 0.8;
+    motionSmooth.current = damp(motionSmooth.current, motionTarget, 5, dt);
+    uMotionBlur.value = motionSmooth.current;
+    uShafts.value =
+      (0.28 + env.uTransition.value * 0.55 + env.uFlash.value * 0.75) *
+      env.uSkyEnergy.value *
+      (reduceFlash ? 0.35 : 1);
 
+    const started = performance.now();
     setup.post.render();
+    postMs.current = postMs.current * 0.9 + (performance.now() - started) * 0.1;
+    telemetryFrame.current++;
+    if (telemetryFrame.current >= 12) {
+      telemetryFrame.current = 0;
+      useGame.getState().setGraphics({ postCpuMs: postMs.current });
+    }
   }, 1);
 
   return null;

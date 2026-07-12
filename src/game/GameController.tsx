@@ -96,6 +96,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const { world, audio, env } = bundle;
     const offs: (() => void)[] = [
       world.events.on("death", () => {
+        env.triggerImpact(1);
         audio.death();
         const g = useGame.getState();
         const meta = useMeta.getState();
@@ -124,6 +125,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         g.setPhase("dead");
       }),
       world.events.on("nearMiss", (e) => {
+        env.triggerNearMiss(e.precision, e.x - world.x);
         audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision);
         const label =
           e.grade === "perfect" ? "PERFECT PASS" : e.grade === "razor" ? "RAZOR PASS" : "CLOSE PASS";
@@ -143,20 +145,36 @@ export function GameProvider({ children }: { children: ReactNode }) {
           );
         }
       }),
-      world.events.on("shieldPickup", () => audio.shieldPickup()),
-      world.events.on("shieldBreak", () => audio.shieldBreak()),
-      world.events.on("boostStart", () => audio.boostStart()),
+      world.events.on("shieldPickup", () => {
+        env.triggerShield(1);
+        audio.shieldPickup();
+      }),
+      world.events.on("shieldBreak", () => {
+        env.triggerShield(0.7);
+        env.triggerImpact(0.55);
+        audio.shieldBreak();
+      }),
+      world.events.on("boostStart", () => {
+        env.triggerBoost(1);
+        audio.boostStart();
+      }),
+      world.events.on("boostEnd", () => env.triggerBoost(0.45)),
       world.events.on("flowTier", (e) => {
-        if (e.tier > e.prev) audio.flowTierUp(e.tier);
+        if (e.tier > e.prev) {
+          env.triggerFlow(Math.min(1.4, 0.7 + e.tier * 0.12));
+          audio.flowTierUp(e.tier);
+          if (e.tier >= 2) useGame.getState().setCallout(`FLOW ${e.tier}`, "WORLD SYNC");
+        }
       }),
       world.events.on("setpiece", (e) => useGame.getState().setCallout(e.name)),
       world.events.on("biome", (e) => {
         if (e.index > 0) {
+          env.triggerTransition();
           audio.biome(e.index);
           useGame.getState().setCallout(e.name, "NEW SECTOR");
         }
       }),
-      env.onStrike((i) => audio.thunderClap(i)),
+      world.events.on("lightning", (e) => audio.thunderClap(e.intensity)),
     ];
     return () => offs.forEach((off) => off());
   }, [bundle]);
