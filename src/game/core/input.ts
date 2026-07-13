@@ -4,6 +4,8 @@ export interface InputState {
   /** Steering axis, -1 (left) .. 1 (right). */
   axis: number;
   boost: boolean;
+  /** Held dash button (lab 5.3 only; the sim detects the rising edge). */
+  dash: boolean;
   /** Edge-triggered actions consumed by the game loop / UI. */
   restart: boolean;
   pause: boolean;
@@ -19,7 +21,7 @@ export interface InputState {
  * model, not in analog input.
  */
 export class InputManager {
-  readonly state: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  readonly state: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
 
   private keys = new Set<string>();
   private pointerActive = false;
@@ -134,10 +136,14 @@ export class InputManager {
       this.keys.has("KeyW") ||
       this.keys.has("ArrowUp");
 
+    // Dash is inert unless the Phase Dash lab flag is on (the sim masks it).
+    let dash = this.keys.has("KeyS") || this.keys.has("ArrowDown");
+
     if (this.pointerActive) {
       axis = this.pointerAxis;
-      // Touch: a second finger anywhere ignites the boost.
+      // Touch: a second finger anywhere ignites the boost, a third dashes.
       if (this.pointerCount >= 2) boost = true;
+      if (this.pointerCount >= 3) dash = true;
     }
 
     if (typeof navigator !== "undefined" && navigator.getGamepads) {
@@ -152,6 +158,7 @@ export class InputManager {
         if (pad.buttons[14]?.pressed) axis = -1;
         if (pad.buttons[15]?.pressed) axis = 1;
         if (pad.buttons[0]?.pressed || pad.buttons[7]?.pressed) boost = true;
+        if (pad.buttons[2]?.pressed) dash = true;
         restartPressed = Boolean(pad.buttons[1]?.pressed);
         pausePressed = Boolean(pad.buttons[9]?.pressed);
         break;
@@ -164,6 +171,7 @@ export class InputManager {
 
     this.state.axis = clamp(axis * sensitivity, -1, 1);
     this.state.boost = boost;
+    this.state.dash = dash;
   }
 
   /** Consume edge-triggered flags. */

@@ -1,11 +1,14 @@
 import {
   CRAFT,
   DANGER,
+  DASH,
   ENERGY,
   FIXED_DT,
   FLOW,
   lookaheadFor,
   MAX_STEPS_PER_FRAME,
+  onBeatAt,
+  RESONANCE,
   RUN,
   SPEED,
   SPRINT_MODE,
@@ -203,6 +206,10 @@ export interface RunStats {
   razorPasses: number;
   perfectPasses: number;
   threads: number;
+  /** Phase dashes fired (lab 5.3 only; 0 otherwise). */
+  dashes: number;
+  /** Perfects confirmed on the beat grid (lab 5.4 only; 0 otherwise). */
+  resonantPasses: number;
   shards: number;
   bestShardCombo: number;
   bestFlowChain: number;
@@ -274,6 +281,11 @@ export class SimWorld {
   boostCharge = 0;
   /** Seconds left on the free-boost surge window (lab 5.1; 0 = closed). */
   surgeTimer = 0;
+  /** Phase dash state (lab 5.3): burst timer, cooldown, direction, edge. */
+  dashTimer = 0;
+  dashCooldown = 0;
+  private dashDir = 0;
+  private dashHeld = false;
   hasShield = false;
   iframes = 0;
   shardCombo = 0;
@@ -363,6 +375,7 @@ export class SimWorld {
     return {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
       closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
+      dashes: 0, resonantPasses: 0,
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
@@ -425,6 +438,10 @@ export class SimWorld {
     this.boosting = false;
     this.boostCharge = 0;
     this.surgeTimer = 0;
+    this.dashTimer = 0;
+    this.dashCooldown = 0;
+    this.dashDir = 0;
+    this.dashHeld = false;
     this.hasShield = false;
     this.iframes = 0;
     this.shardCombo = 0;
@@ -467,6 +484,7 @@ export class SimWorld {
       this.collectDebug,
       this.trial,
       this.heatFx,
+      this.labFx,
     );
     if (skipTo > 0) {
       this.distance = skipTo;
@@ -548,9 +566,12 @@ export class SimWorld {
     const alive = this.status === "running";
 
     // The sim consumes the quantized axis — the recorded stream then replays
-    // bit-exactly (roadmap 3.1). Dead/idle steps consume no input.
+    // bit-exactly (roadmap 3.1). Dead/idle steps consume no input. The dash
+    // bit is masked unless the Phase Dash flag is on, so plain recordings
+    // never grow it (lab 5.3): the recorded value is the executed value.
     const axis = alive ? quantizeAxis(input.axis) : 0;
-    if (alive) this.recorder.record(axis, input.boost);
+    const dashHeld = alive && this.labFx.dash && input.dash;
+    if (alive) this.recorder.record(axis, input.boost, dashHeld);
 
     // --- Speed ---------------------------------------------------------
     const launch = clamp01(this.time / SPEED.LAUNCH_RAMP);
@@ -591,6 +612,29 @@ export class SimWorld {
     this.boostCharge = clamp01(this.boostCharge + (this.boosting ? dt * 3.2 : -dt * 2.4));
     targetSpeed *= 1 + (SPEED.BOOST_MULT - 1) * this.boostCharge;
 
+    // Phase dash (lab 5.3): rising edge fires a short committed lateral
+    // burst — energy-priced, cooldown-gated, no i-frames. With the flag off
+    // dashHeld is always false and every timer stays 0: bit-identical.
+    if (alive) {
+      if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+      if (
+        dashHeld &&
+        !this.dashHeld &&
+        this.dashTimer <= 0 &&
+        this.dashCooldown <= 0 &&
+        Math.abs(axis) >= DASH.MIN_AXIS &&
+        this.energy >= DASH.ENERGY
+      ) {
+        this.dashTimer = DASH.TIME;
+        this.dashDir = axis > 0 ? 1 : -1;
+        this.dashCooldown = DASH.COOLDOWN;
+        this.energy -= DASH.ENERGY;
+        this.stats.dashes++;
+        this.events.emit("dash", { dir: this.dashDir, x: this.x });
+      }
+      this.dashHeld = dashHeld;
+    }
+
     this.speed = alive
       ? lerp(this.speed, targetSpeed, 1 - Math.exp(-2.8 * dt))
       : Math.max(0, this.speed - 90 * dt); // Crash deceleration.
@@ -608,12 +652,21 @@ export class SimWorld {
     // --- Steering (speed-proportional, momentum-based) -------------------
     const maxLat = Math.max(10, this.speed) * STEER.RATIO;
     if (alive) {
-      const authority = this.boosting ? STEER.BOOST_AUTHORITY : 1;
-      this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
-      const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
-      this.latVel *= Math.exp(-drag * dt * (this.boosting ? 0.85 : 1));
-      this.latVel = clamp(this.latVel, -maxLat, maxLat);
-      this.x += this.latVel * dt;
+      if (this.dashTimer > 0) {
+        // Mid-dash (lab 5.3): steering is committed — a fixed-rate burst
+        // that ends as a reposition, not a fling.
+        this.dashTimer = Math.max(0, this.dashTimer - dt);
+        this.latVel = this.dashDir * (DASH.DISTANCE / DASH.TIME);
+        this.x += this.latVel * dt;
+        if (this.dashTimer <= 0) this.latVel *= DASH.EXIT_MOMENTUM;
+      } else {
+        const authority = this.boosting ? STEER.BOOST_AUTHORITY : 1;
+        this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
+        const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
+        this.latVel *= Math.exp(-drag * dt * (this.boosting ? 0.85 : 1));
+        this.latVel = clamp(this.latVel, -maxLat, maxLat);
+        this.x += this.latVel * dt;
+      }
       if (this.x < -TRACK.X_LIMIT) {
         this.x = -TRACK.X_LIMIT;
         this.latVel = Math.max(0, this.latVel) * 0.4;
@@ -1238,13 +1291,19 @@ export class SimWorld {
           : ENERGY.GRAZE_CLOSE;
     const energyAward = this.grantEnergy(grazeEnergy);
 
+    // Rhythm resonance (lab 5.4): a perfect confirmed on the beat grid rings
+    // out and pays extra. Flag off multiplies by the literal 1 — exact.
+    const resonant =
+      this.labFx.resonance && reward.grade === "perfect" && onBeatAt(this.time);
+    if (resonant) this.stats.resonantPasses++;
+
     const chainBonus = 1 + Math.min(
       FLOW.CHAIN_SCORE_CAP,
       Math.max(0, this.flowChain - 1) * FLOW.CHAIN_SCORE_STEP,
     );
     const scoreAward = Math.round(
       reward.baseScore * this.flowMultiplier * chainBonus * this.speedRewardFactor *
-        this.heatFx.scoreMult,
+        this.heatFx.scoreMult * (resonant ? RESONANCE.BONUS : 1),
     );
     this.score += scoreAward;
     this.events.emit("nearMiss", {
@@ -1256,6 +1315,7 @@ export class SimWorld {
       scoreAward,
       energyAward,
       flowPoints: this.flowPoints,
+      resonant,
     });
     if (this.labFx.surge && reward.grade === "perfect") this.openSurge();
     return scoreAward;

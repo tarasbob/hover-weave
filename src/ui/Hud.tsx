@@ -152,8 +152,22 @@ export function Hud() {
         )}
       </div>
 
-      {/* Energy + shield */}
+      {/* Energy + shield + dash */}
       <div className="absolute bottom-4 left-1/2 flex w-[min(18rem,calc(100vw-8rem))] -translate-x-1/2 items-center gap-2 sm:bottom-6 sm:gap-3">
+        {hud.dash !== null && (
+          <div
+            className={`flex h-9 shrink-0 items-center rounded-full border px-2 text-[8px] font-bold tracking-wider transition-all ${
+              hud.dash <= 0
+                ? "border-violet-300/80 bg-violet-300/15 text-violet-200 shadow-[0_0_12px_rgba(167,139,250,0.45)]"
+                : "border-white/15 bg-white/5 text-white/25"
+            }`}
+            title={hud.dash <= 0 ? "Phase dash ready" : "Phase dash recharging"}
+            role="status"
+            aria-label={hud.dash <= 0 ? "Phase dash ready" : "Phase dash recharging"}
+          >
+            {hud.dash <= 0 ? "DASH" : `${hud.dash.toFixed(1)}s`}
+          </div>
+        )}
         <div
           className={`flex h-9 shrink-0 items-center gap-1.5 rounded-full border px-2 transition-all ${
             hud.shield

@@ -244,6 +244,50 @@ export const SURGE = {
   WINDOW: 0.6,
 } as const;
 
+/**
+ * Phase dash (roadmap 5.3, lab prototype — default off): the third verb. A
+ * short fixed-rate lateral burst in the held steering direction. Priced in
+ * energy, gated by a cooldown, and deliberately without i-frames — the
+ * validator never assumes it, so every track stays steer-solvable.
+ */
+export const DASH = {
+  /** Lateral displacement of one dash (m). */
+  DISTANCE: 7,
+  /** Seconds the burst lasts (steering is committed while it runs). */
+  TIME: 0.11,
+  /** Seconds between dashes. */
+  COOLDOWN: 2,
+  /** Energy price (the full amount is required to fire). */
+  ENERGY: 25,
+  /** Minimum |steering axis| that gives the dash a direction. */
+  MIN_AXIS: 0.25,
+  /** Lateral momentum kept when the burst ends (a reposition, not a fling). */
+  EXIT_MOMENTUM: 0.25,
+} as const;
+
+/**
+ * Rhythm resonance (roadmap 5.4, lab prototype — default off): movers
+ * phase-lock to a fixed tempo's beat grid (the audio transport pins to the
+ * same BPM), and perfect passes confirmed on the beat grade "resonant".
+ */
+export const RESONANCE = {
+  /** Fixed tempo (BPM) shared by the sim's beat grid and the transport. */
+  BPM: 116,
+  /** Half-window (s) around a beat for a perfect to grade resonant. */
+  WINDOW: 0.07,
+  /** Extra score multiplier on resonant perfects. */
+  BONUS: 1.25,
+} as const;
+
+/** Beat length in seconds at the resonance tempo. */
+export const RESONANCE_BEAT = 60 / RESONANCE.BPM;
+
+/** Is `time` within RESONANCE.WINDOW of a beat at the fixed resonance tempo? */
+export function onBeatAt(time: number): boolean {
+  const pos = time / RESONANCE_BEAT;
+  return Math.abs(pos - Math.round(pos)) * RESONANCE_BEAT <= RESONANCE.WINDOW;
+}
+
 export const RUN = {
   /** Sim timescale during the death slow-mo. */
   DEATH_SLOWMO: 0.22,

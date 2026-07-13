@@ -33,9 +33,17 @@ export function quantizeAxis(axis: number): number {
   return Math.round(a * AXIS_LEVELS) / AXIS_LEVELS;
 }
 
-/** Pack a (quantized) axis + boost flag into one small integer (0..510). */
-export function packInput(axis: number, boost: boolean): number {
-  return (Math.round(quantizeAxis(axis) * AXIS_LEVELS) + AXIS_LEVELS) | (boost ? 256 : 0);
+/**
+ * Pack a (quantized) axis + boost + dash into one small integer (0..1022).
+ * The dash bit (512) is only ever set on Phase Dash lab runs — the sim masks
+ * it otherwise — so plain-run streams are byte-identical to pre-dash builds.
+ */
+export function packInput(axis: number, boost: boolean, dash = false): number {
+  return (
+    (Math.round(quantizeAxis(axis) * AXIS_LEVELS) + AXIS_LEVELS) |
+    (boost ? 256 : 0) |
+    (dash ? 512 : 0)
+  );
 }
 
 export function unpackAxis(packed: number): number {
@@ -44,6 +52,10 @@ export function unpackAxis(packed: number): number {
 
 export function unpackBoost(packed: number): boolean {
   return (packed & 256) !== 0;
+}
+
+export function unpackDash(packed: number): boolean {
+  return (packed & 512) !== 0;
 }
 
 export interface RunRecording {
@@ -112,10 +124,10 @@ export class InputRecorder {
     this.complete = true;
   }
 
-  /** Record one fixed step. `axis` must already be quantized. */
-  record(axis: number, boost: boolean): void {
+  /** Record one fixed step. `axis` must already be quantized, `dash` masked. */
+  record(axis: number, boost: boolean, dash = false): void {
     if (!this.enabled || !this.complete) return;
-    const packed = packInput(axis, boost);
+    const packed = packInput(axis, boost, dash);
     if (packed === this.lastPacked && this.data.length > 0) {
       this.data[this.data.length - 1]++;
     } else {
@@ -173,6 +185,7 @@ export class ReplayCursor {
     this.left--;
     input.axis = unpackAxis(this.packed);
     input.boost = unpackBoost(this.packed);
+    input.dash = unpackDash(this.packed);
     return true;
   }
 }
@@ -190,7 +203,7 @@ export function resimulate(
   world.recordInputs = false;
   world.start(recordingConfig(rec));
   const cursor = new ReplayCursor(rec);
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   let step = 0;
   while (cursor.next(input)) {
     world.update(FIXED_DT, input);

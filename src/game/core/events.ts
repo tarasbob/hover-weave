@@ -14,6 +14,8 @@ export type GameEvents = {
     scoreAward: number;
     energyAward: number;
     flowPoints: number;
+    /** Perfect confirmed on the beat grid (lab prototype 5.4). */
+    resonant: boolean;
   };
   /** Both sides of a gap passed tight within a short window. */
   thread: {
@@ -48,6 +50,8 @@ export type GameEvents = {
   boostEnd: undefined;
   /** A free-boost surge window opened (lab prototype, roadmap 5.1). */
   surge: { window: number };
+  /** A phase dash fired (lab prototype, roadmap 5.3). */
+  dash: { dir: number; x: number };
   flowTier: { tier: number; prev: number };
   /** A graded chunk was fully traversed (roadmap 3.4). */
   sectionGrade: {

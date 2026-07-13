@@ -27,12 +27,17 @@ import {
   resimulate,
   unpackAxis,
   unpackBoost,
+  unpackDash,
 } from "../src/game/core/replay";
 import type { InputState } from "../src/game/core/input";
 import {
+  DASH,
   ENERGY,
   FIXED_DT,
+  onBeatAt,
   POOL_SIZES,
+  RESONANCE,
+  RESONANCE_BEAT,
   SPRINT_MODE,
   STEER,
   SURGE,
@@ -45,8 +50,9 @@ import type { RunConfig } from "../src/game/core/modes";
 import { questsForDay, QUESTS_PER_DAY, type QuestSample } from "../src/game/core/quests";
 import { RATING, ratingTier, runPerformance, updateRating, RATING_TIERS } from "../src/game/core/rating";
 import { createRng } from "../src/game/core/rng";
-import { Motion, type ObstacleSpec } from "../src/game/core/types";
+import { Motion, type ObstacleSpec, type PatternResult } from "../src/game/core/types";
 import { TrackGenerator } from "../src/game/track/generator";
+import { resonatePattern } from "../src/game/track/mutators";
 import { MEDAL_ORDER, TRIALS, medalFor, nextMedalFor, trialSeed } from "../src/game/track/trials";
 import { corridorLanes, validatePattern } from "../src/game/track/validator";
 import { autopilot, lookaheadPilot, scanGaps, steerToward, superhumanPilot } from "./pilots";
@@ -77,7 +83,7 @@ const score2km: Record<string, number> = {};
 const runs = 8;
 for (let r = 0; r < runs; r++) {
   const world = new SimWorld();
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const seed = `test-${r}`;
   world.start(endless(seed));
   let killer = "";
@@ -232,7 +238,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
     const world = new SimWorld();
     world.start(endless("gauntlet"));
     buildGauntlet(world);
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     const maxSteps = Math.floor(seconds / FIXED_DT);
     for (let i = 0; i < maxSteps && world.status === "running"; i++) {
       const err = targetX - world.x;
@@ -282,7 +288,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   const safeRuns: number[] = [];
   for (let r = 0; r < 4; r++) {
     const world = new SimWorld();
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     world.start(endless(`test-${r}`));
     const maxSteps = Math.floor(150 / FIXED_DT);
     let steps = 0;
@@ -319,7 +325,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   };
   wire(a, eventsA);
   wire(b, eventsB);
-  const input: InputState = { axis: 0.3, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0.3, boost: false, dash: false, restart: false, pause: false };
   a.start(endless("determinism"));
   b.start(endless("determinism"));
   for (let i = 0; i < 12000; i++) {
@@ -356,7 +362,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   // Record a full bot run to death (boost on: exercises the energy loop and
   // the boost bit; the bot's continuous axis exercises quantization).
   const live = new SimWorld();
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   live.start(endless("replay-exact"));
   const liveEvents: unknown[] = [];
   live.events.on("nearMiss", (e) => liveEvents.push(["nearMiss", e]));
@@ -396,7 +402,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   // Size: human-style input (held keys, sparse changes) stays a few KB.
   const keyed = new SimWorld();
   keyed.start(endless("replay-size"));
-  const keyInput: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const keyInput: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const keySteps = Math.floor(180 / FIXED_DT); // 3-minute run
   for (let i = 0; i < keySteps && keyed.status === "running"; i++) {
     // Direction changes every ~0.4 s, boost toggles every ~2 s — a busy human.
@@ -494,7 +500,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   // Integration: a real bot run produces ordered, sane sections and — since
   // it dies — an aggregate line rating.
   const world = new SimWorld();
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   world.start(endless("test-0"));
   const emitted: { patternId: string; grade: string }[] = [];
   world.events.on("sectionGrade", (e) => emitted.push(e));
@@ -567,7 +573,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   assert.ok(perfect.flowPoints > razor.flowPoints && razor.flowPoints > close.flowPoints);
 
   const world = new SimWorld();
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   world.start(endless("combo-economy"));
   const shards = world.pickups.filter((pickup) => pickup.active && pickup.type === "shard");
   assert.ok(shards.length >= 2, "fixed combo seed did not generate enough shards");
@@ -589,7 +595,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
     const world = new SimWorld();
     world.start(endless("flow-uncap"));
     world.clearField();
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     world.flowPoints = points;
     world.update(FIXED_DT, input); // Settle flowTier for this level.
     world.flowPoints = points;
@@ -613,7 +619,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   world.clearField();
   world.flowPoints = 27.9;
   world.flowTimer = 0;
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   world.update(FIXED_DT, input);
   const probe = world.obstacles[0];
   Object.assign(probe, {
@@ -668,7 +674,7 @@ console.log("simulation assertions: PASS");
     });
     const threadEvents: { scoreAward: number; tightness: number }[] = [];
     world.events.on("thread", (e) => threadEvents.push(e));
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     for (let i = 0; i < 600 && world.status === "running"; i++) {
       world.update(FIXED_DT, input);
     }
@@ -743,7 +749,7 @@ console.log("simulation assertions: PASS");
       nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
       patternId: "grazeEnergy",
     });
-    const input: InputState = { axis: 0, boost: boosting, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: boosting, dash: false, restart: false, pause: false };
     let award = 0;
     world.events.on("nearMiss", (e) => {
       award = e.energyAward;
@@ -770,7 +776,7 @@ console.log("simulation assertions: PASS");
 {
   const smooth = new SimWorld();
   const chunky = new SimWorld();
-  const input: InputState = { axis: 0.2, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0.2, boost: false, dash: false, restart: false, pause: false };
   smooth.start(endless("frame-partition"));
   chunky.start(endless("frame-partition"));
   for (let i = 0; i < 120; i++) smooth.update(FIXED_DT, input);
@@ -782,7 +788,7 @@ console.log("simulation assertions: PASS");
 
 // A fatal collision freezes score/resources and cannot also collect a shard.
 {
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const makeDeathProbe = (seed: string) => {
     const world = new SimWorld();
     world.start(endless(seed));
@@ -887,7 +893,7 @@ console.log("edge-case assertions: PASS");
   const runTier = (tier: Tier, seed: string): number => {
     const world = new SimWorld();
     world.start(endless(seed));
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     const laneMem = { targetX: 0 };
     const maxSteps = Math.floor(TIER_CAP_S[tier] / FIXED_DT);
     let steps = 0;
@@ -1012,7 +1018,7 @@ console.log("edge-case assertions: PASS");
 {
   const config: RunConfig = { mode: "sprint", seed: "sprint-gate" };
   const live = new SimWorld();
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const finishes: { score: number; distance: number }[] = [];
   live.events.on("finish", (e) => finishes.push(e));
   live.start(config);
@@ -1113,7 +1119,7 @@ console.log("edge-case assertions: PASS");
     for (const tier of ["greedy", "lookahead"] as const) {
       const world = new SimWorld();
       world.start({ mode: "trial", seed: trialSeed(trialId), trialId });
-      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
       const mem = { targetX: 0 };
       const chunks = new Map<number, string>();
       const maxSteps = Math.floor(CAP_S[tier] / FIXED_DT);
@@ -1165,7 +1171,7 @@ console.log("edge-case assertions: PASS");
 
   // A trial run records and re-simulates bit-exactly, like every other mode.
   const live = new SimWorld();
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   live.start({ mode: "trial", seed: trialSeed("slalomGates"), trialId: "slalomGates" });
   const maxSteps = Math.floor(240 / FIXED_DT);
   for (let i = 0; i < maxSteps && live.status === "running"; i++) {
@@ -1201,7 +1207,7 @@ console.log("edge-case assertions: PASS");
     const empty = new SimWorld();
     plain.start(endless("heat-identity"));
     empty.start({ mode: "endless", seed: "heat-identity", heat: [] });
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     for (let i = 0; i < 2400; i++) {
       input.axis = Math.sin(i * 0.013) * 0.7;
       plain.update(FIXED_DT, input);
@@ -1220,7 +1226,7 @@ console.log("edge-case assertions: PASS");
       world.start({ mode: "endless", seed: "heat-cruise", heat });
       world.clearField();
       (world as unknown as { generator: null }).generator = null;
-      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
       for (let i = 0; i < 3600; i++) world.update(FIXED_DT, input);
       assert.equal(world.status, "running");
       return world.score;
@@ -1245,7 +1251,7 @@ console.log("edge-case assertions: PASS");
         active: true, type: "shard", s: 40, x: 3, y: 1.3,
         seeking: false, magnetic: true, spawnTime: 0,
       });
-      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
       for (let i = 0; i < 600; i++) world.update(FIXED_DT, input);
       return world.stats.shards;
     };
@@ -1272,7 +1278,7 @@ console.log("edge-case assertions: PASS");
       });
       let shieldBreaks = 0;
       world.events.on("shieldBreak", () => shieldBreaks++);
-      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
       for (let i = 0; i < 400 && world.status === "running"; i++) {
         world.update(FIXED_DT, input);
       }
@@ -1388,7 +1394,7 @@ console.log("edge-case assertions: PASS");
     const config: RunConfig = { mode: "endless", seed: "heat-replay", heat };
     const live = new SimWorld();
     live.start(config);
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     const maxSteps = Math.floor(240 / FIXED_DT);
     for (let i = 0; i < maxSteps && live.status === "running"; i++) {
       autopilot(live, input, { boost: true });
@@ -1474,7 +1480,7 @@ console.log("edge-case assertions: PASS");
   // Progress functions read a run correctly (synthetic sample).
   const world = new SimWorld();
   world.start(endless("quest-probe"));
-  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const maxSteps = Math.floor(200 / FIXED_DT);
   for (let i = 0; i < maxSteps && world.status === "running"; i++) {
     autopilot(world, input, { boost: true });
@@ -1519,7 +1525,7 @@ console.log("edge-case assertions: PASS");
     const empty = new SimWorld();
     plain.start(endless("lab-identity"));
     empty.start({ mode: "endless", seed: "lab-identity", lab: [] });
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     for (let i = 0; i < 2400; i++) {
       input.axis = Math.sin(i * 0.013) * 0.7;
       input.boost = i % 300 < 120;
@@ -1561,7 +1567,7 @@ console.log("edge-case assertions: PASS");
         assert.equal(e.window, SURGE.WINDOW);
         surges++;
       });
-      const input: InputState = { axis: 0, boost: true, restart: false, pause: false };
+      const input: InputState = { axis: 0, boost: true, dash: false, restart: false, pause: false };
       for (let i = 0; i < 840; i++) world.update(FIXED_DT, input);
       assert.equal(world.status, "running", "surge probe must survive its lone box");
       assert.equal(world.stats.perfectPasses, 1, "the probe box must land a perfect pass");
@@ -1588,7 +1594,7 @@ console.log("edge-case assertions: PASS");
     world.events.on("surge", () => {
       if (surgeStep < 0) surgeStep = step;
     });
-    const input: InputState = { axis: 0, boost: true, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: true, dash: false, restart: false, pause: false };
     let step = 0;
     let boostSteps = 0;
     let boostedBeforeSurge = false;
@@ -1656,7 +1662,7 @@ console.log("edge-case assertions: PASS");
       live.events.on("nearMiss", (e) => liveEvents.push(["nearMiss", e]));
       live.events.on("surge", (e) => liveEvents.push(["surge", e]));
       live.events.on("death", (e) => liveEvents.push(["death", e]));
-      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
       for (let s = 0; s < maxSteps && live.status === "running"; s++) {
         grazer(live, input);
         live.update(FIXED_DT, input);
@@ -1686,4 +1692,355 @@ console.log("edge-case assertions: PASS");
     }
     assert.ok(chosen, "a scanned seed must produce a surge-active lab run");
   }
+}
+
+// --- Phase 5: lab prototypes (5.3 phase dash) ---------------------------------
+{
+  // The dash bit (512) packs and round-trips without disturbing axis/boost.
+  for (const axis of [-1, -0.4, 0, 0.7, 1]) {
+    for (const boost of [false, true]) {
+      for (const dash of [false, true]) {
+        const packed = packInput(axis, boost, dash);
+        assert.equal(unpackAxis(packed), quantizeAxis(axis));
+        assert.equal(unpackBoost(packed), boost);
+        assert.equal(unpackDash(packed), dash);
+      }
+      // Two-argument packing (every pre-dash call site) never sets the bit.
+      assert.equal(unpackDash(packInput(axis, boost)), false);
+    }
+  }
+
+  // Masking: without the flag a held dash key is inert and the recording is
+  // byte-identical to a run that never touched it — persisted ghosts cannot
+  // grow the bit.
+  {
+    const run = (dashKey: boolean) => {
+      const world = new SimWorld();
+      world.start(endless("dash-mask"));
+      const input: InputState = { axis: 0, boost: false, dash: dashKey, restart: false, pause: false };
+      for (let i = 0; i < 2400 && world.status === "running"; i++) {
+        input.axis = Math.sin(i * 0.011) * 0.8;
+        input.boost = i % 400 < 150;
+        world.update(FIXED_DT, input);
+      }
+      return world;
+    };
+    const clean = run(false);
+    const held = run(true);
+    assert.deepEqual(held.stats, clean.stats, "a held dash key must be inert without the flag");
+    assert.deepEqual(
+      held.getRecording()?.data,
+      clean.getRecording()?.data,
+      "the dash bit must be masked out of plain recordings",
+    );
+  }
+
+  const dashWorld = (lab: LabId[]): SimWorld => {
+    const world = new SimWorld();
+    world.start({ mode: "endless", seed: "lab-dash", lab });
+    world.clearField();
+    (world as unknown as { generator: null }).generator = null;
+    return world;
+  };
+  const freshInput = (): InputState => ({
+    axis: 0, boost: false, dash: false, restart: false, pause: false,
+  });
+
+  // Displacement, price, cooldown, and direction — measured step-exactly.
+  {
+    const world = dashWorld(["dash"]);
+    const dashes: { x: number; dir: number }[] = [];
+    world.events.on("dash", (e) => dashes.push(e));
+    const input = freshInput();
+    for (let i = 0; i < 240; i++) world.update(FIXED_DT, input);
+    world.energy = 60;
+
+    input.axis = 1;
+    input.dash = true;
+    world.update(FIXED_DT, input); // Rising edge: the burst starts this step.
+    assert.equal(world.stats.dashes, 1, "dash must fire on the rising edge");
+    assert.equal(dashes[0].dir, 1, "dash direction must follow the held axis");
+    assert.ok(Math.abs(world.energy - (60 - DASH.ENERGY)) < 1e-9, "dash must cost its price");
+
+    input.axis = 0;
+    input.dash = false;
+    const burstSteps = Math.ceil(DASH.TIME / FIXED_DT);
+    for (let i = 0; i < burstSteps - 1; i++) world.update(FIXED_DT, input);
+    // The burst applies its fixed rate for whole steps: ceil(T/dt) of them.
+    const expected = DASH.DISTANCE * ((burstSteps * FIXED_DT) / DASH.TIME);
+    const moved = world.x - dashes[0].x;
+    assert.ok(
+      Math.abs(moved - expected) < 0.05,
+      `dash displacement must be the authored burst (${moved.toFixed(2)} vs ${expected.toFixed(2)})`,
+    );
+    assert.ok(world.dashTimer === 0, "burst must be over");
+    assert.ok(
+      Math.abs(world.latVel) <= (DASH.DISTANCE / DASH.TIME) * DASH.EXIT_MOMENTUM + 1e-9,
+      "burst must end as a reposition, not a fling",
+    );
+
+    // Cooldown: an immediate second press is refused, a post-cooldown one fires.
+    world.energy = 60;
+    input.axis = 1;
+    input.dash = true;
+    world.update(FIXED_DT, input);
+    assert.equal(world.stats.dashes, 1, "cooldown must gate the second dash");
+    assert.ok(Math.abs(world.energy - 60) < 1e-9, "a refused dash must cost nothing");
+    input.dash = false;
+    for (let i = 0; i < Math.ceil(DASH.COOLDOWN / FIXED_DT) + 2; i++) {
+      world.update(FIXED_DT, input);
+    }
+    world.energy = 60;
+    input.axis = -1;
+    input.dash = true;
+    world.update(FIXED_DT, input);
+    input.dash = false;
+    assert.equal(world.stats.dashes, 2, "dash must fire again after the cooldown");
+    assert.equal(dashes[1].dir, -1, "second dash must follow the new direction");
+  }
+
+  // Refusals: no direction, no fuel, no flag.
+  {
+    const neutral = dashWorld(["dash"]);
+    const input = freshInput();
+    for (let i = 0; i < 240; i++) neutral.update(FIXED_DT, input);
+    neutral.energy = 60;
+    input.dash = true; // axis stays 0 — no direction, no dash
+    neutral.update(FIXED_DT, input);
+    assert.equal(neutral.stats.dashes, 0, "a neutral axis must refuse the dash");
+    assert.ok(Math.abs(neutral.energy - 60) < 1e-9);
+
+    const broke = dashWorld(["dash"]);
+    const brokeInput = freshInput();
+    for (let i = 0; i < 240; i++) broke.update(FIXED_DT, brokeInput);
+    broke.energy = DASH.ENERGY - 1;
+    brokeInput.axis = 1;
+    brokeInput.dash = true;
+    broke.update(FIXED_DT, brokeInput);
+    assert.equal(broke.stats.dashes, 0, "an underfunded dash must be refused");
+
+    const off = dashWorld([]);
+    const offInput = freshInput();
+    for (let i = 0; i < 240; i++) off.update(FIXED_DT, offInput);
+    off.energy = 60;
+    offInput.axis = 1;
+    offInput.dash = true;
+    off.update(FIXED_DT, offInput);
+    assert.equal(off.stats.dashes, 0, "dash must be inert without its flag");
+    assert.ok(Math.abs(off.energy - 60) < 1e-9);
+  }
+
+  // No i-frames: dashing into a wall is death, exactly as advertised.
+  {
+    const world = dashWorld(["dash"]);
+    Object.assign(world.obstacles[0], {
+      active: true, kind: "box",
+      s: 70, x: 6.5, y: 1, hx: 1, hy: 2, hs: 40, yaw: 0,
+      motion: Motion.None, m0: 0, m1: 0, m2: 0, collidable: true,
+      cx: 6.5, cy: 1, cs: 70, cyaw: 0,
+      state: 0, landed: false,
+      nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+      patternId: "dashWall",
+    });
+    const input = freshInput();
+    while (world.status === "running" && world.distance < 55) {
+      world.update(FIXED_DT, input);
+    }
+    world.energy = 60;
+    input.axis = 1;
+    input.dash = true;
+    for (let i = 0; i < 30 && world.status === "running"; i++) {
+      world.update(FIXED_DT, input);
+    }
+    assert.equal(world.stats.dashes, 1, "the wall probe must actually dash");
+    assert.equal(world.status, "dead", "no i-frames: a dash into a wall must kill");
+    assert.equal(world.stats.deathCause?.patternId, "dashWall");
+    console.log("dash gate: PASS (burst, price, cooldown, refusals, lethal wall)");
+  }
+}
+
+// --- Phase 5: lab prototypes (5.4 rhythm resonance) ----------------------------
+{
+  // Beat-window boundaries (pure).
+  assert.equal(onBeatAt(0), true);
+  assert.equal(onBeatAt(RESONANCE_BEAT), true);
+  assert.equal(onBeatAt(RESONANCE_BEAT * 7.5), false);
+  assert.equal(onBeatAt(RESONANCE_BEAT * 3 + RESONANCE.WINDOW - 1e-4), true);
+  assert.equal(onBeatAt(RESONANCE_BEAT * 3 + RESONANCE.WINDOW + 1e-4), false);
+  assert.equal(onBeatAt(RESONANCE_BEAT * 5 - RESONANCE.WINDOW + 1e-4), true);
+
+  // resonatePattern: rates land on the beat grid (period = beat × 2^k),
+  // phases on quarter cycles, amplitudes/lengths/radii untouched.
+  {
+    const box = (
+      s: number,
+      motion: ObstacleSpec["motion"],
+      m0: number,
+      m1: number,
+      m2: number,
+    ): ObstacleSpec => ({
+      kind: "box", s, x: 0, y: 1, hx: 1, hy: 1, hs: 1, motion, m0, m1, m2,
+    });
+    const result: PatternResult = {
+      length: 100, exitX: 0, exitHalf: 10, pickups: [],
+      obstacles: [
+        box(10, Motion.SweepX, 0.57, 1.1, 3.3),
+        box(20, Motion.Piston, 0.83, 0.37, -4),
+        box(30, Motion.RotateYaw, 1.7, 0.4, 0),
+        box(40, Motion.OrbitXZ, 5, 0.9, 2.2),
+        box(50, Motion.Pendulum, 6, 0.8, 1.3),
+        box(60, Motion.None, 0.123, 0.456, 0.789),
+      ],
+    };
+    resonatePattern(result, RESONANCE.BPM);
+    const beat = RESONANCE_BEAT;
+    const onGrid = (beats: number) =>
+      Math.abs(Math.log2(beats) - Math.round(Math.log2(beats))) < 1e-9;
+    const quarter = (v: number, cycle: number) =>
+      Math.abs(v / (cycle / 4) - Math.round(v / (cycle / 4))) < 1e-9;
+    const [sweep, piston, rotor, orbit, pend, still] = result.obstacles;
+    assert.ok(onGrid((2 * Math.PI) / (Math.abs(sweep.m0!) * beat)), "sweep rate on grid");
+    assert.ok(quarter(sweep.m1!, 2 * Math.PI), "sweep phase on quarter turns");
+    assert.equal(sweep.m2, 3.3, "sweep amplitude untouched");
+    assert.ok(onGrid(1 / (Math.abs(piston.m0!) * beat)), "piston rate on grid (cycles)");
+    assert.ok(quarter(piston.m1!, 1), "piston phase on quarter cycles");
+    assert.equal(piston.m2, -4, "piston throw untouched");
+    assert.ok(onGrid((2 * Math.PI) / (Math.abs(rotor.m0!) * beat)), "rotor rate on grid");
+    assert.equal(rotor.m1, 0.4, "rotor initial yaw untouched");
+    assert.equal(orbit.m0, 5, "orbit radius untouched");
+    assert.ok(onGrid((2 * Math.PI) / (Math.abs(orbit.m1!) * beat)), "orbit rate on grid");
+    assert.ok(quarter(orbit.m2!, 2 * Math.PI), "orbit phase on quarter turns");
+    assert.equal(pend.m0, 6, "pendulum length untouched");
+    assert.equal(pend.m1, 0.8, "pendulum swing untouched");
+    assert.ok(onGrid((2 * Math.PI) / (Math.abs(pend.m2!) * beat)), "pendulum rate on grid");
+    assert.deepEqual(
+      [still.m0, still.m1, still.m2],
+      [0.123, 0.456, 0.789],
+      "static obstacles untouched",
+    );
+  }
+
+  // Live grading: on a controlled field of perfect passes, the resonant flag
+  // must equal the beat grid at the confirmation step, resonant awards must
+  // pay exactly ×BONUS over the flag-off twin, and both outcomes must occur.
+  {
+    const probe = (lab: LabId[]) => {
+      const world = new SimWorld();
+      world.start({ mode: "endless", seed: "lab-resonant", lab });
+      world.clearField();
+      (world as unknown as { generator: null }).generator = null;
+      for (let i = 0; i < 12; i++) {
+        Object.assign(world.obstacles[i], {
+          active: true, kind: "box",
+          s: 40 + i * 37, x: 1.9, y: 1, hx: 1, hy: 2, hs: 0.5, yaw: 0,
+          motion: Motion.None, m0: 0, m1: 0, m2: 0, collidable: true,
+          cx: 1.9, cy: 1, cs: 40 + i * 37, cyaw: 0,
+          state: 0, landed: false,
+          nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+          patternId: "labResonance",
+        });
+      }
+      const events: { resonant: boolean; onBeat: boolean; scoreAward: number; grade: string }[] =
+        [];
+      world.events.on("nearMiss", (e) =>
+        events.push({
+          resonant: e.resonant,
+          onBeat: onBeatAt(world.time),
+          scoreAward: e.scoreAward,
+          grade: e.grade,
+        }),
+      );
+      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
+      for (let i = 0; i < 2600 && world.status === "running"; i++) world.update(FIXED_DT, input);
+      assert.equal(world.status, "running", "resonant probe must survive its boxes");
+      assert.equal(events.length, 12, "every probe box must confirm a pass");
+      return { events, stats: world.stats };
+    };
+    const off = probe([]);
+    const on = probe(["resonance"]);
+    for (const e of off.events) assert.equal(e.resonant, false, "no resonance without the flag");
+    assert.equal(off.stats.resonantPasses, 0);
+    let resonants = 0;
+    on.events.forEach((e, i) => {
+      assert.equal(
+        e.resonant,
+        e.grade === "perfect" && e.onBeat,
+        "resonant flag must match the beat grid at confirmation",
+      );
+      if (e.resonant) {
+        resonants++;
+        assert.ok(
+          Math.abs(e.scoreAward - off.events[i].scoreAward * RESONANCE.BONUS) <= 1,
+          `resonant award must be ×${RESONANCE.BONUS} (${e.scoreAward} vs ${off.events[i].scoreAward})`,
+        );
+      } else {
+        assert.equal(e.scoreAward, off.events[i].scoreAward, "off-beat awards must be unchanged");
+      }
+    });
+    assert.ok(
+      resonants >= 1 && resonants < on.events.length,
+      `probe must sample both outcomes (${resonants}/${on.events.length} resonant)`,
+    );
+    assert.equal(on.stats.resonantPasses, resonants);
+    console.log(`resonance gate: PASS (grid boundaries, ${resonants}/12 resonant, ×1.25 exact)`);
+  }
+}
+
+// --- Phase 5: full lab stack replay -------------------------------------------
+// Everything at once — surge + dash + resonance on a real generated track,
+// with dash taps in the stream: the recording must re-simulate bit-exactly
+// (the dash bit rides in the pack) and stay ghost-ineligible.
+{
+  const config: RunConfig = {
+    mode: "endless",
+    seed: "lab-full",
+    lab: normalizeLab(["resonance", "dash", "surge"]),
+  };
+  const live = new SimWorld();
+  live.start(config);
+  const liveEvents: unknown[] = [];
+  live.events.on("nearMiss", (e) => liveEvents.push(["nearMiss", e]));
+  live.events.on("thread", (e) => liveEvents.push(["thread", e]));
+  live.events.on("surge", (e) => liveEvents.push(["surge", e]));
+  live.events.on("dash", (e) => liveEvents.push(["dash", e]));
+  live.events.on("death", (e) => liveEvents.push(["death", e]));
+  const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
+  const maxSteps = Math.floor(240 / FIXED_DT);
+  for (let i = 0; i < maxSteps && live.status === "running"; i++) {
+    // Alternate boost-on/off phases (5 s each): off-phases let the meter
+    // climb past the dash price, so periodic taps actually fire.
+    autopilot(live, input, { boost: Math.floor(i / 600) % 2 === 1 });
+    // Tap dash every ~1.7 s with a forced direction so presses are honest
+    // rising edges that sometimes catch a funded meter.
+    input.dash = i % 200 === 0 && i > 0;
+    if (input.dash) input.axis = input.axis >= 0 ? 1 : -1;
+    live.update(FIXED_DT, input);
+  }
+  assert.deepEqual(live.stats.lab, ["dash", "resonance", "surge"], "canonical full stack");
+  assert.ok(live.stats.dashes >= 1, `full-stack probe must dash (${live.stats.dashes})`);
+  const rec = live.getRecording();
+  assert.ok(rec && rec.complete, "full-stack run must record");
+  assert.deepEqual(rec.lab, ["dash", "resonance", "surge"], "recording carries the stack");
+  // (Kept out of assert.ok: the type guard would narrow `rec` to never.)
+  const eligible = ghostEligible(rec);
+  assert.equal(eligible, false, "full-stack recordings must never be ghosts");
+  let dashBits = 0;
+  for (let i = 0; i < rec.data.length; i += 2) if (unpackDash(rec.data[i])) dashBits++;
+  assert.ok(dashBits >= 1, "the dash bit must actually ride in the stream");
+
+  const replayed = new SimWorld();
+  const replayEvents: unknown[] = [];
+  replayed.events.on("nearMiss", (e) => replayEvents.push(["nearMiss", e]));
+  replayed.events.on("thread", (e) => replayEvents.push(["thread", e]));
+  replayed.events.on("surge", (e) => replayEvents.push(["surge", e]));
+  replayed.events.on("dash", (e) => replayEvents.push(["dash", e]));
+  replayed.events.on("death", (e) => replayEvents.push(["death", e]));
+  resimulate(rec, replayed);
+  assert.deepEqual(replayed.stats, live.stats, "full-stack replay must be bit-exact");
+  assert.deepEqual(replayEvents, liveEvents, "full-stack event stream must be identical");
+  console.log(
+    `full lab stack gate: PASS (${live.status} at ${live.distance.toFixed(0)}m, ` +
+    `${live.stats.dashes} dashes, ${live.stats.resonantPasses} resonant, ` +
+    `${live.stats.perfectPasses} perfects; re-sim exact)`,
+  );
 }

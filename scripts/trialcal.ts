@@ -21,7 +21,7 @@ for (const trial of TRIALS) {
     const world = new SimWorld();
     const config: RunConfig = { mode: "trial", seed: trialSeed(trial.id), trialId: trial.id };
     world.start(config);
-    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
     const mem = { targetX: 0 };
     const maxSteps = Math.floor(CAPS[tier] / FIXED_DT);
     const seenChunks = new Map<number, string>();

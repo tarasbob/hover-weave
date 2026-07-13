@@ -24,7 +24,7 @@ export class GhostDriver {
   finished = false;
   private cursor: ReplayCursor | null = null;
   private readonly input: InputState = {
-    axis: 0, boost: false, restart: false, pause: false,
+    axis: 0, boost: false, dash: false, restart: false, pause: false,
   };
 
   /** Arm for a new run (null or an incomplete recording disarms). */

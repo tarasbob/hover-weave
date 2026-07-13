@@ -271,8 +271,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.events.on("nearMiss", (e) => {
         env.triggerNearMiss(e.precision, e.x - world.x);
         audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision);
-        const label =
-          e.grade === "perfect" ? "PERFECT PASS" : e.grade === "razor" ? "RAZOR PASS" : "CLOSE PASS";
+        if (e.resonant) audio.resonant();
+        const label = e.resonant
+          ? "RESONANT PASS"
+          : e.grade === "perfect" ? "PERFECT PASS" : e.grade === "razor" ? "RAZOR PASS" : "CLOSE PASS";
         const energy = e.energyAward >= 0.05 ? ` · +${e.energyAward.toFixed(1)} ENERGY` : "";
         useGame.getState().setSkillMoment(
           label,
@@ -328,6 +330,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.events.on("surge", () => {
         env.triggerBoost(0.8);
         audio.surge();
+      }),
+      world.events.on("dash", (e) => {
+        env.triggerBoost(0.7);
+        audio.dash(e.dir);
       }),
       world.events.on("boostEnd", () => {
         env.triggerBoost(0.45);

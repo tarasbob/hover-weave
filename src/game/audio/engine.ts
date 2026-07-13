@@ -1,6 +1,7 @@
 "use client";
 
 import * as Tone from "tone";
+import { RESONANCE } from "../core/constants";
 import type { SimWorld } from "../core/world";
 import type { PrecisionGrade } from "../core/types";
 import { clamp01, damp } from "../core/mathUtils";
@@ -320,7 +321,11 @@ export class AudioEngine {
     if (this.bpmClock > 2) {
       this.bpmClock = 0;
       const t = Tone.getTransport();
-      const targetBpm = 116 + speed * 12 + Math.min(world.flowTier, 8);
+      // Rhythm resonance (lab 5.4) pins the tempo to the sim's beat grid —
+      // the adaptive speed/flow drift would detune it from the movers.
+      const targetBpm = world.labFx.resonance
+        ? RESONANCE.BPM
+        : 116 + speed * 12 + Math.min(world.flowTier, 8);
       if (Math.abs(t.bpm.value - targetBpm) > 1.5) {
         t.bpm.rampTo(targetBpm, 1.2);
       }
@@ -395,6 +400,20 @@ export class AudioEngine {
       this.chime.triggerAttackRelease("E6", "32n", now, 0.5);
       this.chime.triggerAttackRelease("B6", "32n", now + 0.05, 0.38);
     });
+  }
+
+  /** Phase dash (lab 5.3): a hard lateral zip, panned with the burst. */
+  dash(dir: number): void {
+    this.oneShot(() => {
+      this.whooshPanner.pan.rampTo(Math.max(-1, Math.min(1, dir)) * 0.9, 0.015);
+      this.whooshFilter.frequency.value = 520;
+      this.whoosh.triggerAttackRelease("16n", undefined, 0.9);
+    });
+  }
+
+  /** Resonant perfect (lab 5.4): a high bell exactly on the beat. */
+  resonant(): void {
+    this.oneShot(() => this.chime.triggerAttackRelease("D7", "32n", undefined, 0.5));
   }
 
   flowTierUp(tier: number): void {

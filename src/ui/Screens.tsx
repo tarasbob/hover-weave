@@ -396,6 +396,8 @@ function GameOverScreen() {
           <Stat label="THREADS" value={String(s.threads)} />
           <Stat label="BEST CHAIN" value={String(s.bestFlowChain)} />
           <Stat label="BOOST TIME" value={`${s.boostTime.toFixed(1)}s`} />
+          {s.dashes > 0 && <Stat label="DASHES" value={String(s.dashes)} />}
+          {s.resonantPasses > 0 && <Stat label="RESONANT" value={String(s.resonantPasses)} />}
         </div>
 
         <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">

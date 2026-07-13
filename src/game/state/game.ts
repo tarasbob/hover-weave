@@ -36,6 +36,8 @@ export interface HudSnapshot {
   lab: LabId[];
   /** True while a free-boost surge window is open (lab 5.1). */
   surge: boolean;
+  /** Dash cooldown remaining in seconds; 0 = ready, null = dash flag off. */
+  dash: number | null;
   /** Live meters ahead (+) / behind (−) the PB ghost. Null = no ghost armed. */
   ghostDelta: number | null;
 }
@@ -124,7 +126,7 @@ export const useGame = create<GameState>((set) => ({
     energy: ENERGY.START, boosting: false, shield: false,
     speedKmh: 0, distance: 0, biome: "Crystal Desert",
     objective: null, objectiveHit: null, timeLeft: null, heatMult: 1,
-    lab: [], surge: false,
+    lab: [], surge: false, dash: null,
     ghostDelta: null,
   },
   outcome: null,

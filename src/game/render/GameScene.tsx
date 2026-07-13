@@ -211,6 +211,7 @@ export function GameScene() {
           heatMult: world.heatFx.scoreMult,
           lab: world.stats.lab,
           surge: world.surgeTimer > 0,
+          dash: world.labFx.dash ? world.dashCooldown : null,
           ghostDelta: showGhost ? ghost.deltaTo(world.distance) : null,
         });
       }

@@ -1,4 +1,4 @@
-import { overdriveAt, TRACK } from "../core/constants";
+import { overdriveAt, RESONANCE, TRACK } from "../core/constants";
 import { NO_HEAT, type HeatEffects } from "../core/heat";
 import type { Rng } from "../core/rng";
 import { Motion, type PatternCategory, type PatternResult } from "../core/types";
@@ -127,4 +127,54 @@ export function mutatePattern(
   }
 
   return log;
+}
+
+/**
+ * Rhythm resonance (lab 5.4): quantize every mover's timing to the musical
+ * grid — periods snap to beat × 2^k, phases to quarter cycles — so the whole
+ * field phase-locks to the fixed resonance tempo. Timing only: amplitudes,
+ * lengths, and radii are untouched, so worst-case validator envelopes (and
+ * with them validation outcomes and solved paths) are identical to the same
+ * seed unflagged. No rng is drawn — a pure function of the built values.
+ */
+export function resonatePattern(result: PatternResult, bpm: number = RESONANCE.BPM): void {
+  const beat = 60 / bpm;
+  // Sine/orbit rates are angular (rad/s): period = 2π / |w|.
+  const snapAngular = (w: number): number => {
+    if (w === 0) return 0;
+    const beats = (2 * Math.PI) / (Math.abs(w) * beat);
+    const snapped = 2 ** Math.round(Math.log2(beats));
+    return Math.sign(w) * ((2 * Math.PI) / (snapped * beat));
+  };
+  // Piston phase wraps at 1, not 2π: its rate is cycles per second.
+  const snapCycles = (w: number): number => {
+    if (w === 0) return 0;
+    const beats = 1 / (Math.abs(w) * beat);
+    const snapped = 2 ** Math.round(Math.log2(beats));
+    return Math.sign(w) * (1 / (snapped * beat));
+  };
+  const quarterTurn = Math.PI / 2;
+  for (const o of result.obstacles) {
+    switch (o.motion) {
+      case Motion.SweepX:
+        o.m0 = snapAngular(o.m0 ?? 0);
+        o.m1 = Math.round((o.m1 ?? 0) / quarterTurn) * quarterTurn;
+        break;
+      case Motion.RotateYaw:
+        // Rotation is continuous; only the rate needs the grid.
+        o.m0 = snapAngular(o.m0 ?? 0);
+        break;
+      case Motion.Piston:
+        o.m0 = snapCycles(o.m0 ?? 0);
+        o.m1 = Math.round((o.m1 ?? 0) * 4) / 4;
+        break;
+      case Motion.OrbitXZ:
+        o.m1 = snapAngular(o.m1 ?? 0);
+        o.m2 = Math.round((o.m2 ?? 0) / quarterTurn) * quarterTurn;
+        break;
+      case Motion.Pendulum:
+        o.m2 = snapAngular(o.m2 ?? 0);
+        break;
+    }
+  }
 }

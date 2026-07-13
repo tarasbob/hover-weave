@@ -118,8 +118,8 @@ no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
 |---|------|--------|-------|
 | 5.1 | **Surge windows** — perfect pass opens ~0.6 s of free boost. Overlaps 1.1; keep whichever feels better, or surge for razors + refunds for perfects. | done | Shipped as the first LAB prototype (default off, endless only): perfects **and threads** open `SURGE.WINDOW = 0.6 s` of free boost — zero drain, ignites even on an empty meter; chaining perfects sustains it on top of 1.1's refunds. The lab flag *is* the A/B switch the roadmap asked for; the keep/fold verdict still needs human playtesting. `surge` event, HUD surge bar + chip, audio shimmer. Gated in `simtest.ts`: window pays exactly 0.6 s vs a flag-off twin, empty-meter ignition lasts exactly the window, plain runs bit-identical |
 | 5.2 | **Mouse-relative steering** — highest-ceiling input option. | cut | Analog steering is against the game's identity — steering is two buttons, full stop (user decision). The existing analog leaks were digitized to match: pointer position → left/right hold zones, gamepad stick → sign beyond a wide deadzone, d-pad added. Sim/replay surface untouched (the sim already consumes a quantized axis; old analog-valued ghosts replay exactly) |
-| 5.3 | **Phase dash** — third verb: short lateral displacement, ~2 s cooldown, energy cost, no i-frames. Validator must never assume it (tracks stay steer-solvable). | todo | High risk of trivializing precision patterns; LAB prototype next sprint |
-| 5.4 | **Rhythm resonance** — phase-lock movers to the Tone.js transport; on-beat perfects grade "resonant". | todo | Gimmick risk; LAB prototype next sprint |
+| 5.3 | **Phase dash** — third verb: short lateral displacement, ~2 s cooldown, energy cost, no i-frames. Validator must never assume it (tracks stay steer-solvable). | done | LAB prototype: tap S/↓ (gamepad X, third finger) with a held direction → a committed 7 m burst over 0.11 s (`DASH` constants), 25 energy (full price required), 2 s cooldown, ends as a reposition (×0.25 exit momentum), **no i-frames** — dashing into a wall kills (gated). Validator untouched by construction. Input rides recording bit 512, masked to 0 unless the flag is on, so plain recordings stay byte-identical and `REPLAY_VERSION` stays 1 (gated). HUD cooldown pip, panned zip SFX, `stats.dashes`. The trivialization risk is exactly what the unranked sandbox is for |
+| 5.4 | **Rhythm resonance** — phase-lock movers to the Tone.js transport; on-beat perfects grade "resonant". | done | LAB prototype: generator re-times every mover onto a fixed 116 BPM grid (periods snap to beat×2^k, phases to quarter cycles — `resonatePattern`), and the audio transport pins to the same BPM. Locked to *sim time*, not the live transport clock (see Decision Log). Timing-only: amplitudes/geometry/validation/rng bit-identical to the same seed unflagged (gated in gentest: 209/209 movers re-timed, 0 geometry drift). Perfects confirmed within ±70 ms of a beat grade **resonant**: ×1.25 score, "RESONANT PASS" callout, on-beat bell, `stats.resonantPasses` (probe-gated: flag matches the grid exactly, ×1.25 exact, off-beat awards unchanged) |
 | 5.5 | **Async multiplayer** — daily rival ghosts near your rating; server-verified leaderboards by re-simulation. | cut | User decision 2026-07-13: needs a backend that is not planned. The offline ladder (rating vs. calibrated walls, weekly sprint, daily course + quests) stays the comparison layer |
 | 5.6 | **Vertical layer (hops/ramps)** | cut | Dilutes the 1D purity that keeps the game readable at speed. Revisit only if all else ships. |
 
@@ -169,6 +169,10 @@ no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
 | 2026-07-13 | 5.2 (mouse-relative steering) cut per user decision; **all** steering digitized to two buttons (touch hold-zones, gamepad stick sign + d-pad). | Two buttons is the game's identity — depth must come from the momentum model and the track, not input hardware. An analog option would fork the skill ceiling by device. Replays/ghosts unaffected: the sim consumes the final quantized axis regardless of how it was produced. |
 | 2026-07-13 | Phase 5 flags ship as the LAB: heat-shaped run identity (`RunConfig.lab`, canonicalized, carried in recordings) but fully **unranked** — no PBs/rating/streaks/lifetime tallies, `ghostEligible` false, no PB ghost armed against them. | Prototypes change the physics economy (surge = free boost), so their scores are play money — unlike heat, which makes runs *harder* and pays on the real ladder. Carrying the stack in recordings keeps replays bit-exact for testing; refusing persistence keeps every calibrated signal (walls, rating, baselines) clean while the flag is evaluated. |
 | 2026-07-13 | Surge (5.1) triggers on perfects **and threads**, refreshing to a fixed 0.6 s window (no stacking), free-drain implemented as a skipped-drain conditional. | Threads are the rarer, more deliberate skill expression — a surge that ignored them would undervalue exactly the play 1.3 built. No stacking keeps "chain perfects to stay surged" the loop (a bankable surge pool would re-open the patience economy). The skipped-drain form makes the flag-off path bit-identical (no float ops added), which the identity gate enforces. |
+| 2026-07-13 | Dash (5.3) input is recording bit 512, masked to 0 at the sim boundary unless the flag is on; `REPLAY_VERSION` stays 1. | "The recorded value is the executed value" survives: plain runs mask the bit before recording, so their streams are byte-identical to pre-dash builds (gated) and every persisted ghost stays valid. A version bump would have thrown away all of them to protect against a bit that plain runs can never contain. Lab recordings do carry the bit — and they never persist. |
+| 2026-07-13 | Dash (5.3) is a *committed* fixed-rate burst (steering overridden for 0.11 s, momentum killed to ×0.25 on exit), full 25-energy price up front, direction from the held axis (min 0.25). | A dash you can steer during, or that flings you into wall-slide momentum, is just faster steering — the verb only reads as "displacement" if it's a commitment with a hard shape. Pricing it at half a boost meter and demanding a held direction keeps it a deliberate line choice, not a panic macro; no i-frames keeps the roadmap's contract that it can kill you. |
+| 2026-07-13 | Resonance (5.4) locks movers to a fixed sim-side BPM grid (116), not the live Tone.js transport; the transport pins itself to that BPM instead. | The sim must stay deterministic and replayable — coupling mover phase to a wall-clock audio transport would break both. Sharing one constant inverts the dependency safely: movers are exact on the grid, music agrees in tempo (phase agreement is best-effort after pauses). The adaptive speed/flow BPM drift is suspended on resonance runs; that trade is the prototype's point. |
+| 2026-07-13 | Resonance (5.4) re-times movers only — periods to beat×2^k, phases to quarter cycles; amplitudes, lengths, and radii untouched. | Worst-case validator envelopes depend only on amplitudes, so re-timing cannot change validation outcomes, solved paths, or the rng stream — the whole resonance diff is *when* things are where, never *what* is where (gentest asserts stream identity chunk by chunk). Power-of-two periods mean every mover pair re-aligns on a shared downbeat instead of drifting. |
 
 ## Progress log
 
@@ -322,3 +326,38 @@ no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
   All suites green (sim, gen, graphics, lint, tsc, production build).
   Sprint 5B: 5.3 phase dash + 5.4 rhythm resonance as LAB flags, then
   roadmap closeout.
+- **2026-07-13** — **Phase 5 sprint B: 5.3 phase dash + 5.4 rhythm resonance —
+  Phase 5 done, roadmap closed out.** **Dash** is the third verb, behind its
+  LAB flag: S/↓ (gamepad X, third touch finger) with a held direction fires
+  a committed 7 m lateral burst (0.11 s, steering overridden, ×0.25 exit
+  momentum), 25 energy up front, 2 s cooldown, no i-frames — the validator
+  is untouched, so every track remains steer-solvable without it. The input
+  rides recording bit 512 and is masked at the sim boundary unless the flag
+  is on: plain-run streams stay byte-identical (`REPLAY_VERSION` still 1,
+  all persisted ghosts valid — gated). HUD shows a cooldown pip; the death
+  screen counts dashes. **Resonance** re-times every generated mover onto a
+  fixed 116 BPM grid — periods snap to beat×2^k, phases to quarter cycles,
+  amplitudes untouched, so geometry/validation/rng are bit-identical to the
+  same seed unflagged (gentest: 2×10 km, 209/209 movers re-timed, zero
+  drift, identical fallback/rejection counts) — and the audio transport
+  pins to the same tempo. Perfects confirmed within ±70 ms of a beat grade
+  resonant: ×1.25 score, their own callout/bell/stat. New simtest gates:
+  dash pack round-trips + mask byte-identity, step-exact burst displacement
+  and price, cooldown/refusal probes (neutral axis, empty tank, flag off),
+  lethal mid-dash wall (no i-frames), beat-window boundaries,
+  `resonatePattern` per-motion grid/amplitude checks, a 12-box live probe
+  (resonant flag ≡ beat grid, ×1.25 exact, both outcomes sampled), and a
+  full-stack surge+dash+resonance replay (bit-exact re-sim, dash bits in
+  the stream, ghost-ineligible). In-app verification on the dev server via
+  the console handle: full-stack lab run persisted *nothing* (meta/rating/
+  streak/replays byte-for-byte unchanged, no ghost armed, death screen
+  shows "LAB · … — UNRANKED, NOTHING SAVED" + DASHES stat, no PB/rating
+  lines), a following plain run persisted normally with a held-but-inert
+  dash key and a lab-free recording, and the LAB overlay lists and arms all
+  three prototypes with persisted selection. All suites green (sim, gen,
+  graphics, lint, tsc, production build). **The roadmap is complete:
+  Phases 1–4 shipped, 5.1/5.3/5.4 live as unranked LAB prototypes awaiting
+  human playtesting verdicts, 5.2/5.5/5.6 cut with rationale.** Remaining
+  known caveat, unchanged: full visual pass in a real browser (embedded
+  browser throttles rAF), and the p99/p50 gap-ratio target still needs real
+  player telemetry.
