@@ -11,7 +11,18 @@ export type GameEvents = {
     grade: PrecisionGrade;
     chain: number;
     scoreAward: number;
+    energyAward: number;
     flowPoints: number;
+  };
+  /** Both sides of a gap passed tight within a short window. */
+  thread: {
+    x: number;
+    s: number;
+    scoreAward: number;
+    /** 0..1 — how tight the worse side of the pair was. */
+    tightness: number;
+    /** Total threads this run (for escalating feedback). */
+    count: number;
   };
   shard: {
     x: number;

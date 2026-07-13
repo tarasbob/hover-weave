@@ -221,7 +221,9 @@ function SkillMomentToast({
         ? "text-fuchsia-200"
         : moment?.tone === "shard"
           ? "text-cyan-200"
-          : "text-white/85";
+          : moment?.tone === "thread"
+            ? "text-emerald-200"
+            : "text-white/85";
 
   return (
     <AnimatePresence>

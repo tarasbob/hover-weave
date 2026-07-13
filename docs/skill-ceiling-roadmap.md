@@ -50,19 +50,19 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1.1 | **Grazes fund boost** — perfect ≈ +4 energy, razor ≈ +1.5, refund ×~1.5 while boosting. Perpetual boost becomes the emergent elite technique. | todo | `onNearMiss` in `world.ts`, new `ENERGY` constants |
-| 1.2 | **Speed-scaled precision rewards** — graze score/flow ×`(speed/SPEED.BASE)^1.5` or ×2 while `boostCharge > 0.8`. | todo | `precisionRewardAt` / `onNearMiss` |
-| 1.3 | **Thread bonus** — grazing both sides of a gap within a short s-window pays both + multiplicative bonus. Own stat, callout, sound. | todo | Pair `nearMissClearance` at payout; add to `RunStats`, HUD skill moment |
-| 1.4 | **Danger-weighted scoring** — passive score rate scales with local obstacle density near the craft lane; edge-hugging pays ~nothing. | todo | Density sample in `step()`; must not double-pay with 1.2 |
-| 1.5 | **Flow prestige** — pick one: (a) uncap `flowPoints` with superlinear decay past 28, or (b) bank a full meter into a permanent +1 run multiplier level. | todo | Prototype both; decide in Decision Log |
-| 1.6 | **Rebalance pass** — retune `FLOW`/`ENERGY` constants so novice first-session play is unchanged; verify with sim tests. | todo | Gate for shipping Phase 1 |
+| 1.1 | **Grazes fund boost** — perfect ≈ +4 energy, razor ≈ +1.5, refund ×~1.5 while boosting. Perpetual boost becomes the emergent elite technique. | done | Shipped as perfect +12 / razor +7 / close +1.5, refund ×1.75 while boosting, drain 34→30 (tuned against the uptime gate — the roadmap's starting values couldn't outpace drain). `ENERGY.GRAZE_*`, `ENERGY.BOOST_REFUND`, `grantEnergy` in `world.ts` |
+| 1.2 | **Speed-scaled precision rewards** — graze score/flow ×`(speed/SPEED.BASE)^1.5` or ×2 while `boostCharge > 0.8`. | done | Continuous variant chosen (see Decision Log). Score gets the full factor; flow-point gains use a damped linear factor capped ×2.5 so one graze can't spike multiple tiers. `speedRewardFactor` / `speedFlowFactor` in `world.ts` |
+| 1.3 | **Thread bonus** — grazing both sides of a gap within a short s-window pays both + multiplicative bonus. Own stat, callout, sound. | done | Pairs opposite-side passes ≤10 m apart. Accepts "pressed" passes (hull clearance < 2.6 m) so real `narrowGates`/`combTeeth` gaps thread; true double-graze needles additionally repay both awards ×1.5. `THREAD` constants, `onPassConfirmed`/`onThread`, `stats.threads`, `thread` event, HUD toast + `audio.thread()` |
+| 1.4 | **Danger-weighted scoring** — passive score rate scales with local obstacle density near the craft lane; edge-hugging pays ~nothing. | done | Reformulated as engagement vs. availability (see Decision Log): empty stretches stay neutral (×1), threading dense geometry pays up to ×1.8, dodging into an empty flank while a field rages pays down to ×0.25. `DANGER` constants, density sample in `updateObstacles` |
+| 1.5 | **Flow prestige** — pick one: (a) uncap `flowPoints` with superlinear decay past 28, or (b) bank a full meter into a permanent +1 run multiplier level. | done | Option (a) shipped: no cap on points; everything above 28 bleeds continuously at `DECAY_RATE × 0.028 × over²`/s, so sustained event rate sets an equilibrium (~58 pts on the synthetic gauntlet ⇒ ×15+ multiplier). Flow speed bonus capped at tier 5 (pre-uncap max) so speed stays a boost ratchet |
+| 1.6 | **Rebalance pass** — retune `FLOW`/`ENERGY` constants so novice first-session play is unchanged; verify with sim tests. | done | Conservative-bot scores drift −5.5% on average vs. pre-patch baselines (gate: ±10%), baked into `simtest.ts` as `BASELINE_800`/`BASELINE_2KM` |
 
 **Acceptance criteria**
 
-- [ ] Autopilot (`scripts/simtest.ts`) scores within ±10% of baseline on the first 2 km.
-- [ ] A scripted "elite" input stream (boost + tight lines) can sustain >80% boost uptime through hard patterns; a "safe" stream cannot exceed ~30%.
-- [ ] Thread bonus fires in headless tests on `narrowGates` / `combTeeth` style patterns and never fires on single-edge passes.
-- [ ] Determinism test still passes (same seed + inputs ⇒ same stats).
+- [x] Autopilot (`scripts/simtest.ts`) scores within ±10% of baseline on the first 2 km. *(−5.5% avg across 800 m × 8 seeds + 2 km × 3 seeds checkpoints)*
+- [x] A scripted "elite" input stream (boost + tight lines) can sustain >80% boost uptime through hard patterns; a "safe" stream cannot exceed ~30%. *(Deterministic narrowGates-style gauntlet: tight line 96% uptime / 220 threads, wide-lane line 0%; center-line bot on real seeds 20%)*
+- [x] Thread bonus fires in headless tests on `narrowGates` / `combTeeth` style patterns and never fires on single-edge passes. *(Synthetic gate probes: needle ✓, pressed pair ✓, single edge ✗, same-side chain ✗, beyond window ✗, wide-open ✗)*
+- [x] Determinism test still passes (same seed + inputs ⇒ same stats). *(Extended to include boost input + thread events)*
 
 ## Phase 2 — Uncap the treadmill
 
@@ -125,7 +125,25 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 |------|----------|-----------|
 | 2026-07-12 | Roadmap created; Phase 1 = risk economy patch first. | Highest ceiling-per-effort; mostly `constants.ts` + `world.ts`. |
 | 2026-07-12 | Vertical layer (5.6) cut. | Protect 1D readability at speed. |
+| 2026-07-12 | 1.2 uses the continuous `(speed/BASE)^1.5` factor, not the flat ×2 boost gate. | Keeps paying as Phase 2 uncaps ambient speed; boost already dominates the factor (×1.45 speed ⇒ ~×1.75 rewards). Novice drift stays bounded because the conservative bot never boosts and early ambient speed is low. |
+| 2026-07-12 | 1.3 threads pair "pressed" passes (clearance < 2.6 m), graded by tightness². | A strict double-graze rule (< 1.3 m both sides) almost never fires on authored patterns — the narrowest `narrowGates`/`combTeeth` gaps give ~2.4 m center clearance. Pressed pairing rewards picking the tighter gap (roadmap diagnosis #4) while tightness² keeps wide needles nearly worthless. |
+| 2026-07-12 | 1.4 reformulated: `factor = 1 + 0.8·engagement − 0.75·availability·(1 − engagement)`. | A pure density kernel taxed breathers/seams (autopilot avg ×0.4 ⇒ −60% passive score, blowing the ±10% floor gate). Engagement-vs-availability keeps empty track neutral, pays threading, and still zeroes out edge-hugging when there is geometry to engage. |
+| 2026-07-12 | 1.5 shipped option (a): uncapped flow with continuous quadratic overcap bleed. | Continuous, preserves the meter-tension loop, and needs no new UI legibility. The bleed (no grace above 28) makes the overcap regime an equilibrium of event rate — patience alone cannot hold it. Option (b) banking shelved; revisit only if playtesting finds the top-end too volatile. |
+| 2026-07-12 | 1.1 graze energy shipped hotter than sketched (perfect +12 / razor +7, refund ×1.75, drain 30). | The roadmap's +4/+1.5 with ×1.5 refund cannot outpace 34/s drain at realistic graze rates (~1–2/s through hard rows). Tuned until the gauntlet's tight line sustains 96% uptime while shard-only play stays ≤20%. |
+| 2026-07-12 | Uncapped `flowTier` consumers clamped at the render/audio edge (FOV ≤ tier 6, particle bursts ≤ tier 8, BPM ≤ tier 8). | Scoring must be uncapped; camera distortion and mix intensity must not be. |
 
 ## Progress log
 
 - **2026-07-12** — Roadmap created from design brainstorm. No implementation started.
+- **2026-07-12** — **Phase 1 (risk economy) complete.** Grazes now fund boost
+  (with a ×1.75 refund while boosting — perpetual boost is live as the elite
+  technique), precision rewards scale with `(speed/30)^1.5`, thread-the-needle
+  pays both sides of a gap (new stat, HUD callout, SFX), passive score is
+  danger-weighted (engagement vs. availability), and flow is uncapped with
+  quadratic overcap bleed. All four acceptance gates are enforced in
+  `scripts/simtest.ts` and pass: first-2km drift −5.5% (limit ±10%), gauntlet
+  tight line 96% boost uptime vs. 0%/20% for safe lines, thread pair/negative
+  probes green, determinism (now with boost inputs + thread events) green.
+  New run stats: `threads`, `boostTime` (both shown on the death screen).
+  Sprint 2 candidate: Phase 2 (uncap the treadmill — endless difficulty,
+  speed-proportional lookahead, wall calibration bots).

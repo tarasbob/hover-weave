@@ -129,10 +129,21 @@ export function GameProvider({ children }: { children: ReactNode }) {
         audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision);
         const label =
           e.grade === "perfect" ? "PERFECT PASS" : e.grade === "razor" ? "RAZOR PASS" : "CLOSE PASS";
+        const energy = e.energyAward >= 0.05 ? ` · +${e.energyAward.toFixed(1)} ENERGY` : "";
         useGame.getState().setSkillMoment(
           label,
-          `+${e.scoreAward.toLocaleString()} · CHAIN ${e.chain}`,
+          `+${e.scoreAward.toLocaleString()}${energy} · CHAIN ${e.chain}`,
           e.grade,
+        );
+      }),
+      world.events.on("thread", (e) => {
+        env.triggerNearMiss(1, 0);
+        env.triggerFlow(0.9);
+        audio.thread(e.tightness);
+        useGame.getState().setSkillMoment(
+          "THREAD THE NEEDLE",
+          `+${e.scoreAward.toLocaleString()} · BOTH SIDES`,
+          "thread",
         );
       }),
       world.events.on("shard", (e) => {

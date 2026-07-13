@@ -98,6 +98,8 @@ export interface Obstacle {
   nearMissed: boolean;
   /** Closest collision-hull clearance observed during this pass. */
   nearMissClearance: number;
+  /** Which side of the craft the obstacle was on at closest approach (+1 right). */
+  nearMissSide: number;
   /** Authored chunk that produced this obstacle, used for useful death feedback. */
   patternId: string;
   /** Sim time when spawned (for scale-in animation). */

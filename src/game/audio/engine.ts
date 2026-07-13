@@ -320,7 +320,7 @@ export class AudioEngine {
     if (this.bpmClock > 2) {
       this.bpmClock = 0;
       const t = Tone.getTransport();
-      const targetBpm = 116 + speed * 12 + world.flowTier;
+      const targetBpm = 116 + speed * 12 + Math.min(world.flowTier, 8);
       if (Math.abs(t.bpm.value - targetBpm) > 1.5) {
         t.bpm.rampTo(targetBpm, 1.2);
       }
@@ -346,6 +346,18 @@ export class AudioEngine {
       const gradeLift = grade === "perfect" ? 1400 : grade === "razor" ? 700 : 0;
       this.whooshFilter.frequency.value = 850 + gradeLift + precision * 900;
       this.whoosh.triggerAttackRelease("8n", undefined, 0.62 + precision * 0.38);
+    });
+  }
+
+  /** Both-sides needle: centered whoosh + a rising two-note sting. */
+  thread(tightness: number): void {
+    this.oneShot(() => {
+      this.whooshPanner.pan.rampTo(0, 0.02);
+      this.whooshFilter.frequency.value = 2400 + tightness * 1600;
+      this.whoosh.triggerAttackRelease("8n", undefined, 0.8);
+      const now = Tone.now();
+      this.chime.triggerAttackRelease("A5", "16n", now, 0.5 + tightness * 0.4);
+      this.chime.triggerAttackRelease("D6", "16n", now + 0.07, 0.6 + tightness * 0.4);
     });
   }
 

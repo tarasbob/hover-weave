@@ -27,7 +27,7 @@ export interface HudSnapshot {
 export interface SkillMoment {
   text: string;
   detail: string;
-  tone: "close" | "razor" | "perfect" | "shard";
+  tone: "close" | "razor" | "perfect" | "shard" | "thread";
   at: number;
 }
 

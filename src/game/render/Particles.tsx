@@ -200,7 +200,7 @@ export function Particles({ max }: { max: number }) {
       world.events.on("flowTier", (event) => {
         if (event.tier <= event.prev) return;
         c.copy(env.uPrimary.value);
-        const count = Math.max(8, Math.round((10 + event.tier * 4) * burstScale));
+        const count = Math.max(8, Math.round((10 + Math.min(event.tier, 8) * 4) * burstScale));
         for (let i = 0; i < count; i++) {
           sys.spawn({
             x: world.x + rng.range(-1.2, 1.2),

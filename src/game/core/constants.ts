@@ -83,11 +83,33 @@ export const FLOW = {
   DECAY_RATE_PER_HIGH_TIER: 0.22,
   GRACE_LOSS_PER_HIGH_TIER: 0.18,
   SHIELD_PENALTY: 7,
+  /**
+   * Soft cap: points climb past this freely, but everything above bleeds
+   * continuously (no grace) at DECAY_RATE * OVER_DECAY_QUAD * over^2 per
+   * second. Sustained elite streams find an equilibrium ~sqrt(event rate)
+   * instead of a wall; below the soft cap behavior is identical to the
+   * classic capped meter.
+   */
   MAX_POINTS: 28,
+  OVER_DECAY_QUAD: 0.028,
   /** Score multiplier = 1 + points * this. */
   MULT_PER_POINT: 0.25,
   /** Points per audio/visual tier. */
   POINTS_PER_TIER: 5,
+  /** Speed bonus per flow tier (fraction of target speed). */
+  SPEED_BONUS_PER_TIER: 0.035,
+  /**
+   * Flow tiers are uncapped for scoring, but the speed bonus stops growing
+   * here (the pre-uncap maximum) so speed stays a boost-driven ratchet.
+   */
+  SPEED_BONUS_TIER_CAP: 5,
+  /**
+   * Precision rewards scale with speed: score x (speed / SPEED.BASE)^exp
+   * (floored at x1). Grazing at 130 m/s pays ~x9 what it pays at base speed.
+   */
+  SPEED_REWARD_EXP: 1.5,
+  /** Flow-point gain uses a damped speed factor, capped here (tier spikes stay bounded). */
+  SPEED_FLOW_FACTOR_CAP: 2.5,
 } as const;
 
 export const ENERGY = {
@@ -98,13 +120,64 @@ export const ENERGY = {
   COMBO_CAP: 8,
   COMBO_ENERGY_STEP: 0.4,
   COMBO_SCORE_STEP: 0.16,
-  BOOST_DRAIN: 34,
+  BOOST_DRAIN: 30,
   /** Minimum energy required to ignite a boost. */
   BOOST_MIN: 8,
   SHARD_SCORE: 40,
   /** Radius within which shards get magnetised toward the craft. */
   MAGNET_RADIUS: 5.5,
   COLLECT_RADIUS: 1.7,
+  /** Grazes fund boost: energy per confirmed pass, by precision grade. */
+  GRAZE_CLOSE: 1.5,
+  GRAZE_RAZOR: 7,
+  GRAZE_PERFECT: 12,
+  /** Graze/thread energy income multiplier while boosting (perpetual-boost loop). */
+  BOOST_REFUND: 1.75,
+} as const;
+
+/**
+ * Thread the needle: passing obstacles on BOTH sides within a short
+ * along-track window pays a bonus on top of any individual grazes.
+ * Pairing accepts "pressed" passes (hull clearance < CLEARANCE, looser than
+ * the near-miss threshold) so choosing the tighter of two gaps is valued
+ * even when the gap is too wide for double near-miss payouts.
+ */
+export const THREAD = {
+  /** Passes with hull clearance under this can pair into a thread. */
+  CLEARANCE: 2.6,
+  /** Max craft travel (m) between the two opposite-side passes. */
+  WINDOW: 10,
+  /** Thread base score spans MIN..MAX with tightness^2 (worse side of the pair). */
+  SCORE_MIN: 45,
+  SCORE_MAX: 210,
+  /** True double-graze needles also repay both awards * (BONUS_MULT - 1). */
+  BONUS_MULT: 1.5,
+  FLOW_POINTS: 2,
+  ENERGY: 3,
+} as const;
+
+/**
+ * Danger-weighted scoring: the passive (distance) score rate compares where
+ * the craft flies against what geometry is available nearby.
+ *
+ *   factor = 1 + BONUS * engagement - PENALTY * availability * (1 - engagement)
+ *
+ * - Empty stretches (nothing to dodge): availability ~0 -> factor ~1 (neutral).
+ * - Threading dense geometry: engagement ~1 -> up to 1 + BONUS.
+ * - Hugging the empty flank while a field rages elsewhere: availability ~1,
+ *   engagement ~0 -> down to 1 - PENALTY ("edge-hugging pays ~nothing").
+ */
+export const DANGER = {
+  /** Along-track half-window for both samples (m). */
+  S_WINDOW: 48,
+  /** Lateral reach of the engagement kernel from the craft hull (m). */
+  X_REACH: 12,
+  /** engagement = 1 - e^(-lateralWeightedDensity / REF_ENGAGE). */
+  REF_ENGAGE: 1.9,
+  /** availability = 1 - e^(-alongTrackDensity / REF_AVAIL). */
+  REF_AVAIL: 2.6,
+  BONUS: 0.8,
+  PENALTY: 0.75,
 } as const;
 
 export const RUN = {

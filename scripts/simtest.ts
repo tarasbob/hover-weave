@@ -1,7 +1,7 @@
 /**
  * Headless sim smoke test: a conservative band-scan autopilot (avoids the
  * full worst-case envelope of every mover, like the validator plans with)
- * plus determinism and pool-pressure checks.
+ * plus determinism, pool-pressure, and risk-economy acceptance checks.
  *
  * Fairness itself is enforced at generation time — every accepted chunk is
  * proven passable by the reachability solver (see gentest.ts). Bot deaths
@@ -18,7 +18,15 @@ import {
   precisionRewardAt,
 } from "../src/game/core/world";
 import type { InputState } from "../src/game/core/input";
-import { CRAFT, FIXED_DT, POOL_SIZES, STEER, TRACK } from "../src/game/core/constants";
+import {
+  CRAFT,
+  ENERGY,
+  FIXED_DT,
+  POOL_SIZES,
+  STEER,
+  THREAD,
+  TRACK,
+} from "../src/game/core/constants";
 import { blockedRanges } from "../src/game/track/validator";
 import { Motion, type ObstacleSpec } from "../src/game/core/types";
 
@@ -30,7 +38,12 @@ function specOf(o: SimWorld["obstacles"][number]): ObstacleSpec {
   };
 }
 
-function autopilot(world: SimWorld, input: InputState): void {
+interface PilotOpts {
+  /** Hold boost whenever the tank allows it. */
+  boost?: boolean;
+}
+
+function autopilot(world: SimWorld, input: InputState, opts: PilotOpts = {}): void {
   const craftS = world.distance;
   const bandStart = craftS + 2;
   const bandEnd = craftS + 10 + Math.max(world.speed, 20) * 1.35;
@@ -73,8 +86,20 @@ function autopilot(world: SimWorld, input: InputState): void {
   const maxLat = Math.max(10, world.speed) * STEER.RATIO;
   const desiredVel = Math.sign(err) * Math.min(Math.abs(err) * 4, maxLat);
   input.axis = Math.max(-1, Math.min(1, (desiredVel - world.latVel) * 0.3));
-  input.boost = false;
+  input.boost = opts.boost ? (world.boosting ? true : world.energy > 14) : false;
 }
+
+// --- Conservative-bot survival + pool pressure + first-2km economy gate ----
+
+// Pre-Phase-1 baselines (conservative bot, no boost). The risk-economy
+// rebalance must keep the novice-proxy line within ±10% on average.
+const BASELINE_800: Record<string, number> = {
+  "test-0": 3615, "test-1": 3041, "test-2": 3473, "test-3": 3375,
+  "test-4": 3571, "test-5": 3227, "test-6": 2627, "test-7": 3232,
+};
+const BASELINE_2KM: Record<string, number> = {
+  "test-3": 4706, "test-5": 4890, "test-6": 4041,
+};
 
 let totalDeaths = 0;
 let totalDist = 0;
@@ -83,6 +108,8 @@ let minDist = Infinity;
 const peakByKind = new Map<string, number>();
 let peakShards = 0;
 let peakShields = 0;
+const score800: Record<string, number> = {};
+const score2km: Record<string, number> = {};
 const runs = 8;
 for (let r = 0; r < runs; r++) {
   const world = new SimWorld();
@@ -109,6 +136,12 @@ for (let r = 0; r < runs; r++) {
   while (world.status === "running" && steps < maxSteps) {
     autopilot(world, input);
     world.update(FIXED_DT, input);
+    if (score800[seed] === undefined && world.distance >= 800) {
+      score800[seed] = Math.floor(world.score);
+    }
+    if (score2km[seed] === undefined && world.distance >= 2000) {
+      score2km[seed] = Math.floor(world.score);
+    }
     if (steps % 60 === 0) {
       const active = world.obstacles.filter((o) => o.active).length;
       if (active > runPeak) runPeak = active;
@@ -163,6 +196,148 @@ for (const kind of ["box", "pillar", "crystal", "sphere", "ring"] as const) {
 assert.ok(peakShards < POOL_SIZES.shard, `shard render pool lacks headroom (${peakShards})`);
 assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom (${peakShields})`);
 
+// Floor check (roadmap Phase 1): the conservative line through the opening
+// must score like it did before the risk economy landed.
+{
+  const drifts: number[] = [];
+  for (const [seed, base] of Object.entries(BASELINE_800)) {
+    const now = score800[seed];
+    assert.ok(now !== undefined, `${seed} no longer reaches 800m`);
+    const drift = now / base - 1;
+    drifts.push(drift);
+    assert.ok(
+      Math.abs(drift) < 0.15,
+      `${seed} first-800m score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
+    );
+  }
+  for (const [seed, base] of Object.entries(BASELINE_2KM)) {
+    const now = score2km[seed];
+    assert.ok(now !== undefined, `${seed} no longer reaches 2km`);
+    const drift = now / base - 1;
+    drifts.push(drift);
+    assert.ok(
+      Math.abs(drift) < 0.15,
+      `${seed} first-2km score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
+    );
+  }
+  const avgDrift = drifts.reduce((a, b) => a + b, 0) / drifts.length;
+  assert.ok(
+    Math.abs(avgDrift) < 0.1,
+    `novice-proxy scoring drifted ${(avgDrift * 100).toFixed(1)}% on average`,
+  );
+  console.log(`first-2km economy gate: PASS (avg drift ${(avgDrift * 100).toFixed(1)}%)`);
+}
+
+// --- Boost uptime: the risk loop must reward grazing, not shard-hoarding ---
+// Hard-pattern gauntlet: narrowGates-style rows every 28m, each with a tight
+// needle gap (thread + double razor for a committed line) and a wide safe
+// lane (no precision income). The economy must let the tight line sustain
+// near-perpetual boost while the safe lane cannot.
+{
+  const TIGHT_X = -10;
+  const TIGHT_HALF = 1.3; // hull clearance 0.55 -> razor on both sides
+  const SAFE_X = 21;
+  const buildGauntlet = (world: SimWorld): void => {
+    world.clearField();
+    // Stop the procedural generator from streaming real chunks over the course.
+    (world as unknown as { generator: null }).generator = null;
+    let idx = 0;
+    const wall = (s: number, x0: number, x1: number) => {
+      const hx = (x1 - x0) / 2;
+      const x = (x0 + x1) / 2;
+      Object.assign(world.obstacles[idx++], {
+        active: true, kind: "box",
+        s, x, y: 2, hx, hy: 3, hs: 1, yaw: 0,
+        motion: Motion.None, m0: 0, m1: 0, m2: 0,
+        collidable: true,
+        cx: x, cy: 2, cs: s, cyaw: 0,
+        state: 0, landed: false,
+        nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+        patternId: "gauntlet",
+      });
+    };
+    for (let r = 0; r < 220; r++) {
+      const s = 60 + r * 28;
+      wall(s, -TRACK.X_PATTERN, TIGHT_X - TIGHT_HALF);
+      wall(s, TIGHT_X + TIGHT_HALF, SAFE_X - 5);
+      wall(s, SAFE_X + 5, TRACK.X_PATTERN);
+    }
+  };
+
+  const gauntletRun = (targetX: number, seconds: number) => {
+    const world = new SimWorld();
+    world.start("gauntlet", false);
+    buildGauntlet(world);
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const maxSteps = Math.floor(seconds / FIXED_DT);
+    for (let i = 0; i < maxSteps && world.status === "running"; i++) {
+      const err = targetX - world.x;
+      const maxLat = Math.max(10, world.speed) * STEER.RATIO;
+      const desiredVel = Math.sign(err) * Math.min(Math.abs(err) * 4, maxLat);
+      input.axis = Math.max(-1, Math.min(1, (desiredVel - world.latVel) * 0.3));
+      input.boost = world.boosting ? true : world.energy > 14;
+      world.update(FIXED_DT, input);
+    }
+    assert.equal(world.status, "running", "gauntlet line must not crash");
+    return world;
+  };
+
+  const tight = gauntletRun(TIGHT_X, 75);
+  const tightUptime = tight.stats.boostTime / tight.stats.duration;
+  console.log(
+    `gauntlet tight line: uptime=${(tightUptime * 100).toFixed(0)}% ` +
+    `dist=${tight.distance.toFixed(0)}m score=${Math.floor(tight.score)} ` +
+    `nearMiss=${tight.stats.nearMisses} threads=${tight.stats.threads} ` +
+    `razor=${tight.stats.razorPasses}`,
+  );
+  assert.ok(
+    tightUptime > 0.8,
+    `tight line cannot sustain boost through hard patterns (${(tightUptime * 100).toFixed(0)}%, want >80%)`,
+  );
+  assert.ok(tight.stats.threads > 40, `tight line should thread every gate (${tight.stats.threads})`);
+
+  const safe = gauntletRun(SAFE_X, 75);
+  const safeUptime = safe.stats.boostTime / safe.stats.duration;
+  console.log(
+    `gauntlet safe line:  uptime=${(safeUptime * 100).toFixed(0)}% ` +
+    `dist=${safe.distance.toFixed(0)}m score=${Math.floor(safe.score)} ` +
+    `nearMiss=${safe.stats.nearMisses}`,
+  );
+  assert.ok(
+    tight.score > safe.score * 8,
+    `the tight line must dwarf the safe line (${Math.floor(tight.score)} vs ${Math.floor(safe.score)})`,
+  );
+  assert.ok(
+    safeUptime < 0.15,
+    `safe lane must not sustain boost through hard patterns (${(safeUptime * 100).toFixed(0)}%)`,
+  );
+  assert.equal(safe.stats.nearMisses, 0, "safe lane must not graze");
+
+  // On real seeds, a center-line shard-collecting bot stays a visitor to
+  // boost, not a resident.
+  const safeRuns: number[] = [];
+  for (let r = 0; r < 4; r++) {
+    const world = new SimWorld();
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    world.start(`test-${r}`, false);
+    const maxSteps = Math.floor(150 / FIXED_DT);
+    let steps = 0;
+    while (world.status === "running" && steps < maxSteps) {
+      autopilot(world, input, { boost: true });
+      world.update(FIXED_DT, input);
+      steps++;
+    }
+    safeRuns.push(world.stats.boostTime / Math.max(1e-6, world.stats.duration));
+  }
+  const safeAvg = safeRuns.reduce((a, b) => a + b, 0) / safeRuns.length;
+  console.log(`real-track safe bot: avg uptime=${(safeAvg * 100).toFixed(0)}%`);
+  assert.ok(
+    safeAvg < 0.35,
+    `real-track center-line play sustains boost too easily (${(safeAvg * 100).toFixed(0)}%)`,
+  );
+  console.log("boost economy gate: PASS");
+}
+
 // Determinism check.
 {
   const a = new SimWorld();
@@ -171,6 +346,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   const eventsB: unknown[] = [];
   const wire = (world: SimWorld, out: unknown[]) => {
     world.events.on("nearMiss", (event) => out.push(["nearMiss", event]));
+    world.events.on("thread", (event) => out.push(["thread", event]));
     world.events.on("shard", (event) => out.push(["shard", event]));
     world.events.on("flowTier", (event) => out.push(["flowTier", event]));
     world.events.on("biome", (event) => out.push(["biome", event]));
@@ -183,6 +359,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   b.start("determinism", false);
   for (let i = 0; i < 12000; i++) {
     input.axis = Math.sin(i * 0.01) * 0.8;
+    input.boost = i % 900 < 300;
     a.update(FIXED_DT, input);
     b.update(FIXED_DT, input);
   }
@@ -222,7 +399,188 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   assert.ok(world.flowDecayGrace < 3, "Flow grace should remain bounded");
 }
 
+// Uncapped Flow: gains push past the old cap; superlinear decay pulls back.
+{
+  const decayRateAt = (points: number): number => {
+    const world = new SimWorld();
+    world.start("flow-uncap", false);
+    world.clearField();
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    world.flowPoints = points;
+    world.update(FIXED_DT, input); // Settle flowTier for this level.
+    world.flowPoints = points;
+    world.flowTimer = 100; // Deep past the grace window.
+    const before = world.flowPoints;
+    world.update(FIXED_DT, input);
+    return (before - world.flowPoints) / FIXED_DT;
+  };
+
+  const over = decayRateAt(40);
+  const under = decayRateAt(20);
+  assert.ok(under > 0, "flow must decay below the soft cap too");
+  assert.ok(
+    over > under * 4,
+    `overcap decay should be superlinear (${over.toFixed(2)}/s vs ${under.toFixed(2)}/s)`,
+  );
+
+  // Flow points are genuinely uncapped now: a long graze chain pushes past 28.
+  const world = new SimWorld();
+  world.start("flow-uncap-gain", false);
+  world.clearField();
+  world.flowPoints = 27.9;
+  world.flowTimer = 0;
+  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  world.update(FIXED_DT, input);
+  const probe = world.obstacles[0];
+  Object.assign(probe, {
+    active: true, kind: "box",
+    s: world.distance + 6, x: -1.2 - 3, hx: 3, hs: 0.5, y: 1, hy: 2, yaw: 0,
+    motion: Motion.None, collidable: true,
+    cx: -1.2 - 3, cy: 1, cs: world.distance + 6, cyaw: 0,
+    state: 0, landed: false,
+    nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+    patternId: "flowUncap",
+  });
+  for (let i = 0; i < 240 && world.stats.nearMisses === 0; i++) {
+    world.update(FIXED_DT, input);
+  }
+  assert.equal(world.stats.nearMisses, 1);
+  assert.ok(
+    world.stats.maxFlowPoints > 28.5,
+    `flow should exceed the old cap (peaked at ${world.stats.maxFlowPoints.toFixed(1)})`,
+  );
+}
+
 console.log("simulation assertions: PASS");
+
+// --- Thread the needle -------------------------------------------------------
+// Synthetic gates driven through with a straight line: threads must fire on
+// opposite-side pairs inside the window and never on single edges or
+// same-side chains.
+{
+  const runProbe = (
+    obstacles: Partial<SimWorld["obstacles"][number]>[],
+  ): { world: SimWorld; threads: number; threadEvents: { scoreAward: number; tightness: number }[] } => {
+    const world = new SimWorld();
+    world.start("thread-probe", false);
+    world.clearField();
+    obstacles.forEach((spec, i) => {
+      Object.assign(world.obstacles[i], {
+        active: true,
+        kind: "box",
+        y: 1, hy: 2,
+        yaw: 0,
+        motion: Motion.None,
+        collidable: true,
+        cyaw: 0,
+        state: 0, landed: false,
+        nearMissed: false,
+        nearMissClearance: Infinity,
+        nearMissSide: 0,
+        patternId: "threadProbe",
+        ...spec,
+        cx: spec.x, cy: 1, cs: spec.s,
+      });
+    });
+    const threadEvents: { scoreAward: number; tightness: number }[] = [];
+    world.events.on("thread", (e) => threadEvents.push(e));
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    for (let i = 0; i < 600 && world.status === "running"; i++) {
+      world.update(FIXED_DT, input);
+    }
+    assert.equal(world.status, "running", "thread probe must not crash");
+    return { world, threads: world.stats.threads, threadEvents };
+  };
+
+  // Hull edges at ±1.55 -> clearance 0.8 per side: double graze -> thread.
+  const gate = (s: number, gapHalf: number, side: 1 | -1 | 0 = 0) => {
+    const walls: Partial<SimWorld["obstacles"][number]>[] = [];
+    if (side <= 0) walls.push({ s, x: -gapHalf - 3, hx: 3, hs: 1 });
+    if (side >= 0) walls.push({ s, x: gapHalf + 3, hx: 3, hs: 1 });
+    return walls;
+  };
+
+  const needle = runProbe(gate(30, 1.55));
+  assert.equal(needle.threads, 1, "narrow gate must pay exactly one thread");
+  assert.equal(needle.world.stats.nearMisses, 2, "both walls of the needle graze");
+  assert.ok(needle.threadEvents[0].scoreAward > 0);
+  assert.ok(needle.threadEvents[0].tightness > 0.5);
+
+  // Wider gate: no grazes (clearance ~1.85 > near-miss), still a thread.
+  const pressed = runProbe(gate(30, 2.6));
+  assert.equal(pressed.threads, 1, "pressed pass pair must still thread");
+  assert.equal(pressed.world.stats.nearMisses, 0, "pressed passes are not grazes");
+  assert.ok(
+    pressed.threadEvents[0].scoreAward < needle.threadEvents[0].scoreAward,
+    "looser needles pay less",
+  );
+
+  // Single edge: a graze on one side only — never a thread.
+  const single = runProbe(gate(30, 1.55, -1));
+  assert.equal(single.threads, 0, "single-edge graze must never thread");
+  assert.equal(single.world.stats.nearMisses, 1);
+
+  // Same-side staggered pair: two grazes, no thread.
+  const sameSide = runProbe([
+    { s: 30, x: -1.55 - 3, hx: 3, hs: 1 },
+    { s: 38, x: -1.55 - 3, hx: 3, hs: 1 },
+  ]);
+  assert.equal(sameSide.threads, 0, "same-side chain must never thread");
+  assert.equal(sameSide.world.stats.nearMisses, 2);
+
+  // Opposite sides but too far apart along-track: no thread.
+  const farApart = runProbe([
+    { s: 30, x: -1.55 - 3, hx: 3, hs: 1 },
+    { s: 30 + THREAD.WINDOW + 8, x: 1.55 + 3, hx: 3, hs: 1 },
+  ]);
+  assert.equal(farApart.threads, 0, "window must bound thread pairing");
+  assert.equal(farApart.world.stats.nearMisses, 2);
+
+  // Wide-open pass (clearance beyond THREAD.CLEARANCE): nothing at all.
+  const wide = runProbe(gate(30, 4.2));
+  assert.equal(wide.threads, 0);
+  assert.equal(wide.world.stats.nearMisses, 0);
+
+  console.log("thread assertions: PASS");
+}
+
+// Grazes fund boost: a razor pass pays energy (and more of it while boosting).
+{
+  const grazeEnergy = (boosting: boolean): number => {
+    const world = new SimWorld();
+    world.start("graze-energy", false);
+    world.clearField();
+    Object.assign(world.obstacles[0], {
+      active: true, kind: "box",
+      s: 30, x: -1.2 - 3, hx: 3, hs: 1, y: 1, hy: 2, yaw: 0,
+      motion: Motion.None, collidable: true,
+      cx: -1.2 - 3, cy: 1, cs: 30, cyaw: 0,
+      state: 0, landed: false,
+      nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+      patternId: "grazeEnergy",
+    });
+    const input: InputState = { axis: 0, boost: boosting, restart: false, pause: false };
+    let award = 0;
+    world.events.on("nearMiss", (e) => {
+      award = e.energyAward;
+      assert.equal(world.boosting, boosting, "probe must pay out in the intended boost state");
+    });
+    for (let i = 0; i < 600 && world.status === "running"; i++) {
+      world.energy = Math.max(world.energy, 60); // Keep the tank from running dry.
+      world.update(FIXED_DT, input);
+    }
+    assert.equal(world.status, "running");
+    assert.equal(world.stats.nearMisses, 1, "graze-energy probe must graze exactly once");
+    return award;
+  };
+  const idleAward = grazeEnergy(false);
+  const boostAward = grazeEnergy(true);
+  assert.ok(Math.abs(idleAward - ENERGY.GRAZE_RAZOR) < 1e-9, `razor graze pays energy (${idleAward})`);
+  assert.ok(
+    Math.abs(boostAward - ENERGY.GRAZE_RAZOR * ENERGY.BOOST_REFUND) < 1e-9,
+    `boosting refund multiplies graze energy (${boostAward})`,
+  );
+}
 
 // Fixed-step partitioning must not grant slow motion at low render FPS.
 {
@@ -263,6 +621,7 @@ console.log("simulation assertions: PASS");
       cyaw: 0,
       nearMissed: false,
       nearMissClearance: Infinity,
+      nearMissSide: 0,
       patternId: "deathFreeze",
     });
     Object.assign(world.pickups[0], {

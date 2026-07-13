@@ -124,7 +124,7 @@ export function CameraRig() {
     // FOV: speed + boost kick, slight tunnel on death.
     const targetFov =
       66 + speedK * 13 + world.boostCharge * 9 - (dead ? 6 : 0) +
-      world.flowTier * 0.7 + s.boostKick * 4.2 * motionScale + s.flowKick * 1.4 * motionScale;
+      Math.min(world.flowTier, 6) * 0.7 + s.boostKick * 4.2 * motionScale + s.flowKick * 1.4 * motionScale;
     s.fov = damp(s.fov, reduceMotion ? lerp(66, targetFov, 0.4) : targetFov, 4, dt);
     if (Math.abs(camera.fov - s.fov) > 0.01) {
       camera.fov = s.fov;

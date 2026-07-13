@@ -1,5 +1,6 @@
 import {
   CRAFT,
+  DANGER,
   ENERGY,
   FIXED_DT,
   FLOW,
@@ -7,6 +8,7 @@ import {
   RUN,
   SPEED,
   STEER,
+  THREAD,
   TRACK,
 } from "./constants";
 import { Emitter } from "./events";
@@ -85,12 +87,14 @@ export interface RunStats {
   closePasses: number;
   razorPasses: number;
   perfectPasses: number;
+  threads: number;
   shards: number;
   bestShardCombo: number;
   bestFlowChain: number;
   maxFlowPoints: number;
   maxFlowTier: number;
   boosts: number;
+  boostTime: number;
   obstacleDrops: number;
   pickupDrops: number;
   duration: number;
@@ -135,6 +139,10 @@ export class SimWorld {
   iframes = 0;
   shardCombo = 0;
   shardComboTimer = 0;
+  /** Danger-weighted passive score factor (line choice vs. available geometry). */
+  dangerFactor = 1;
+  /** Last confirmed tight pass, pending a thread pairing. */
+  private lastPass: { at: number; side: number; award: number; clearance: number } | null = null;
 
   stats: RunStats = this.emptyStats();
 
@@ -168,6 +176,7 @@ export class SimWorld {
         role: "primary", glow: 1, collidable: true, inner: 0,
         cx: 0, cy: 0, cs: 0, cyaw: 0,
         state: 0, landed: false, nearMissed: false, nearMissClearance: Infinity,
+        nearMissSide: 0,
         patternId: "", spawnTime: 0,
       });
       this.obstacleFree.push(OBSTACLE_CAP - 1 - i);
@@ -184,9 +193,9 @@ export class SimWorld {
   private emptyStats(): RunStats {
     return {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
-      closePasses: 0, razorPasses: 0, perfectPasses: 0,
+      closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
       bestShardCombo: 0, bestFlowChain: 0,
-      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0,
+      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
       seed: "", daily: false, deathCause: null,
     };
@@ -227,6 +236,8 @@ export class SimWorld {
     this.iframes = 0;
     this.shardCombo = 0;
     this.shardComboTimer = 0;
+    this.dangerFactor = 1;
+    this.lastPass = null;
     this.deathTimer = 0;
     this.accumulator = 0;
     this.prevX = 0;
@@ -311,7 +322,10 @@ export class SimWorld {
 
     // --- Speed ---------------------------------------------------------
     const launch = clamp01(this.time / SPEED.LAUNCH_RAMP);
-    const flowBonus = 1 + this.flowTier * 0.035;
+    // Flow keeps paying score without bound, but its speed bonus stops at the
+    // pre-uncap maximum tier — speed stays a boost-driven ratchet.
+    const flowBonus =
+      1 + Math.min(this.flowTier, FLOW.SPEED_BONUS_TIER_CAP) * FLOW.SPEED_BONUS_PER_TIER;
     let targetSpeed = speedAt(this.distance) * launch * flowBonus;
 
     // Boost.
@@ -327,6 +341,7 @@ export class SimWorld {
       }
       if (this.boosting) {
         this.energy = Math.max(0, this.energy - ENERGY.BOOST_DRAIN * dt);
+        this.stats.boostTime += dt;
         if (this.energy <= 0) {
           this.boosting = false;
           this.events.emit("boostEnd", undefined);
@@ -400,6 +415,14 @@ export class SimWorld {
         1.8,
         FLOW.DECAY_GRACE - highTiers * FLOW.GRACE_LOSS_PER_HIGH_TIER,
       );
+      // Uncapped flow: everything above the soft cap bleeds continuously
+      // (no grace), quadratically in the overage. Sustained streams find an
+      // equilibrium set by their event rate instead of a hard wall.
+      const over = this.flowPoints - FLOW.MAX_POINTS;
+      if (over > 0) {
+        const bleed = FLOW.DECAY_RATE * FLOW.OVER_DECAY_QUAD * over * over;
+        this.flowPoints = Math.max(FLOW.MAX_POINTS, this.flowPoints - bleed * dt);
+      }
       if (this.flowTimer > decayGrace && this.flowPoints > 0) {
         const decayRate = FLOW.DECAY_RATE * (1 + highTiers * FLOW.DECAY_RATE_PER_HIGH_TIER);
         this.flowPoints = Math.max(0, this.flowPoints - decayRate * dt);
@@ -411,9 +434,10 @@ export class SimWorld {
 
       if (this.iframes > 0) this.iframes -= dt;
 
-      // Score: distance rate scaled by flow multiplier.
+      // Score: distance rate scaled by flow multiplier and local danger —
+      // flying where the geometry is dense pays; empty-edge hugging doesn't.
       const mult = 1 + this.flowPoints * FLOW.MULT_PER_POINT;
-      this.score += this.speed * dt * mult;
+      this.score += this.speed * dt * mult * this.dangerFactor;
 
       this.stats.score = Math.floor(this.score);
       this.stats.distance = this.distance;
@@ -511,6 +535,7 @@ export class SimWorld {
     o.landed = false;
     o.nearMissed = false;
     o.nearMissClearance = Infinity;
+    o.nearMissSide = 0;
     o.patternId = patternId;
     o.spawnTime = this.time;
   }
@@ -519,6 +544,8 @@ export class SimWorld {
     const t = this.time;
     const craftS = this.distance;
     const behind = craftS - TRACK.DESPAWN_BEHIND;
+    let engageDensity = 0;
+    let availDensity = 0;
 
     for (const o of this.obstacles) {
       if (!o.active) continue;
@@ -586,6 +613,26 @@ export class SimWorld {
         ? Math.hypot(o.hx, o.hs)
         : Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
       const dS = craftS - o.cs;
+
+      // Danger sample. Availability: is there anything to dodge in this
+      // stretch at all? Engagement: is the craft's line actually near it?
+      // Only geometry in the craft's vertical band counts — an arch crossbar
+      // overhead is scenery, not danger.
+      if (Math.abs(dS) < DANGER.S_WINDOW) {
+        const vHalf = o.kind === "ring" ? o.hx : o.hy;
+        if (o.cy - vHalf < CRAFT.Y_MAX && o.cy + vHalf > CRAFT.Y_MIN) {
+          const ws = 1 - Math.abs(dS) / DANGER.S_WINDOW;
+          availDensity += ws;
+          const effHx = o.kind === "ring"
+            ? o.hx
+            : Math.abs(Math.cos(o.cyaw)) * o.hx + Math.abs(Math.sin(o.cyaw)) * o.hs;
+          const dxEdge = Math.max(0, Math.abs(o.cx - this.x) - effHx - CRAFT.RADIUS);
+          if (dxEdge < DANGER.X_REACH) {
+            engageDensity += ws * (1 - dxEdge / DANGER.X_REACH);
+          }
+        }
+      }
+
       const withinS = Math.abs(dS) < sExtent + stepLen + CRAFT.RADIUS + 1.5;
 
       if (withinS) {
@@ -631,29 +678,79 @@ export class SimWorld {
           } else if (
             !o.nearMissed &&
             o.motion !== Motion.FallY && // state doubles as fall velocity there
-            clearance < FLOW.NEAR_MISS_CLEARANCE
+            clearance < THREAD.CLEARANCE
           ) {
-            // Keep the true closest approach; payout happens once fully passed.
-            o.nearMissClearance = Math.min(o.nearMissClearance, clearance);
+            // Keep the true closest approach (and its side); payout happens
+            // once fully passed. The wider THREAD band also tracks "pressed"
+            // passes that only matter as thread partners.
+            if (clearance < o.nearMissClearance) {
+              o.nearMissClearance = clearance;
+              o.nearMissSide = o.cx >= this.x ? 1 : -1;
+            }
           }
         }
       }
 
-      // Near-miss confirmation: obstacle fully behind the craft.
+      // Pass confirmation: obstacle fully behind the craft.
       if (
         !o.nearMissed &&
-        o.nearMissClearance < FLOW.NEAR_MISS_CLEARANCE &&
+        o.nearMissClearance < THREAD.CLEARANCE &&
         o.motion !== Motion.FallY && // Falling slabs feel arbitrary for near-miss credit.
         obstacleTrailingEdge(o) < craftS - CRAFT.RADIUS
       ) {
         o.nearMissed = true;
-        if (alive) this.onNearMiss(o);
+        if (alive) this.onPassConfirmed(o);
       }
+    }
+
+    if (alive) {
+      const engagement = 1 - Math.exp(-engageDensity / DANGER.REF_ENGAGE);
+      const availability = 1 - Math.exp(-availDensity / DANGER.REF_AVAIL);
+      this.dangerFactor =
+        1 + DANGER.BONUS * engagement - DANGER.PENALTY * availability * (1 - engagement);
     }
   }
 
-  private onNearMiss(o: Obstacle): void {
-    const clearance = clamp(o.nearMissClearance, 0, FLOW.NEAR_MISS_CLEARANCE);
+  /**
+   * Precision rewards scale with speed — grazing at 130 m/s is worth far more
+   * than at base speed. Floored at 1 so the launch ramp never shrinks rewards.
+   */
+  get speedRewardFactor(): number {
+    return Math.max(1, Math.pow(this.speed / SPEED.BASE, FLOW.SPEED_REWARD_EXP));
+  }
+
+  /** Flow-point gains use a damped, capped speed factor (tier spikes stay bounded). */
+  private get speedFlowFactor(): number {
+    return clamp(this.speed / SPEED.BASE, 1, FLOW.SPEED_FLOW_FACTOR_CAP);
+  }
+
+  private grantEnergy(amount: number): number {
+    const refunded = amount * (this.boosting ? ENERGY.BOOST_REFUND : 1);
+    const before = this.energy;
+    this.energy = Math.min(ENERGY.MAX, this.energy + refunded);
+    return this.energy - before;
+  }
+
+  /** A tight pass fully settled. Pays the graze (if close enough) and checks threads. */
+  private onPassConfirmed(o: Obstacle): void {
+    const clearance = clamp(o.nearMissClearance, 0, THREAD.CLEARANCE);
+    const side = o.nearMissSide || (o.cx >= this.x ? 1 : -1);
+    let award = 0;
+    if (clearance < FLOW.NEAR_MISS_CLEARANCE) {
+      award = this.onNearMiss(o, clearance);
+    }
+
+    // Thread the needle: this pass + a recent pass on the opposite side.
+    const prev = this.lastPass;
+    if (prev && prev.side !== side && this.distance - prev.at <= THREAD.WINDOW) {
+      this.onThread(o, prev, { award, clearance });
+      this.lastPass = null;
+    } else {
+      this.lastPass = { at: this.distance, side, award, clearance };
+    }
+  }
+
+  private onNearMiss(o: Obstacle, clearance: number): number {
     const reward = precisionRewardAt(clearance);
     if (reward.grade === "perfect") {
       this.stats.perfectPasses++;
@@ -666,14 +763,26 @@ export class SimWorld {
     this.flowChain = this.flowChainTimer <= FLOW.CHAIN_WINDOW ? this.flowChain + 1 : 1;
     this.flowChainTimer = 0;
     this.stats.bestFlowChain = Math.max(this.stats.bestFlowChain, this.flowChain);
-    this.flowPoints = Math.min(FLOW.MAX_POINTS, this.flowPoints + reward.flowPoints);
+    this.flowPoints += reward.flowPoints * this.speedFlowFactor;
     this.flowTimer = 0;
     this.stats.nearMisses++;
+
+    // Grazes fund boost — the perpetual-boost loop for elite play.
+    const grazeEnergy =
+      reward.grade === "perfect"
+        ? ENERGY.GRAZE_PERFECT
+        : reward.grade === "razor"
+          ? ENERGY.GRAZE_RAZOR
+          : ENERGY.GRAZE_CLOSE;
+    const energyAward = this.grantEnergy(grazeEnergy);
+
     const chainBonus = 1 + Math.min(
       FLOW.CHAIN_SCORE_CAP,
       Math.max(0, this.flowChain - 1) * FLOW.CHAIN_SCORE_STEP,
     );
-    const scoreAward = Math.round(reward.baseScore * this.flowMultiplier * chainBonus);
+    const scoreAward = Math.round(
+      reward.baseScore * this.flowMultiplier * chainBonus * this.speedRewardFactor,
+    );
     this.score += scoreAward;
     this.events.emit("nearMiss", {
       x: o.cx, s: o.cs,
@@ -682,7 +791,38 @@ export class SimWorld {
       grade: reward.grade,
       chain: this.flowChain,
       scoreAward,
+      energyAward,
       flowPoints: this.flowPoints,
+    });
+    return scoreAward;
+  }
+
+  private onThread(
+    o: Obstacle,
+    prev: { award: number; clearance: number },
+    cur: { award: number; clearance: number },
+  ): void {
+    // Tightness graded on the worse side of the pair.
+    const worse = Math.max(prev.clearance, cur.clearance);
+    const tightness = clamp01(1 - worse / THREAD.CLEARANCE);
+    const base = THREAD.SCORE_MIN + (THREAD.SCORE_MAX - THREAD.SCORE_MIN) * tightness * tightness;
+    let scoreAward = Math.round(base * this.flowMultiplier * this.speedRewardFactor);
+    // A true double-graze needle also repays both awards multiplicatively
+    // (they already carry the flow/speed multipliers — no re-scaling).
+    if (prev.award > 0 && cur.award > 0) {
+      scoreAward += Math.round((prev.award + cur.award) * (THREAD.BONUS_MULT - 1));
+    }
+    this.score += scoreAward;
+    this.flowPoints += THREAD.FLOW_POINTS * this.speedFlowFactor;
+    this.flowTimer = 0;
+    this.grantEnergy(THREAD.ENERGY);
+    this.stats.threads++;
+    this.events.emit("thread", {
+      x: o.cx,
+      s: o.cs,
+      scoreAward,
+      tightness,
+      count: this.stats.threads,
     });
   }
 
@@ -693,6 +833,7 @@ export class SimWorld {
       this.flowPoints = Math.max(0, this.flowPoints - FLOW.SHIELD_PENALTY);
       this.flowChain = 0;
       this.flowChainTimer = FLOW.CHAIN_WINDOW + 1;
+      this.lastPass = null;
       this.events.emit("shieldBreak", { x: this.x });
       return;
     }
@@ -762,10 +903,7 @@ export class SimWorld {
           const energyBefore = this.energy;
           this.energy = Math.min(ENERGY.MAX, this.energy + nominalEnergy);
           const energyAward = this.energy - energyBefore;
-          this.flowPoints = Math.min(
-            FLOW.MAX_POINTS,
-            this.flowPoints + FLOW.POINTS_PER_SHARD * riskBonus,
-          );
+          this.flowPoints += FLOW.POINTS_PER_SHARD * riskBonus;
           this.flowTimer = 0;
           const scoreAward = Math.round(
             ENERGY.SHARD_SCORE *

@@ -286,7 +286,9 @@ function GameOverScreen() {
           <Stat label="PEAK FLOW" value={`×${(1 + s.maxFlowPoints * FLOW.MULT_PER_POINT).toFixed(2)}`} />
           <Stat label="TIME" value={`${s.duration.toFixed(1)}s`} />
           <Stat label="PERFECT PASSES" value={String(s.perfectPasses)} />
+          <Stat label="THREADS" value={String(s.threads)} />
           <Stat label="BEST CHAIN" value={String(s.bestFlowChain)} />
+          <Stat label="BOOST TIME" value={`${s.boostTime.toFixed(1)}s`} />
         </div>
 
         <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
