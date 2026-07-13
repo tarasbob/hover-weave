@@ -10,8 +10,13 @@ export interface InputState {
 }
 
 /**
- * Merges keyboard, pointer-drag (touch) and gamepad into one input state.
- * Pure DOM listeners; no React.
+ * Merges keyboard, pointer hold-zones (touch) and gamepad into one input
+ * state. Pure DOM listeners; no React.
+ *
+ * Steering is two buttons everywhere by design (roadmap 5.2 cut): the
+ * pointer's screen half, the stick's sign, and the d-pad all produce the
+ * same digital -1 / 0 / +1 the keyboard does. Depth lives in the momentum
+ * model, not in analog input.
  */
 export class InputManager {
   readonly state: InputState = { axis: 0, boost: false, restart: false, pause: false };
@@ -111,8 +116,9 @@ export class InputManager {
   private updatePointer(e: PointerEvent, target: HTMLElement): void {
     const rect = target.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
-    // Full deflection at 22% of the screen width from center.
-    this.pointerAxis = clamp((e.clientX - cx) / (rect.width * 0.22), -1, 1);
+    // Hold zones, not an analog stick: left half steers left, right half
+    // steers right. Crossing the center flips the direction.
+    this.pointerAxis = e.clientX < cx ? -1 : 1;
   }
 
   /** Poll gamepad + merge sources. Call once per rendered frame. */
@@ -140,8 +146,11 @@ export class InputManager {
       let pausePressed = false;
       for (const pad of pads) {
         if (!pad) continue;
+        // The stick is two buttons with a wide deadzone; the d-pad is native.
         const gx = pad.axes[0] ?? 0;
-        if (Math.abs(gx) > 0.12) axis = clamp(gx * 1.15, -1, 1);
+        if (Math.abs(gx) > 0.35) axis = Math.sign(gx);
+        if (pad.buttons[14]?.pressed) axis = -1;
+        if (pad.buttons[15]?.pressed) axis = 1;
         if (pad.buttons[0]?.pressed || pad.buttons[7]?.pressed) boost = true;
         restartPressed = Boolean(pad.buttons[1]?.pressed);
         pausePressed = Boolean(pad.buttons[9]?.pressed);

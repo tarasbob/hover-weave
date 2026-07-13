@@ -3,13 +3,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { ghostKey, type GameMode } from "../core/modes";
-import { REPLAY_VERSION, type RunRecording } from "../core/replay";
+import { ghostEligible, type RunRecording } from "../core/replay";
 
 /** Keep at most this many recordings per rolling-period prefix (most recent). */
 const PERIOD_KEEP = 3;
 
-const valid = (rec: RunRecording | null | undefined): rec is RunRecording =>
-  Boolean(rec && rec.v === REPLAY_VERSION && rec.mode && rec.complete && rec.steps > 0);
+// Version match, complete stream, no lab stack (lab runs never persist).
+const valid = ghostEligible;
 
 /** Trials race for distance; every other mode races for score. */
 const beats = (rec: RunRecording, prev: RunRecording | undefined): boolean => {

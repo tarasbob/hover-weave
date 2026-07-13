@@ -70,11 +70,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
             : mode === "trial"
               ? { mode, seed: trialSeed(trialId ?? ""), trialId }
               : { mode, seed: randomSeed() };
-      // Heat rides only on endless launches (roadmap 4.3), from the pre-run
-      // selection. The sim canonicalizes the stack.
+      // Heat and lab prototypes ride only on endless launches (roadmap 4.3 /
+      // Phase 5), from the pre-run selections. The sim canonicalizes both.
       if (mode === "endless") {
         const heat = useMeta.getState().selectedHeat;
         if (heat.length > 0) config.heat = [...heat];
+        const lab = useMeta.getState().selectedLab;
+        if (lab.length > 0) config.lab = [...lab];
       }
       // Dev probe: `?start=25000` spawns deep into an endless run (overdrive
       // speeds/density) for pop-in and pacing checks. Never in production.
@@ -95,9 +97,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.start(config);
       // Race your PB ghost: daily/sprint/trial share the seed (true spatial
       // ghosts), endless re-flies its own recorded track (pace ghost).
-      // Skipped runs race nothing.
+      // Skipped runs and lab prototypes race nothing (lab physics differ —
+      // pacing a plain-run ghost against them would be a lie).
       ghost.arm(
-        useSettings.getState().showGhost && !config.skipTo
+        useSettings.getState().showGhost && !config.skipTo && !config.lab
           ? useReplays.getState().ghostFor(mode, active.periodKey, config.trialId ?? null)
           : null,
       );
@@ -183,15 +186,30 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const stats = world.stats;
       const periodKey =
         stats.mode === "daily" ? dailyKey() : stats.mode === "sprint" ? weeklyKey() : null;
+      // Lab prototype runs are unranked sandboxes (roadmap Phase 5): no PBs,
+      // no rating, no streaks, no lifetime tallies, no ghost — nothing
+      // persists. The run still records in-memory so replays stay testable.
+      const labRun = stats.lab.length > 0;
       // Mode-aware "how close was I": sprint runs race the week's best score,
       // trials race their own distance table, endless/daily the global PBs.
       const prevSprint = periodKey ? meta.sprintBest[periodKey] : undefined;
       const prevTrial = stats.trialId ? meta.trialBest[stats.trialId] : undefined;
-      const res = meta.recordRun(stats, periodKey);
+      const res = labRun
+        ? {
+            newBestScore: false,
+            newBestDistance: false,
+            newDailyBest: false,
+            newSprintBest: false,
+            newTrialBest: false,
+            medal: null,
+            ratingDelta: null,
+            deathStreak: 0,
+          }
+        : meta.recordRun(stats, periodKey);
       const after = metaSnapshot(useMeta.getState());
       // Persist the run's input recording — tomorrow's ghost (roadmap 3.1/3.2).
       const recording = world.getRecording();
-      if (recording) useReplays.getState().recordRun(recording, periodKey);
+      if (recording && !labRun) useReplays.getState().recordRun(recording, periodKey);
       const unlocked: { kind: "craft" | "trail"; id: string; name: string }[] = [];
       for (const c of CRAFTS) {
         if (!c.unlock.check(before) && c.unlock.check(after)) {
@@ -203,14 +221,16 @@ export function GameProvider({ children }: { children: ReactNode }) {
           unlocked.push({ kind: "trail", id: t.id, name: t.name });
         }
       }
-      const scoreDelta =
-        stats.mode === "sprint"
+      const scoreDelta = labRun
+        ? 0
+        : stats.mode === "sprint"
           ? stats.score - (prevSprint?.score ?? 0)
           : stats.mode === "trial"
             ? 0
             : stats.score - before.bestScore;
-      const distanceDelta =
-        stats.mode === "sprint"
+      const distanceDelta = labRun
+        ? 0
+        : stats.mode === "sprint"
           ? 0
           : stats.mode === "trial"
             ? (prevTrial?.distance ?? 0) - stats.distance
@@ -304,6 +324,10 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.events.on("boostStart", () => {
         env.triggerBoost(1);
         audio.boostStart();
+      }),
+      world.events.on("surge", () => {
+        env.triggerBoost(0.8);
+        audio.surge();
       }),
       world.events.on("boostEnd", () => {
         env.triggerBoost(0.45);

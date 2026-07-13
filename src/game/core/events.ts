@@ -46,6 +46,8 @@ export type GameEvents = {
   finish: { score: number; distance: number };
   boostStart: undefined;
   boostEnd: undefined;
+  /** A free-boost surge window opened (lab prototype, roadmap 5.1). */
+  surge: { window: number };
   flowTier: { tier: number; prev: number };
   /** A graded chunk was fully traversed (roadmap 3.4). */
   sectionGrade: {

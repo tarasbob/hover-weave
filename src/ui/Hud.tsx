@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { LAB_BY_ID } from "@/game/core/lab";
 import { MODE_LABELS } from "@/game/core/modes";
 import { trialById } from "@/game/track/trials";
 import { useGame, type SectionGradeToast, type SkillMoment } from "@/game/state/game";
@@ -107,6 +108,14 @@ export function Hud() {
             HEAT ×{hud.heatMult.toFixed(2)}
           </div>
         )}
+        {hud.lab.length > 0 && (
+          <div
+            className="mt-0.5 text-[10px] font-bold tracking-[0.2em] text-violet-300/90"
+            title="Lab prototype active — this run is unranked"
+          >
+            LAB · {hud.lab.map((id) => LAB_BY_ID[id].name.toUpperCase()).join(" · ")}
+          </div>
+        )}
         <div className="text-sm text-white/80">{hud.biome}</div>
         {mode !== "trial" && (
           <div className="mt-1 text-[11px] tabular-nums text-white/40">
@@ -171,18 +180,32 @@ export function Hud() {
         <div className="flex-1">
           <div className="mb-1 flex justify-between text-[10px] tracking-[0.25em] text-white/45">
             <span>ENERGY</span>
-            <span className={hud.boosting ? "text-amber-300" : ""}>
-              {hud.boosting ? "BOOSTING" : hud.shardCombo > 1 ? `SHARDS ×${hud.shardCombo}` : boostHint()}
+            <span className={hud.surge ? "text-emerald-300" : hud.boosting ? "text-amber-300" : ""}>
+              {hud.surge
+                ? "SURGE — FREE BOOST"
+                : hud.boosting
+                  ? "BOOSTING"
+                  : hud.shardCombo > 1
+                    ? `SHARDS ×${hud.shardCombo}`
+                    : boostHint()}
             </span>
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-white/10">
+          <div
+            className={`h-2 overflow-hidden rounded-full bg-white/10 transition-shadow ${
+              hud.surge ? "shadow-[0_0_14px_rgba(52,211,153,0.55)]" : ""
+            }`}
+          >
             <div
               className={`h-full rounded-full transition-[width] duration-150 ${
-                hud.boosting
-                  ? "bg-gradient-to-r from-amber-300 to-orange-400"
-                  : "bg-gradient-to-r from-cyan-300 to-sky-400"
+                hud.surge
+                  ? "bg-gradient-to-r from-emerald-300 to-cyan-300"
+                  : hud.boosting
+                    ? "bg-gradient-to-r from-amber-300 to-orange-400"
+                    : "bg-gradient-to-r from-cyan-300 to-sky-400"
               }`}
-              style={{ width: `${hud.energy}%` }}
+              // While a surge window is open the bar reads as the surge
+              // indicator (boost is free), not the energy meter.
+              style={{ width: `${hud.surge ? 100 : hud.energy}%` }}
             />
           </div>
         </div>

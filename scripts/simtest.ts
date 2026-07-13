@@ -21,6 +21,7 @@ import {
 } from "../src/game/core/world";
 import { GhostDriver } from "../src/game/core/ghost";
 import {
+  ghostEligible,
   packInput,
   quantizeAxis,
   resimulate,
@@ -34,10 +35,12 @@ import {
   POOL_SIZES,
   SPRINT_MODE,
   STEER,
+  SURGE,
   THREAD,
   TRACK,
 } from "../src/game/core/constants";
 import { heatScoreMult, normalizeHeat, resolveHeat, NO_HEAT, type HeatId } from "../src/game/core/heat";
+import { normalizeLab, resolveLab, NO_LAB, type LabId } from "../src/game/core/lab";
 import type { RunConfig } from "../src/game/core/modes";
 import { questsForDay, QUESTS_PER_DAY, type QuestSample } from "../src/game/core/quests";
 import { RATING, ratingTier, runPerformance, updateRating, RATING_TIERS } from "../src/game/core/rating";
@@ -46,7 +49,7 @@ import { Motion, type ObstacleSpec } from "../src/game/core/types";
 import { TrackGenerator } from "../src/game/track/generator";
 import { MEDAL_ORDER, TRIALS, medalFor, nextMedalFor, trialSeed } from "../src/game/track/trials";
 import { corridorLanes, validatePattern } from "../src/game/track/validator";
-import { autopilot, lookaheadPilot, superhumanPilot } from "./pilots";
+import { autopilot, lookaheadPilot, scanGaps, steerToward, superhumanPilot } from "./pilots";
 
 const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
 
@@ -1497,4 +1500,190 @@ console.log("edge-case assertions: PASS");
     }
   }
   console.log("quest gate: PASS (stable rotation, sane progress functions)");
+}
+
+// --- Phase 5: lab prototypes (5.1 surge windows) ------------------------------
+{
+  // Canonicalization + identity: no lab resolves to all-off flags.
+  assert.deepEqual(normalizeLab(undefined), []);
+  assert.deepEqual(normalizeLab(["surge", "surge", "bogus"]), ["surge"]);
+  assert.equal(resolveLab([]), NO_LAB);
+  assert.equal(NO_LAB.surge, false);
+  assert.equal(resolveLab(["surge"]).surge, true);
+
+  // An explicit empty lab stack is the same run as no stack at all — and a
+  // plain run's recording carries no lab field (persisted ghosts unchanged,
+  // byte for byte).
+  {
+    const plain = new SimWorld();
+    const empty = new SimWorld();
+    plain.start(endless("lab-identity"));
+    empty.start({ mode: "endless", seed: "lab-identity", lab: [] });
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    for (let i = 0; i < 2400; i++) {
+      input.axis = Math.sin(i * 0.013) * 0.7;
+      input.boost = i % 300 < 120;
+      plain.update(FIXED_DT, input);
+      empty.update(FIXED_DT, input);
+    }
+    assert.deepEqual(empty.stats, plain.stats, "empty lab stack must be a plain run");
+    const rec = plain.getRecording();
+    assert.ok(rec, "identity probe must record");
+    assert.ok(!("lab" in rec), "plain recordings must not grow a lab field");
+    assert.ok(ghostEligible(rec), "plain recordings stay ghost-eligible");
+  }
+
+  // Surge windows pay exactly SURGE.WINDOW of free boost per perfect pass.
+  // Controlled field: one hand-placed perfect-graze box; boost held all run.
+  // Both arms play identically until the pass, so the boost-time delta is
+  // the window itself.
+  {
+    const perfectBox = (world: SimWorld, s: number): void => {
+      // Hull clearance 0.15 m (< PERFECT_CLEARANCE 0.24) at x = 0.
+      Object.assign(world.obstacles[0], {
+        active: true, kind: "box",
+        s, x: 1.9, y: 1, hx: 1, hy: 2, hs: 0.5, yaw: 0,
+        motion: Motion.None, m0: 0, m1: 0, m2: 0, collidable: true,
+        cx: 1.9, cy: 1, cs: s, cyaw: 0,
+        state: 0, landed: false,
+        nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+        patternId: "labSurge",
+      });
+    };
+    const surgeProbe = (lab: LabId[]) => {
+      const world = new SimWorld();
+      world.start({ mode: "endless", seed: "lab-surge", lab });
+      world.clearField();
+      (world as unknown as { generator: null }).generator = null;
+      perfectBox(world, 40);
+      let surges = 0;
+      world.events.on("surge", (e) => {
+        assert.equal(e.window, SURGE.WINDOW);
+        surges++;
+      });
+      const input: InputState = { axis: 0, boost: true, restart: false, pause: false };
+      for (let i = 0; i < 840; i++) world.update(FIXED_DT, input);
+      assert.equal(world.status, "running", "surge probe must survive its lone box");
+      assert.equal(world.stats.perfectPasses, 1, "the probe box must land a perfect pass");
+      return { surges, boostTime: world.stats.boostTime };
+    };
+    const plain = surgeProbe([]);
+    const surged = surgeProbe(["surge"]);
+    assert.equal(plain.surges, 0, "surge must never fire with the lab off");
+    assert.ok(surged.surges >= 1, "a perfect pass must open a surge window");
+    const delta = surged.boostTime - plain.boostTime;
+    assert.ok(
+      Math.abs(delta - SURGE.WINDOW) < 0.05,
+      `surge must pay exactly the window of free boost (Δ ${delta.toFixed(3)}s vs ${SURGE.WINDOW}s)`,
+    );
+
+    // Ignition on an empty meter: with energy pinned to zero every step,
+    // boost cannot light before the window and must run exactly through it.
+    const world = new SimWorld();
+    world.start({ mode: "endless", seed: "lab-surge-zero", lab: ["surge"] });
+    world.clearField();
+    (world as unknown as { generator: null }).generator = null;
+    perfectBox(world, 50);
+    let surgeStep = -1;
+    world.events.on("surge", () => {
+      if (surgeStep < 0) surgeStep = step;
+    });
+    const input: InputState = { axis: 0, boost: true, restart: false, pause: false };
+    let step = 0;
+    let boostSteps = 0;
+    let boostedBeforeSurge = false;
+    let boostedAtZeroEnergy = false;
+    for (step = 0; step < 1200; step++) {
+      world.energy = 0;
+      world.update(FIXED_DT, input);
+      if (world.boosting) {
+        boostSteps++;
+        if (surgeStep < 0) boostedBeforeSurge = true;
+        if (world.energy <= 0) boostedAtZeroEnergy = true;
+      }
+    }
+    assert.ok(surgeStep > 0, "the zero-energy probe must land its perfect pass");
+    assert.equal(world.status, "running");
+    assert.ok(!boostedBeforeSurge, "an empty meter must not ignite without a surge");
+    assert.ok(boostedAtZeroEnergy, "a surge must ignite the boost on an empty meter");
+    const windowSteps = Math.round(SURGE.WINDOW / FIXED_DT);
+    assert.ok(
+      Math.abs(boostSteps - windowSteps) <= 3,
+      `zero-energy boost must last the window (${boostSteps} vs ${windowSteps} steps)`,
+    );
+    assert.ok(!world.boosting, "boost must die with the window on an empty meter");
+    console.log(
+      `surge gate: PASS (free window Δ ${delta.toFixed(3)}s; ` +
+      `empty-meter ignition ${boostSteps} steps)`,
+    );
+  }
+
+  // Lab runs replay bit-exactly (the recording carries the stack) and are
+  // never eligible as PB ghosts. The greedy bot flies gap centers and never
+  // grazes, so the probe uses a "grazer" line instead: hug the nearest gap
+  // edge ~0.2 m inside the conservative envelope — on real track that yields
+  // perfect passes (and usually a death), both of which the replay must
+  // reproduce. Scanned deterministic seeds: the chosen run must surge.
+  {
+    const grazer = (world: SimWorld, input: InputState): void => {
+      const craftS = world.distance;
+      const gaps = scanGaps(world, craftS + 2, craftS + 10 + Math.max(world.speed, 20) * 1.35);
+      let target = world.x;
+      let bestCost = Infinity;
+      for (const [g0, g1] of gaps) {
+        const center = Math.min(Math.max(world.x, g0 + 1.2), g1 - 1.2);
+        const cost = Math.abs(center - world.x) - Math.min(g1 - g0, 10) * 0.4;
+        if (cost < bestCost) {
+          bestCost = cost;
+          // The envelope edge already carries radius + slack of margin;
+          // 0.2 m inside it is perfect-pass clearance on static geometry.
+          target = Math.abs(world.x - g0) <= Math.abs(world.x - g1) ? g0 - 0.2 : g1 + 0.2;
+        }
+      }
+      steerToward(world, input, target);
+      input.boost = world.boosting ? true : world.energy > 14;
+    };
+
+    let chosen: string | null = null;
+    const maxSteps = Math.floor(240 / FIXED_DT);
+    for (let i = 0; i < 6 && !chosen; i++) {
+      const seed = `lab-replay-${i}`;
+      const live = new SimWorld();
+      live.start({ mode: "endless", seed, lab: ["surge"] });
+      let surges = 0;
+      live.events.on("surge", () => surges++);
+      const liveEvents: unknown[] = [];
+      live.events.on("nearMiss", (e) => liveEvents.push(["nearMiss", e]));
+      live.events.on("surge", (e) => liveEvents.push(["surge", e]));
+      live.events.on("death", (e) => liveEvents.push(["death", e]));
+      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      for (let s = 0; s < maxSteps && live.status === "running"; s++) {
+        grazer(live, input);
+        live.update(FIXED_DT, input);
+      }
+      if (surges === 0) continue;
+      chosen = seed;
+
+      assert.deepEqual(live.stats.lab, ["surge"], "stats must carry the canonical lab stack");
+      const rec = live.getRecording();
+      assert.ok(rec && rec.complete, "lab probe must record completely");
+      assert.deepEqual(rec.lab, ["surge"], "recording must carry the lab stack");
+      assert.ok(!ghostEligible(rec), "lab recordings must never be ghost-eligible");
+
+      const replayed = new SimWorld();
+      const replayEvents: unknown[] = [];
+      replayed.events.on("nearMiss", (e) => replayEvents.push(["nearMiss", e]));
+      replayed.events.on("surge", (e) => replayEvents.push(["surge", e]));
+      replayed.events.on("death", (e) => replayEvents.push(["death", e]));
+      resimulate(rec, replayed);
+      assert.deepEqual(replayed.stats, live.stats, "lab replay must be bit-exact");
+      assert.deepEqual(replayEvents, liveEvents, "lab replay event stream must be identical");
+      console.log(
+        `lab replay gate: PASS (${seed} ${live.status} at ${live.distance.toFixed(0)}m ` +
+        `with ${surges} surges, ${live.stats.perfectPasses} perfects; ` +
+        `re-sim exact, ghost-ineligible)`,
+      );
+    }
+    assert.ok(chosen, "a scanned seed must produce a surge-active lab run");
+  }
 }

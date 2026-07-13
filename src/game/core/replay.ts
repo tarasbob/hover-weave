@@ -10,6 +10,7 @@
 
 import { FIXED_DT } from "./constants";
 import type { HeatId } from "./heat";
+import type { LabId } from "./lab";
 import type { InputState } from "./input";
 import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
@@ -53,6 +54,11 @@ export interface RunRecording {
   trialId?: string;
   /** Heat stack the run was flown under (endless only; omitted = none). */
   heat?: HeatId[];
+  /**
+   * Lab prototype stack (endless only; omitted = none). Carried so lab runs
+   * re-simulate exactly — but they are never eligible as PB ghosts.
+   */
+  lab?: LabId[];
   /** Total fixed steps recorded (steps taken while the run was alive). */
   steps: number;
   /** False if the stream was truncated by the size cap (not replayable). */
@@ -71,7 +77,23 @@ export function recordingConfig(rec: RunRecording): RunConfig {
   const config: RunConfig = { mode: rec.mode, seed: rec.seed };
   if (rec.trialId !== undefined) config.trialId = rec.trialId;
   if (rec.heat && rec.heat.length > 0) config.heat = [...rec.heat];
+  if (rec.lab && rec.lab.length > 0) config.lab = [...rec.lab];
   return config;
+}
+
+/**
+ * May this recording serve as a PB ghost? Current version, complete stream,
+ * and no lab stack — lab prototypes are unranked sandboxes and never persist.
+ */
+export function ghostEligible(rec: RunRecording | null | undefined): rec is RunRecording {
+  return Boolean(
+    rec &&
+      rec.v === REPLAY_VERSION &&
+      rec.mode &&
+      rec.complete &&
+      rec.steps > 0 &&
+      (!rec.lab || rec.lab.length === 0),
+  );
 }
 
 /** Per-fixed-step recorder owned by the sim. */
@@ -122,6 +144,7 @@ export class InputRecorder {
     };
     if (config.mode === "trial" && config.trialId !== undefined) rec.trialId = config.trialId;
     if (config.heat && config.heat.length > 0) rec.heat = [...config.heat];
+    if (config.lab && config.lab.length > 0) rec.lab = [...config.lab];
     return rec;
   }
 }

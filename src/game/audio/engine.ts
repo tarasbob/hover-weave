@@ -388,6 +388,15 @@ export class AudioEngine {
     });
   }
 
+  /** Surge window opened (lab 5.1): a bright two-note unlock shimmer. */
+  surge(): void {
+    this.oneShot(() => {
+      const now = Tone.now();
+      this.chime.triggerAttackRelease("E6", "32n", now, 0.5);
+      this.chime.triggerAttackRelease("B6", "32n", now + 0.05, 0.38);
+    });
+  }
+
   flowTierUp(tier: number): void {
     this.oneShot(() => {
       const base = ["D5", "F5", "A5", "C6", "D6", "F6"];

@@ -234,6 +234,16 @@ export const DANGER = {
   PENALTY: 0.75,
 } as const;
 
+/**
+ * Surge windows (roadmap 5.1, lab prototype — default off): a perfect pass
+ * or thread opens a short window of free boost. Chaining perfects sustains
+ * it; the graze refund loop (1.1) still runs underneath.
+ */
+export const SURGE = {
+  /** Seconds of free boost (no drain, ignites on an empty meter) per window. */
+  WINDOW: 0.6,
+} as const;
+
 export const RUN = {
   /** Sim timescale during the death slow-mo. */
   DEATH_SLOWMO: 0.22,

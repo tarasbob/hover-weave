@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { heatScoreMult, type HeatId } from "../core/heat";
+import type { LabId } from "../core/lab";
 import { RATING, updateRating } from "../core/rating";
 import type { RunStats } from "../core/world";
 import { MEDAL_RANK, medalFor, trialById, type Medal } from "../track/trials";
@@ -299,6 +300,8 @@ interface MetaState extends Omit<MetaSnapshot, "goldTrials" | "authorTrials"> {
   selectedTrail: string;
   /** Pre-run heat selection (endless launches, roadmap 4.3). */
   selectedHeat: HeatId[];
+  /** Pre-run lab prototype selection (endless launches, roadmap Phase 5). */
+  selectedLab: LabId[];
   /** Ids the player has seen the "unlocked!" toast for. */
   celebrated: string[];
   /**
@@ -311,6 +314,7 @@ interface MetaState extends Omit<MetaSnapshot, "goldTrials" | "authorTrials"> {
   selectCraft(id: string): void;
   selectTrail(id: string): void;
   selectHeat(ids: HeatId[]): void;
+  selectLab(ids: LabId[]): void;
   markCelebrated(id: string): void;
 }
 
@@ -343,6 +347,7 @@ export const useMeta = create<MetaState>()(
       selectedCraft: "interceptor",
       selectedTrail: "cyan",
       selectedHeat: [],
+      selectedLab: [],
       celebrated: ["interceptor", "cyan"],
 
       recordRun(stats, periodKey) {
@@ -481,12 +486,13 @@ export const useMeta = create<MetaState>()(
       selectCraft: (selectedCraft) => set({ selectedCraft }),
       selectTrail: (selectedTrail) => set({ selectedTrail }),
       selectHeat: (selectedHeat) => set({ selectedHeat }),
+      selectLab: (selectedLab) => set({ selectedLab }),
       markCelebrated: (id) =>
         set((s) => ({ celebrated: s.celebrated.includes(id) ? s.celebrated : [...s.celebrated, id] })),
     }),
     {
       name: "cubefield:meta",
-      version: 5,
+      version: 6,
       migrate: (persisted) => {
         const state = persisted as Partial<MetaState>;
         return {
@@ -508,6 +514,8 @@ export const useMeta = create<MetaState>()(
           sprintsFinished: state.sprintsFinished ?? 0,
           bestHeatCleared: state.bestHeatCleared ?? 1,
           selectedHeat: state.selectedHeat ?? [],
+          // v6: lab prototype selection (roadmap Phase 5).
+          selectedLab: state.selectedLab ?? [],
         } as MetaState;
       },
     },

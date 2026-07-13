@@ -109,13 +109,18 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 
 ## Phase 5 — Bigger bets (prototype behind flags; default off)
 
+The flag system is the **LAB** (`src/game/core/lab.ts` + pre-run panel):
+heat-shaped run identity (recordings carry the stack, empty stack is
+bit-identical), but lab runs are *unranked sandboxes* — no PBs, no rating,
+no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
+
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 5.1 | **Surge windows** — perfect pass opens ~0.6 s of free boost. Overlaps 1.1; keep whichever feels better, or surge for razors + refunds for perfects. | todo | Decide after Phase 1 playtesting |
-| 5.2 | **Mouse-relative steering** — highest-ceiling input option. | todo | `input.ts`; small |
-| 5.3 | **Phase dash** — third verb: short lateral displacement, ~2 s cooldown, energy cost, no i-frames. Validator must never assume it (tracks stay steer-solvable). | todo | High risk of trivializing precision patterns |
-| 5.4 | **Rhythm resonance** — phase-lock movers to the Tone.js transport; on-beat perfects grade "resonant". | todo | Gimmick risk; flag-gated prototype |
-| 5.5 | **Async multiplayer** — daily rival ghosts near your rating; server-verified leaderboards by re-simulation. | todo | Needs backend |
+| 5.1 | **Surge windows** — perfect pass opens ~0.6 s of free boost. Overlaps 1.1; keep whichever feels better, or surge for razors + refunds for perfects. | done | Shipped as the first LAB prototype (default off, endless only): perfects **and threads** open `SURGE.WINDOW = 0.6 s` of free boost — zero drain, ignites even on an empty meter; chaining perfects sustains it on top of 1.1's refunds. The lab flag *is* the A/B switch the roadmap asked for; the keep/fold verdict still needs human playtesting. `surge` event, HUD surge bar + chip, audio shimmer. Gated in `simtest.ts`: window pays exactly 0.6 s vs a flag-off twin, empty-meter ignition lasts exactly the window, plain runs bit-identical |
+| 5.2 | **Mouse-relative steering** — highest-ceiling input option. | cut | Analog steering is against the game's identity — steering is two buttons, full stop (user decision). The existing analog leaks were digitized to match: pointer position → left/right hold zones, gamepad stick → sign beyond a wide deadzone, d-pad added. Sim/replay surface untouched (the sim already consumes a quantized axis; old analog-valued ghosts replay exactly) |
+| 5.3 | **Phase dash** — third verb: short lateral displacement, ~2 s cooldown, energy cost, no i-frames. Validator must never assume it (tracks stay steer-solvable). | todo | High risk of trivializing precision patterns; LAB prototype next sprint |
+| 5.4 | **Rhythm resonance** — phase-lock movers to the Tone.js transport; on-beat perfects grade "resonant". | todo | Gimmick risk; LAB prototype next sprint |
+| 5.5 | **Async multiplayer** — daily rival ghosts near your rating; server-verified leaderboards by re-simulation. | cut | User decision 2026-07-13: needs a backend that is not planned. The offline ladder (rating vs. calibrated walls, weekly sprint, daily course + quests) stays the comparison layer |
 | 5.6 | **Vertical layer (hops/ramps)** | cut | Dilutes the 1D purity that keeps the game readable at speed. Revisit only if all else ships. |
 
 ---
@@ -160,6 +165,10 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 | 2026-07-13 | Pilot rating = log-distance interpolation through the bot-wall anchors + Elo-style smoothing with a provisional phase; distance, not score, is the performance axis. | The bot tiers are the only calibrated skill references that exist offline, and they are already regression-gated — the rating inherits their stability. Score is rejected as the axis: it mixes in economy skill and is heat-inflatable. Daily percentiles (the roadmap's first choice) need a server; revisit at 5.5. |
 | 2026-07-13 | Quests are daily-only, evaluated live against run stats + two event counters, and bank the instant they complete. | Layering on the daily seed keeps quests a shared conversation ("did you get all three today?"). Banking mid-run respects "death must teach, never punish bookkeeping" — dying two seconds after the third thread cannot void it. Templates are pure skill expressions; nothing is time-shaped. |
 | 2026-07-13 | Trial medal thresholds are per-trial hand-set numbers near the calibrated bot walls, not a formula. | Bot walls vary ×10 across patterns (splitDecision greedy 198 m vs pistonCorridor 2 689 m) because movers punish bots differently than humans. A single curve would make some trials trivial and others absurd; baked numbers with simtest drift bands stay honest as tuning moves. |
+| 2026-07-13 | 5.5 (async multiplayer) cut per user decision. | No backend is planned; a local-first server would only work self-hosted. The offline ladder (bot-wall rating, weekly sprint, shared daily + quests) already gives the comparison loop. |
+| 2026-07-13 | 5.2 (mouse-relative steering) cut per user decision; **all** steering digitized to two buttons (touch hold-zones, gamepad stick sign + d-pad). | Two buttons is the game's identity — depth must come from the momentum model and the track, not input hardware. An analog option would fork the skill ceiling by device. Replays/ghosts unaffected: the sim consumes the final quantized axis regardless of how it was produced. |
+| 2026-07-13 | Phase 5 flags ship as the LAB: heat-shaped run identity (`RunConfig.lab`, canonicalized, carried in recordings) but fully **unranked** — no PBs/rating/streaks/lifetime tallies, `ghostEligible` false, no PB ghost armed against them. | Prototypes change the physics economy (surge = free boost), so their scores are play money — unlike heat, which makes runs *harder* and pays on the real ladder. Carrying the stack in recordings keeps replays bit-exact for testing; refusing persistence keeps every calibrated signal (walls, rating, baselines) clean while the flag is evaluated. |
+| 2026-07-13 | Surge (5.1) triggers on perfects **and threads**, refreshing to a fixed 0.6 s window (no stacking), free-drain implemented as a skipped-drain conditional. | Threads are the rarer, more deliberate skill expression — a surge that ignored them would undervalue exactly the play 1.3 built. No stacking keeps "chain perfects to stay surged" the loop (a bankable surge pool would re-open the patience economy). The skipped-drain form makes the flag-off path bit-identical (no float ops added), which the identity gate enforces. |
 
 ## Progress log
 
@@ -284,3 +293,32 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
   Phase 5 prototypes — 5.2 mouse-relative steering is small and shippable;
   5.1 surge windows need human playtesting; 5.5 async multiplayer needs the
   backend.
+- **2026-07-13** — **Phase 5 sprint A: the LAB + 5.1 surge windows; 5.2 and
+  5.5 cut.** Scope was set first: 5.5 (async multiplayer) is cut — no backend
+  is planned — and 5.2 (mouse-relative steering) is cut on identity grounds:
+  steering is two buttons, full stop. That principle is now enforced across
+  every input path (`core/input.ts`): pointer-position steering is gone
+  (touch/click is left/right hold zones — left half steers left, right half
+  right, second finger still boosts), the gamepad stick is digital
+  sign-beyond-deadzone, and the d-pad works; the sim and recordings only
+  ever see the final quantized axis, so old ghosts replay untouched. The
+  remaining prototypes ship through a new **LAB** (`core/lab.ts` + pre-run
+  panel, persisted selection, HUD chip, help entry): heat-shaped run
+  identity — `RunConfig.lab`, canonicalized, carried in recordings and
+  `RunStats`, bit-identical when empty — but lab runs are unranked
+  sandboxes: `endRun` skips PBs/rating/streaks/lifetime tallies entirely,
+  no ghost is armed, `ghostEligible` (new, shared with the replays store)
+  refuses them, and the death screen says so ("LAB · … — UNRANKED, NOTHING
+  SAVED"). **5.1 surge windows** is the first LAB flag: a perfect pass or
+  thread opens 0.6 s of free boost (zero drain, ignites on an empty meter,
+  window refreshes rather than stacks) on top of Phase 1's refund economy;
+  surge event → energy bar flips to a full emerald "SURGE — FREE BOOST"
+  readout + audio shimmer. New simtest gates: lab canonicalization/identity
+  (empty stack deep-equals a plain run, recordings grow no lab field),
+  surge exactness (flag-off twin probe pays Δ = 0.600 s of boost per window;
+  zero-energy ignition lasts exactly the 72-step window and dies with it),
+  lab replay exactness on a grazing pilot (2 surges, re-sim deep-equal,
+  ghost-ineligible), and the surge event never firing with the flag off.
+  All suites green (sim, gen, graphics, lint, tsc, production build).
+  Sprint 5B: 5.3 phase dash + 5.4 rhythm resonance as LAB flags, then
+  roadmap closeout.

@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { ENERGY } from "../core/constants";
+import type { LabId } from "../core/lab";
 import type { GameMode } from "../core/modes";
 import type { DeathForensics, RunStats, SectionGrade } from "../core/world";
 import type { Medal } from "../track/trials";
@@ -31,6 +32,10 @@ export interface HudSnapshot {
   timeLeft: number | null;
   /** Active heat score multiplier (1 = no heat). */
   heatMult: number;
+  /** Active lab prototype stack (empty = plain run). */
+  lab: LabId[];
+  /** True while a free-boost surge window is open (lab 5.1). */
+  surge: boolean;
   /** Live meters ahead (+) / behind (−) the PB ghost. Null = no ghost armed. */
   ghostDelta: number | null;
 }
@@ -91,7 +96,7 @@ interface GameState {
   callout: { text: string; sub?: string; at: number } | null;
   skillMoment: SkillMoment | null;
   sectionGrade: SectionGradeToast | null;
-  overlay: "none" | "hangar" | "settings" | "help" | "trials" | "heat";
+  overlay: "none" | "hangar" | "settings" | "help" | "trials" | "heat" | "lab";
   webgpu: boolean | null;
   fps: number;
   graphics: GraphicsStats;
@@ -119,6 +124,7 @@ export const useGame = create<GameState>((set) => ({
     energy: ENERGY.START, boosting: false, shield: false,
     speedKmh: 0, distance: 0, biome: "Crystal Desert",
     objective: null, objectiveHit: null, timeLeft: null, heatMult: 1,
+    lab: [], surge: false,
     ghostDelta: null,
   },
   outcome: null,

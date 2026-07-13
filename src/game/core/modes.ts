@@ -5,6 +5,7 @@
  */
 
 import type { HeatId } from "./heat";
+import type { LabId } from "./lab";
 
 export type GameMode = "endless" | "daily" | "sprint" | "trial";
 
@@ -15,6 +16,8 @@ export interface RunConfig {
   trialId?: string;
   /** Opt-in heat modifier stack (endless only; roadmap 4.3). */
   heat?: HeatId[];
+  /** Lab prototype stack (endless only; roadmap Phase 5 — runs are unranked). */
+  lab?: LabId[];
   /** Dev/testing: spawn deep into the run (endless only; disables recording). */
   skipTo?: number;
 }

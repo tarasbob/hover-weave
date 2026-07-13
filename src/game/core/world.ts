@@ -10,11 +10,13 @@ import {
   SPEED,
   SPRINT_MODE,
   STEER,
+  SURGE,
   THREAD,
   TRACK,
 } from "./constants";
 import { Emitter } from "./events";
 import { NO_HEAT, normalizeHeat, resolveHeat, type HeatEffects, type HeatId } from "./heat";
+import { NO_LAB, normalizeLab, resolveLab, type LabEffects, type LabId } from "./lab";
 import type { InputState } from "./input";
 import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils";
 import type { GameMode, RunConfig } from "./modes";
@@ -217,6 +219,8 @@ export interface RunStats {
   trialId: string | null;
   /** Canonical heat stack the run was flown under (endless only). */
   heat: HeatId[];
+  /** Canonical lab prototype stack (endless only; non-empty = unranked run). */
+  lab: LabId[];
   /** Null for a survived time-limited run (sprint finish). */
   deathCause: DeathCause | null;
   /** Per-chunk line grades in traversal order (roadmap 3.4). */
@@ -244,6 +248,8 @@ export class SimWorld {
   private speedCurve: (s: number) => number = speedAt;
   /** Resolved heat modifiers (identity when the stack is empty). */
   heatFx: HeatEffects = NO_HEAT;
+  /** Resolved lab prototype flags (all off when the stack is empty). */
+  labFx: LabEffects = NO_LAB;
   status: RunStatus = "idle";
 
   // Craft state.
@@ -266,6 +272,8 @@ export class SimWorld {
   energy: number = ENERGY.START;
   boosting = false;
   boostCharge = 0;
+  /** Seconds left on the free-boost surge window (lab 5.1; 0 = closed). */
+  surgeTimer = 0;
   hasShield = false;
   iframes = 0;
   shardCombo = 0;
@@ -358,7 +366,7 @@ export class SimWorld {
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
-      seed: "", mode: "endless", trialId: null, heat: [], deathCause: null,
+      seed: "", mode: "endless", trialId: null, heat: [], lab: [], deathCause: null,
       sections: [], lineRating: null,
     };
   }
@@ -382,12 +390,15 @@ export class SimWorld {
   start(config: RunConfig): void {
     const seed = config.seed;
     const skipTo = config.skipTo ?? 0;
-    // Canonicalize the heat stack (endless only) so run identity — and with
-    // it recordings, ghosts, and determinism — never depends on stack order.
+    // Canonicalize the heat/lab stacks (endless only) so run identity — and
+    // with it recordings, ghosts, and determinism — never depends on order.
     const heat = config.mode === "endless" ? normalizeHeat(config.heat) : [];
+    const lab = config.mode === "endless" ? normalizeLab(config.lab) : [];
     this.config = { ...config };
     if (heat.length > 0) this.config.heat = heat;
     else delete this.config.heat;
+    if (lab.length > 0) this.config.lab = lab;
+    else delete this.config.lab;
     this.seed = seed;
     this.mode = config.mode;
     this.trialId = config.mode === "trial" ? (config.trialId ?? null) : null;
@@ -395,6 +406,7 @@ export class SimWorld {
     this.timeLimit = config.mode === "sprint" ? SPRINT_MODE.DURATION : 0;
     this.speedCurve = this.trial ? this.trial.speedAt : speedAt;
     this.heatFx = resolveHeat(heat);
+    this.labFx = resolveLab(lab);
     this.status = "running";
     this.x = 0;
     this.latVel = 0;
@@ -412,6 +424,7 @@ export class SimWorld {
     this.energy = ENERGY.START;
     this.boosting = false;
     this.boostCharge = 0;
+    this.surgeTimer = 0;
     this.hasShield = false;
     this.iframes = 0;
     this.shardCombo = 0;
@@ -430,6 +443,7 @@ export class SimWorld {
     this.stats.mode = this.mode;
     this.stats.trialId = this.trialId;
     this.stats.heat = heat;
+    this.stats.lab = lab;
     // Recording is only meaningful for real runs from the start line.
     this.recorder.reset(this.recordInputs && skipTo === 0);
     this.chunkLog.length = 0;
@@ -546,9 +560,14 @@ export class SimWorld {
       1 + Math.min(this.flowTier, FLOW.SPEED_BONUS_TIER_CAP) * FLOW.SPEED_BONUS_PER_TIER;
     let targetSpeed = this.speedCurve(this.distance) * launch * flowBonus;
 
-    // Boost.
+    // Boost. An open surge window (lab 5.1) makes it free while it lasts:
+    // no drain, and ignition works even on an empty meter. With the lab off
+    // surgeTimer is always 0, so this block is bit-identical to plain boost.
     if (alive) {
-      const wantBoost = input.boost && this.energy > (this.boosting ? 0 : ENERGY.BOOST_MIN);
+      if (this.surgeTimer > 0) this.surgeTimer = Math.max(0, this.surgeTimer - dt);
+      const surging = this.surgeTimer > 0;
+      const wantBoost =
+        input.boost && (surging || this.energy > (this.boosting ? 0 : ENERGY.BOOST_MIN));
       if (wantBoost && !this.boosting) {
         this.boosting = true;
         this.stats.boosts++;
@@ -558,9 +577,9 @@ export class SimWorld {
         this.events.emit("boostEnd", undefined);
       }
       if (this.boosting) {
-        this.energy = Math.max(0, this.energy - ENERGY.BOOST_DRAIN * dt);
+        if (!surging) this.energy = Math.max(0, this.energy - ENERGY.BOOST_DRAIN * dt);
         this.stats.boostTime += dt;
-        if (this.energy <= 0) {
+        if (this.energy <= 0 && !surging) {
           this.boosting = false;
           this.events.emit("boostEnd", undefined);
         }
@@ -1238,7 +1257,14 @@ export class SimWorld {
       energyAward,
       flowPoints: this.flowPoints,
     });
+    if (this.labFx.surge && reward.grade === "perfect") this.openSurge();
     return scoreAward;
+  }
+
+  /** Open (or refresh) a free-boost surge window (lab prototype 5.1). */
+  private openSurge(): void {
+    this.surgeTimer = SURGE.WINDOW;
+    this.events.emit("surge", { window: SURGE.WINDOW });
   }
 
   private onThread(
@@ -1272,6 +1298,7 @@ export class SimWorld {
       tightness,
       count: this.stats.threads,
     });
+    if (this.labFx.surge) this.openSurge();
   }
 
   private onHit(o: Obstacle): void {

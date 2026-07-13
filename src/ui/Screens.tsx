@@ -9,6 +9,7 @@ import { resolveTier, useSettings, type QualityPreset } from "@/game/state/setti
 import { dailyKey, weeklyKey } from "@/game/core/rng";
 import { FLOW, SPRINT_MODE } from "@/game/core/constants";
 import { HEATS, HEAT_BY_ID, heatScoreMult } from "@/game/core/heat";
+import { LABS, LAB_BY_ID } from "@/game/core/lab";
 import { questsForDay } from "@/game/core/quests";
 import { ratingTier } from "@/game/core/rating";
 import { GRADE_MIN_INTENSITY, type SectionResult } from "@/game/core/world";
@@ -78,6 +79,7 @@ export function Screens() {
         {overlay === "hangar" && <HangarOverlay key="hangar" />}
         {overlay === "trials" && <TrialsOverlay key="trials" />}
         {overlay === "heat" && <HeatOverlay key="heat" />}
+        {overlay === "lab" && <LabOverlay key="lab" />}
         {overlay === "settings" && <SettingsOverlay key="settings" />}
         {overlay === "help" && <HelpOverlay key="help" />}
       </AnimatePresence>
@@ -190,6 +192,9 @@ function TitleScreen() {
                   HEAT ×{heatMult.toFixed(2)}
                 </span>
               )}
+              {meta.selectedLab.length > 0 && (
+                <span className="ml-2 text-xs tracking-widest text-violet-900/90">LAB</span>
+              )}
             </button>
             <button
               className={`${btnGhost} !px-3 ${meta.selectedHeat.length > 0 ? "!border-orange-300/50 !text-orange-200" : ""}`}
@@ -198,6 +203,14 @@ function TitleScreen() {
               aria-label="Configure heat modifiers"
             >
               HEAT
+            </button>
+            <button
+              className={`${btnGhost} !px-3 ${meta.selectedLab.length > 0 ? "!border-violet-300/50 !text-violet-200" : ""}`}
+              onClick={() => setOverlay("lab")}
+              title="Experimental prototypes — lab runs are unranked"
+              aria-label="Configure lab prototypes"
+            >
+              LAB
             </button>
           </div>
           <div className="flex flex-wrap justify-center gap-2">
@@ -305,6 +318,7 @@ function GameOverScreen() {
 
   if (!outcome || !show) return null;
   const s = outcome.stats;
+  const labRun = s.lab.length > 0;
   const graded = s.sections.filter(
     (section) => section.intensity >= GRADE_MIN_INTENSITY,
   );
@@ -399,6 +413,12 @@ function GameOverScreen() {
               {s.heat.map((id) => HEAT_BY_ID[id].name.toUpperCase()).join(" · ")}
             </div>
           )}
+          {labRun && (
+            <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-violet-300/90">
+              LAB · {s.lab.map((id) => LAB_BY_ID[id].name.toUpperCase()).join(" · ")} — UNRANKED,
+              NOTHING SAVED
+            </div>
+          )}
           {outcome.deathStreak >= 2 && s.deathCause && (
             <div className="mt-1 text-[11px] font-semibold tracking-[0.14em] text-rose-300/90">
               {ordinal(outcome.deathStreak).toUpperCase()} RUN IN A ROW ENDED BY{" "}
@@ -422,7 +442,7 @@ function GameOverScreen() {
               )}
             </div>
           )}
-          {mode !== "trial" && (
+          {mode !== "trial" && !labRun && (
             <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
               {outcome.scoreDelta > 0
                 ? `${scoreDeltaLabel} +${outcome.scoreDelta.toLocaleString()}`
@@ -431,7 +451,7 @@ function GameOverScreen() {
                 : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of ${scoreDeltaLabel}`}
             </div>
           )}
-          {mode === "trial" ? (
+          {labRun ? null : mode === "trial" ? (
             outcome.newTrialBest ? (
               <div className="mt-0.5 text-xs font-semibold text-amber-200">
                 DEEPEST RUN ON THIS TRIAL
@@ -700,6 +720,77 @@ function HeatOverlay() {
           }}
         >
           {mult > 1 ? "IGNITE" : "LAUNCH CLEAN"}
+        </button>
+      </div>
+    </OverlayShell>
+  );
+}
+
+/** Lab prototypes (roadmap Phase 5): flag-gated experiments, default off. */
+function LabOverlay() {
+  const bundle = useGameBundle();
+  const setOverlay = useGame((s) => s.setOverlay);
+  const selectedLab = useMeta((s) => s.selectedLab);
+  const selectLab = useMeta((s) => s.selectLab);
+
+  return (
+    <OverlayShell title="LAB">
+      <div className="mb-4 text-xs leading-relaxed text-white/55">
+        Experimental flight systems, still on the bench. Lab runs are unranked sandboxes —
+        no personal bests, no rating, no ghosts; nothing persists. Endless track only.
+      </div>
+      <div className="flex flex-col gap-2">
+        {LABS.map((l) => {
+          const on = selectedLab.includes(l.id);
+          return (
+            <button
+              key={l.id}
+              role="switch"
+              aria-checked={on}
+              onClick={() =>
+                selectLab(on ? selectedLab.filter((id) => id !== l.id) : [...selectedLab, l.id])
+              }
+              className={`flex items-center justify-between gap-3 rounded-xl border p-3 text-left transition-all ${
+                on
+                  ? "border-violet-300/60 bg-violet-400/10 shadow-[0_0_16px_rgba(167,139,250,0.2)]"
+                  : "border-white/10 bg-white/5 hover:bg-white/10"
+              }`}
+            >
+              <div>
+                <div className={`font-display text-sm font-bold tracking-wider ${on ? "text-violet-200" : "text-white"}`}>
+                  {l.name}
+                </div>
+                <div className="mt-0.5 text-[11px] text-white/55">{l.desc}</div>
+              </div>
+              <div
+                className={`shrink-0 rounded-md px-2 py-1 font-display text-[10px] font-bold tracking-[0.12em] ${
+                  on ? "bg-violet-300/25 text-violet-100" : "bg-white/10 text-white/50"
+                }`}
+              >
+                {on ? "ARMED" : "OFF"}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <div className="text-sm text-white/70">
+          {selectedLab.length > 0 ? (
+            <span className="font-display font-bold tracking-[0.12em] text-violet-200">
+              UNRANKED RUN
+            </span>
+          ) : (
+            <span className="text-white/50">ALL SYSTEMS STOCK</span>
+          )}
+        </div>
+        <button
+          className={btnPrimary}
+          onClick={() => {
+            setOverlay("none");
+            bundle.startRun("endless");
+          }}
+        >
+          {selectedLab.length > 0 ? "ENGAGE" : "LAUNCH CLEAN"}
         </button>
       </div>
     </OverlayShell>
@@ -1103,9 +1194,10 @@ function HelpOverlay() {
     <OverlayShell title="HOW TO FLY">
       <div className="flex flex-col gap-4 text-sm leading-relaxed text-white/75">
         <div>
-          Your craft accelerates on its own. You only steer —{" "}
-          <Key>←</Key> <Key>→</Key> or <Key>A</Key> <Key>D</Key>, drag on touch, or a gamepad stick.
-          Momentum is real: commit to lines early.
+          Your craft accelerates on its own. You only steer, and steering is two buttons —{" "}
+          <Key>←</Key> <Key>→</Key> or <Key>A</Key> <Key>D</Key>, hold the left or right half of
+          the screen on touch, or a gamepad d-pad / stick. Momentum is real: commit to lines
+          early.
         </div>
         <div>
           <span className="font-bold text-cyan-200">Near misses build FLOW.</span> Graze obstacles
@@ -1141,6 +1233,11 @@ function HelpOverlay() {
           climbs as your plain endless and daily flights push past the calibrated walls, and
           three fresh <span className="font-bold text-lime-200">daily quests</span> reward
           skill, never grind.
+        </div>
+        <div>
+          The <span className="font-bold text-violet-300">Lab</span> hosts experimental flight
+          systems still on the bench. Lab runs are unranked and save nothing — fly them for the
+          feel, not the ladder.
         </div>
       </div>
     </OverlayShell>
