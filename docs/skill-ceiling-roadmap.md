@@ -102,10 +102,10 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 |---|------|--------|-------|
 | 4.1 | **Trials mode** — single pattern (or authored 45 s course) at escalating speed until death; Bronze/Silver/Gold/Author medals; per-trial PBs. Doubles as the practice room. | done | 10-trial roster (`src/game/track/trials.ts`), every skill tag covered. Generator loops the forced pattern on trial-owned curves: difficulty ramps pattern-floor → 1 over 1.4 km, speed climbs linearly without bound (+26 m/s per km — the wall is guaranteed), a synthetic pressure channel shrinks seams / heats mutators long before the endless 8 km overdrive. Fixed seed per trial ⇒ comparable PBs + a true spatial PB ghost (the practice room). Medals on distance, calibrated per-trial against the greedy/lookahead bot walls (`scripts/trialcal.ts`, drift-gated in simtest). `meta.trialBest`, TRIALS overlay, death-screen medal ladder + "next medal was n m further", live medal callouts, and a **DRILL** button on endless deaths whose killer pattern has a trial |
 | 4.2 | **Sprint mode** — fixed 180 s on a weekly seed, pure score attack. | done | ISO-week shared seed (`weeklySeed`, UTC). The sim finishes on the exact step that crosses 180 s of *sim* time (pause can't stretch it) — status `finished`, `finish` event, score/distance frozen at the line; the crossing step is recorded, so replays and ghosts reproduce the finish bit-exactly (gated in simtest via the superhuman pilot). `meta.sprintBest` per week, same-seed spatial ghost, HUD countdown (red pulse in the last 10 s), "TRANSMISSION COMPLETE" results screen (no kill-cam — nothing killed you) |
-| 4.3 | **Heat modifiers** — opt-in burdens (Scarce Shields, No Magnet, Dense Field, Fast Movers, Narrow Gaps, Tin Hull), multiplicative score stack. | todo | Pre-run config; leaderboard stratification |
-| 4.4 | **Pilot Rating** — Elo-ish number from daily percentiles (offline fallback: vs. own history + autopilot baselines). | todo | |
-| 4.5 | **Skill-shaped quests** — rotating challenges ("3 threads in one run", "S-grade a chunk while boosting") layered on the daily seed. | todo | Never time-shaped chores |
-| 4.6 | **Cosmetic rewards for mastery** — craft/trail unlocks for trials medals, heat levels, rating milestones. | todo | Extends `meta.ts` unlock rules |
+| 4.3 | **Heat modifiers** — opt-in burdens (Scarce Shields, No Magnet, Dense Field, Fast Movers, Narrow Gaps, Tin Hull), multiplicative score stack. | done | All six shipped (`core/heat.ts`), endless-only, ×1.1–×1.35 each (full stack ×2.63). One resolved `HeatEffects` object feeds sim + generator + validator + mutators; every effect is the identity when unheated, so plain runs stay **bit-identical** (novice/wall baselines unmoved). Recordings carry the stack — heated ghosts/replays re-sim exactly. Pre-run HEAT panel (persisted selection, live total, "IGNITE"), HUD chip, death-screen stack line. Heat runs count for endless PBs (that's the deal) but never rate |
+| 4.4 | **Pilot Rating** — Elo-ish number from daily percentiles (offline fallback: vs. own history + autopilot baselines). | done | No backend ⇒ the offline fallback *is* the rating (`core/rating.ts`): run performance = piecewise-linear in log2(distance) through the calibrated bot-wall anchors (greedy 1 133 m → 1200, lookahead 2 686 m → 1700, superhuman 31 547 m → 3000), Elo-style pull with a provisional K (×0.3 first 12 runs, ×0.1 settled), clamped 100–3600, 7 named tiers (DRIFTER→WEAVER). Plain endless + daily runs only. Title line, hangar peak, death-screen delta |
+| 4.5 | **Skill-shaped quests** — rotating challenges ("3 threads in one run", "S-grade a chunk while boosting") layered on the daily seed. | done | 3/day from 10 templates (`core/quests.ts`), rolled from `cubefield-quests-<day>` — same board for everyone, all completable in one skilled run (threads, perfects, ×N multiplier, chains, shard/risk-shard play, boost economy, high-speed perfects, section grades, boosted-S — which needed the new `SectionResult.boostUptime`). Tracker in `GameController` banks completions mid-run (callout + chime); checklist on the title and the daily death screen; lifetime `questsCompleted` feeds cosmetics |
+| 4.6 | **Cosmetic rewards for mastery** — craft/trail unlocks for trials medals, heat levels, rating milestones. | done | `MetaSnapshot` gained the mastery signals (gold/author trial counts, peak rating, quests completed, sprints finished, best heat cleared ≥ 2 km). +3 crafts (Meridian: 3 sprints · Sovereign: 5 golds · Oblivion: 1 900 rating) and +4 trails (Ember: ×1.5 heat past 2 km · Quicksilver: an Author medal · Laurel: 9 quests · Meteor: 1 500 rating) on the existing diff-on-death unlock pipeline — zero new plumbing |
 
 ## Phase 5 — Bigger bets (prototype behind flags; default off)
 
@@ -155,6 +155,11 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 | 2026-07-13 | Sprint finishes at the **end** of the fixed step that crosses the limit, not the start of the next. | The crossing step is then part of the recording, so a replay/ghost executes the same final step and reproduces the finish bit-exactly — same invariant as death exactness. Sim-time (not wall-time) limit means pausing can't stretch a sprint. |
 | 2026-07-13 | Trial walls come from unbounded linear speed escalation + a trial-local pressure channel (seams/mutators), not validator tightening; medals are per-trial distances calibrated against the greedy/lookahead walls. | `STEER.RATIO` keeps validated geometry dodgeable at any speed, so speed compresses *reaction time* — the human wall — while calibration walls stay measurable. A single global medal curve was rejected: bot walls vary ×10 across patterns (`splitDecision` greedy 198 m vs `pistonCorridor` 2 689 m). Gold sits near the lookahead wall, hand-adjusted per pattern (above it where bots out-react humans on raw speed, below it where movers reward human timing). |
 | 2026-07-13 | Daily/sprint period keys are captured at run **start** and carried to persistence. | A run launched at 23:59 UTC must bank against the course it was launched on, not the day it happened to end — seed and storage key stay consistent across midnight/week boundaries. |
+| 2026-07-13 | Heat resolves to one `HeatEffects` object whose unheated values are exact identities (×1 / +0 / unchanged caps), consumed by sim, generator, validator, and mutators. | The only way to ship heat without invalidating everything else: multiplying by 1 is exact in IEEE754 and no rng draw is added or reordered, so plain runs are bit-identical to pre-heat builds — old ghosts, novice baselines, and wall calibrations all survive untouched (re-verified green). |
+| 2026-07-13 | Heat runs are full endless citizens (PB + ghost eligible) but are never rated. | "Extra difficulty is opt-in and paid multiplicatively" means the payment must land on the real ladder — a sandboxed heat score would be play money. Recordings carry the stack so a heat PB ghost re-simulates its own burdened track exactly. Rating stays heat-free because it measures *distance* against calibrated plain-track walls; heat makes distance harder and would under-rate the player. |
+| 2026-07-13 | Pilot rating = log-distance interpolation through the bot-wall anchors + Elo-style smoothing with a provisional phase; distance, not score, is the performance axis. | The bot tiers are the only calibrated skill references that exist offline, and they are already regression-gated — the rating inherits their stability. Score is rejected as the axis: it mixes in economy skill and is heat-inflatable. Daily percentiles (the roadmap's first choice) need a server; revisit at 5.5. |
+| 2026-07-13 | Quests are daily-only, evaluated live against run stats + two event counters, and bank the instant they complete. | Layering on the daily seed keeps quests a shared conversation ("did you get all three today?"). Banking mid-run respects "death must teach, never punish bookkeeping" — dying two seconds after the third thread cannot void it. Templates are pure skill expressions; nothing is time-shaped. |
+| 2026-07-13 | Trial medal thresholds are per-trial hand-set numbers near the calibrated bot walls, not a formula. | Bot walls vary ×10 across patterns (splitDecision greedy 198 m vs pistonCorridor 2 689 m) because movers punish bots differently than humans. A single curve would make some trials trivial and others absurd; baked numbers with simtest drift bands stay honest as tuning moves. |
 
 ## Progress log
 
@@ -245,3 +250,37 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
   `scripts/pilots.ts`; `scripts/trialcal.ts` is the medal calibration
   harness. Sprint 4B candidate: the ladder (4.3 heat modifiers, 4.4 pilot
   rating, 4.5 quests, 4.6 mastery cosmetics).
+- **2026-07-13** — **Phase 4 sprint B: the ladder (4.3–4.6) complete — Phase 4
+  done.** **Heat**: six opt-in burdens on the endless track, each honestly
+  implemented in the sim/generator (thinner shield drips, dead magnet, denser
+  scattered fields with tighter seams and sooner field sections, faster
+  movers, a razor-tightened validator corridor, and a hull where every
+  contact kills) paying ×1.1–×1.35 each, ×2.63 stacked; unheated runs are
+  bit-identical to before (enforced: empty-stack vs plain deepEqual, all
+  Phase 1–3 baselines unmoved), and heated recordings replay bit-exactly.
+  **Rating**: an offline Elo anchored to the calibrated bot walls in
+  log-distance space with provisional-K smoothing and named tiers; plain
+  endless/daily runs only. **Quests**: three deterministic skill challenges
+  per day from ten templates, tracked live and banked mid-run, with title +
+  death-screen checklists. **Cosmetics**: seven new unlocks (3 crafts, 4
+  trails) hanging off new mastery signals in `MetaSnapshot` — sprints
+  finished, gold/author medals, peak rating, quests completed, heat cleared
+  past 2 km. New gates: heat identity/canonicalization, sim-side stack
+  exactness on a cleared field, no-magnet + tin-hull behavior probes, a
+  3-seed generation survey (shields 9→4, obstacles 2 826→3 315, seams
+  25.4 m→19.2 m, mover speed ×1.25), narrow-gaps validator probe, heated
+  replay exactness, full-stack 2×30 km generation health in gentest (2.1%
+  fallbacks), rating monotonicity/anchors/convergence, quest rotation +
+  progress sanity. All suites green (sim, gen, graphics, types, lint,
+  production build). In-app verification via the dev-server console handle:
+  heat select → badge → heated run → death readout (`HEAT ×1.49 · NO MAGNET
+  · TIN HULL`), unrated heat run vs rated plain run (+383 provisional, then
+  +46), a real quest completed mid-run with callout and banked state, new
+  hangar stats/cosmetics rendering — full visual pass in a real browser
+  still the standing caveat (embedded browser throttles rAF). Phase 4
+  verification note: the ladder now *measures* the gap (rating, medals,
+  weekly/daily boards); the p99/p50 ≥ ×30 target needs real player
+  telemetry, which stays out of scope for a local build. Next candidates:
+  Phase 5 prototypes — 5.2 mouse-relative steering is small and shippable;
+  5.1 surge windows need human playtesting; 5.5 async multiplayer needs the
+  backend.

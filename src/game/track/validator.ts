@@ -182,13 +182,15 @@ export function validatePattern(
   runway = 0,
   collectDebug = false,
   difficulty = 0,
+  /** Extra slack reduction (Narrow Gaps heat); floored at the hard minimum. */
+  slackBias = 0,
 ): ValidationResult {
   const steps = Math.max(2, Math.ceil(length / DS));
   const reachLanes = reachLanesAt(difficulty);
   const runwayLanes = Math.floor((pathSlopeAt(difficulty) * Math.max(0, runway)) / LANE_W);
   const entry = dilateLanes(entryLanes, runwayLanes);
-  // Overdrive tightens the guaranteed corridor toward its hard floor.
-  const slack = marginSlackAt(s0);
+  // Overdrive (and heat) tightens the guaranteed corridor toward its floor.
+  const slack = Math.max(MIN_MARGIN_SLACK, marginSlackAt(s0) - slackBias);
 
   // Rasterize blocked masks.
   const blocked: Uint8Array[] = [];

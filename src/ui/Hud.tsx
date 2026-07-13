@@ -102,6 +102,11 @@ export function Hud() {
             {formatTimer(hud.timeLeft)}
           </div>
         )}
+        {hud.heatMult > 1 && (
+          <div className="mt-0.5 text-[10px] font-bold tracking-[0.2em] text-orange-300/90">
+            HEAT ×{hud.heatMult.toFixed(2)}
+          </div>
+        )}
         <div className="text-sm text-white/80">{hud.biome}</div>
         {mode !== "trial" && (
           <div className="mt-1 text-[11px] tabular-nums text-white/40">

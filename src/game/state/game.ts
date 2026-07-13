@@ -29,6 +29,8 @@ export interface HudSnapshot {
   objectiveHit: string | null;
   /** Sim seconds left on a time-limited run (sprint). Null = untimed. */
   timeLeft: number | null;
+  /** Active heat score multiplier (1 = no heat). */
+  heatMult: number;
   /** Live meters ahead (+) / behind (−) the PB ghost. Null = no ghost armed. */
   ghostDelta: number | null;
 }
@@ -51,6 +53,8 @@ export interface RunOutcome {
   newTrialBest: boolean;
   /** Medal earned this run (trials only). */
   medal: Medal | null;
+  /** Pilot rating movement (null = unrated run: trial/sprint/heat). */
+  ratingDelta: number | null;
   /** Mode-aware: vs. global PB (endless/daily) or the weekly best (sprint). */
   scoreDelta: number;
   /** Meters short of the relevant best distance (negative = new farthest). */
@@ -87,7 +91,7 @@ interface GameState {
   callout: { text: string; sub?: string; at: number } | null;
   skillMoment: SkillMoment | null;
   sectionGrade: SectionGradeToast | null;
-  overlay: "none" | "hangar" | "settings" | "help" | "trials";
+  overlay: "none" | "hangar" | "settings" | "help" | "trials" | "heat";
   webgpu: boolean | null;
   fps: number;
   graphics: GraphicsStats;
@@ -114,7 +118,7 @@ export const useGame = create<GameState>((set) => ({
     flowGrace: 1, flowChain: 0, shardCombo: 0,
     energy: ENERGY.START, boosting: false, shield: false,
     speedKmh: 0, distance: 0, biome: "Crystal Desert",
-    objective: null, objectiveHit: null, timeLeft: null,
+    objective: null, objectiveHit: null, timeLeft: null, heatMult: 1,
     ghostDelta: null,
   },
   outcome: null,

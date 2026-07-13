@@ -13,6 +13,7 @@ import { InputManager } from "./core/input";
 import { EnvState } from "./render/env";
 import { AudioEngine } from "./audio/engine";
 import type { RunConfig } from "./core/modes";
+import { questsForDay, type QuestCounters, type QuestDef } from "./core/quests";
 import { dailyKey, dailySeed, randomSeed, weeklyKey, weeklySeed } from "./core/rng";
 import { trialSeed } from "./track/trials";
 import { useGame, type GameMode } from "./state/game";
@@ -69,6 +70,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
             : mode === "trial"
               ? { mode, seed: trialSeed(trialId ?? ""), trialId }
               : { mode, seed: randomSeed() };
+      // Heat rides only on endless launches (roadmap 4.3), from the pre-run
+      // selection. The sim canonicalizes the stack.
+      if (mode === "endless") {
+        const heat = useMeta.getState().selectedHeat;
+        if (heat.length > 0) config.heat = [...heat];
+      }
       // Dev probe: `?start=25000` spawns deep into an endless run (overdrive
       // speeds/density) for pop-in and pacing checks. Never in production.
       if (
@@ -140,9 +147,36 @@ export function GameProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const { world, audio, env } = bundle;
 
+    // Daily quest tracking (roadmap 4.5). Counters cover the event-only
+    // signals; everything else reads live run stats. Completion banks the
+    // moment it happens — dying two seconds later cannot take it back.
+    const quest: {
+      day: string | null;
+      defs: QuestDef[];
+      counters: QuestCounters;
+    } = { day: null, defs: [], counters: { riskShards: 0, fastPerfects: 0 } };
+
+    const evaluateQuests = (silent = false) => {
+      if (!quest.day || quest.defs.length === 0) return;
+      const meta = useMeta.getState();
+      const done = meta.questDay === quest.day ? meta.questDone : [];
+      const sample = { stats: world.stats, counters: quest.counters };
+      quest.defs.forEach((def, i) => {
+        if (done[i]) return;
+        if (def.progress(sample) >= def.target) {
+          meta.completeQuest(quest.day!, i);
+          if (!silent) {
+            useGame.getState().setCallout("QUEST COMPLETE", def.label.toUpperCase());
+            audio.shieldPickup();
+          }
+        }
+      });
+    };
+
     /** Shared run-end path: a crash and a survived sprint finish differ only
      *  in FX and forensics — recording, PBs, and unlocks flow identically. */
     const endRun = (finished: boolean) => {
+      evaluateQuests(true); // Final sweep with the closing stats, no fanfare.
       const g = useGame.getState();
       const meta = useMeta.getState();
       const before = metaSnapshot(meta);
@@ -194,6 +228,16 @@ export function GameProvider({ children }: { children: ReactNode }) {
     };
 
     const offs: (() => void)[] = [
+      world.events.on("runStart", ({ config }) => {
+        quest.counters = { riskShards: 0, fastPerfects: 0 };
+        if (config.mode === "daily") {
+          quest.day = dailyKey();
+          quest.defs = questsForDay(quest.day);
+        } else {
+          quest.day = null;
+          quest.defs = [];
+        }
+      }),
       world.events.on("death", () => {
         env.triggerImpact(1);
         audio.death();
@@ -215,6 +259,15 @@ export function GameProvider({ children }: { children: ReactNode }) {
           `+${e.scoreAward.toLocaleString()}${energy} · CHAIN ${e.chain}`,
           e.grade,
         );
+        if (e.grade === "perfect") {
+          for (const def of quest.defs) {
+            if (def.speedBar !== undefined && world.speed >= def.speedBar) {
+              quest.counters.fastPerfects++;
+              break;
+            }
+          }
+        }
+        evaluateQuests();
       }),
       world.events.on("thread", (e) => {
         env.triggerNearMiss(1, 0);
@@ -225,6 +278,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
           `+${e.scoreAward.toLocaleString()} · BOTH SIDES`,
           "thread",
         );
+        evaluateQuests();
       }),
       world.events.on("shard", (e) => {
         audio.shard(e.combo);
@@ -235,6 +289,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
             "shard",
           );
         }
+        if (e.risk) quest.counters.riskShards++;
+        evaluateQuests();
       }),
       world.events.on("shieldPickup", () => {
         env.triggerShield(1);
@@ -249,16 +305,21 @@ export function GameProvider({ children }: { children: ReactNode }) {
         env.triggerBoost(1);
         audio.boostStart();
       }),
-      world.events.on("boostEnd", () => env.triggerBoost(0.45)),
+      world.events.on("boostEnd", () => {
+        env.triggerBoost(0.45);
+        evaluateQuests();
+      }),
       world.events.on("flowTier", (e) => {
         if (e.tier > e.prev) {
           env.triggerFlow(Math.min(1.4, 0.7 + e.tier * 0.12));
           audio.flowTierUp(e.tier);
           if (e.tier >= 2) useGame.getState().setCallout(`FLOW ${e.tier}`, "WORLD SYNC");
+          evaluateQuests();
         }
       }),
       world.events.on("sectionGrade", (e) => {
         useGame.getState().setSectionGrade(e.grade, e.patternId);
+        evaluateQuests();
       }),
       world.events.on("setpiece", (e) => useGame.getState().setCallout(e.name)),
       world.events.on("biome", (e) => {

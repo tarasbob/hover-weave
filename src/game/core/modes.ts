@@ -4,6 +4,8 @@
  * Pure module — safe to import from sim, state, and UI layers alike.
  */
 
+import type { HeatId } from "./heat";
+
 export type GameMode = "endless" | "daily" | "sprint" | "trial";
 
 export interface RunConfig {
@@ -11,6 +13,8 @@ export interface RunConfig {
   seed: string;
   /** Trial roster id (mode === "trial" only). */
   trialId?: string;
+  /** Opt-in heat modifier stack (endless only; roadmap 4.3). */
+  heat?: HeatId[];
   /** Dev/testing: spawn deep into the run (endless only; disables recording). */
   skipTo?: number;
 }

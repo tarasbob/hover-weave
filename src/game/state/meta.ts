@@ -2,6 +2,8 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { heatScoreMult, type HeatId } from "../core/heat";
+import { RATING, updateRating } from "../core/rating";
 import type { RunStats } from "../core/world";
 import { MEDAL_RANK, medalFor, trialById, type Medal } from "../track/trials";
 
@@ -49,6 +51,18 @@ export interface MetaSnapshot {
   bestFlowChain: number;
   bestShardCombo: number;
   dailiesPlayed: number;
+  // Phase 4 mastery signals (unlock fuel, roadmap 4.6).
+  /** Trials currently at gold or better / at author. */
+  goldTrials: number;
+  authorTrials: number;
+  /** Highest pilot rating ever held. */
+  peakRating: number;
+  /** Lifetime daily quests completed. */
+  questsCompleted: number;
+  /** Sprints survived to the horizon. */
+  sprintsFinished: number;
+  /** Best heat score-multiplier carried past 2 km (1 = never). */
+  bestHeatCleared: number;
 }
 
 export const CRAFTS: CraftDesign[] = [
@@ -118,6 +132,36 @@ export const CRAFTS: CraftDesign[] = [
       progress: (m) => ({ value: m.bestFlowChain, target: 10 }),
     },
   },
+  {
+    id: "meridian", name: "Meridian", desc: "Clockwork hull for pilots who finish what they start.",
+    body: "#0a1c24", trim: "#5eead4", engine: "#facc15",
+    hullScale: [1.05, 0.9, 1.18], finSweep: 0.45,
+    unlock: {
+      label: "Survive 3 full sprints",
+      check: (m) => m.sprintsFinished >= 3,
+      progress: (m) => ({ value: m.sprintsFinished, target: 3 }),
+    },
+  },
+  {
+    id: "sovereign", name: "Sovereign", desc: "Gilded for the trial grounds' standing champion.",
+    body: "#1c1408", trim: "#fbbf24", engine: "#fde68a",
+    hullScale: [0.95, 0.95, 1.25], finSweep: 0.7,
+    unlock: {
+      label: "Hold 5 gold trial medals",
+      check: (m) => m.goldTrials >= 5,
+      progress: (m) => ({ value: m.goldTrials, target: 5 }),
+    },
+  },
+  {
+    id: "oblivion", name: "Oblivion", desc: "Phantom-tier plating. The rating speaks for itself.",
+    body: "#120a1e", trim: "#e879f9", engine: "#a78bfa",
+    hullScale: [0.78, 0.8, 1.35], finSweep: 0.95,
+    unlock: {
+      label: "Reach 1,900 pilot rating",
+      check: (m) => m.peakRating >= 1900,
+      progress: (m) => ({ value: m.peakRating, target: 1900 }),
+    },
+  },
 ];
 
 export const TRAILS: TrailStyle[] = [
@@ -173,6 +217,38 @@ export const TRAILS: TrailStyle[] = [
       progress: (m) => ({ value: m.bestShardCombo, target: 8 }),
     },
   },
+  {
+    id: "ember", name: "Ember Wake", color: "#fb923c",
+    unlock: {
+      label: "Carry ×1.5 heat past 2,000 m",
+      check: (m) => m.bestHeatCleared >= 1.5,
+      progress: (m) => ({ value: m.bestHeatCleared, target: 1.5 }),
+    },
+  },
+  {
+    id: "quicksilver", name: "Quicksilver", color: "#e2e8f0",
+    unlock: {
+      label: "Earn an Author trial medal",
+      check: (m) => m.authorTrials >= 1,
+      progress: (m) => ({ value: m.authorTrials, target: 1 }),
+    },
+  },
+  {
+    id: "laurel", name: "Laurel Stream", color: "#a3e635",
+    unlock: {
+      label: "Complete 9 daily quests",
+      check: (m) => m.questsCompleted >= 9,
+      progress: (m) => ({ value: m.questsCompleted, target: 9 }),
+    },
+  },
+  {
+    id: "meteor", name: "Meteor Line", color: "#f472b6",
+    unlock: {
+      label: "Reach 1,500 pilot rating",
+      check: (m) => m.peakRating >= 1500,
+      progress: (m) => ({ value: m.peakRating, target: 1500 }),
+    },
+  },
 ];
 
 interface DailyRecord {
@@ -200,19 +276,29 @@ export interface RunRecordResult {
   newTrialBest: boolean;
   /** Medal earned this run (trials only; may equal the previous best). */
   medal: Medal | null;
+  /** Rating movement from this run (null = the run was not rated). */
+  ratingDelta: number | null;
   /** How many runs in a row have now ended on this pattern (1 = first). */
   deathStreak: number;
 }
 
-interface MetaState extends MetaSnapshot {
+interface MetaState extends Omit<MetaSnapshot, "goldTrials" | "authorTrials"> {
   dailyBest: Record<string, DailyRecord>;
   /** Best sprint per ISO-week key (roadmap 4.2). */
   sprintBest: Record<string, DailyRecord>;
   /** Best run per trial id (roadmap 4.1). */
   trialBest: Record<string, TrialRecord>;
   deathStreak: DeathStreak | null;
+  /** Pilot rating (roadmap 4.4): current, runs counted, and peak in snapshot. */
+  rating: number;
+  ratedRuns: number;
+  /** Daily quests (roadmap 4.5): today's key + per-quest completion. */
+  questDay: string | null;
+  questDone: boolean[];
   selectedCraft: string;
   selectedTrail: string;
+  /** Pre-run heat selection (endless launches, roadmap 4.3). */
+  selectedHeat: HeatId[];
   /** Ids the player has seen the "unlocked!" toast for. */
   celebrated: string[];
   /**
@@ -220,8 +306,11 @@ interface MetaState extends MetaSnapshot {
    * the ISO week key for sprints (captured at run start), null otherwise.
    */
   recordRun(stats: RunStats, periodKey: string | null): RunRecordResult;
+  /** Mark one of `day`'s quests complete (idempotent; banks immediately). */
+  completeQuest(day: string, index: number): void;
   selectCraft(id: string): void;
   selectTrail(id: string): void;
+  selectHeat(ids: HeatId[]): void;
   markCelebrated(id: string): void;
 }
 
@@ -239,12 +328,21 @@ export const useMeta = create<MetaState>()(
       bestFlowChain: 0,
       bestShardCombo: 0,
       dailiesPlayed: 0,
+      peakRating: 0,
+      questsCompleted: 0,
+      sprintsFinished: 0,
+      bestHeatCleared: 1,
       dailyBest: {},
       sprintBest: {},
       trialBest: {},
       deathStreak: null,
+      rating: RATING.START,
+      ratedRuns: 0,
+      questDay: null,
+      questDone: [],
       selectedCraft: "interceptor",
       selectedTrail: "cyan",
+      selectedHeat: [],
       celebrated: ["interceptor", "cyan"],
 
       recordRun(stats, periodKey) {
@@ -314,6 +412,19 @@ export const useMeta = create<MetaState>()(
                   count: s.deathStreak?.patternId === killer ? s.deathStreak.count + 1 : 1,
                 }
               : null;
+
+        // Pilot rating (roadmap 4.4): plain endless/daily runs only — heat
+        // changes the track, trials/sprints are different ladders entirely.
+        const rated = countsGlobal && stats.heat.length === 0;
+        const rating = rated ? updateRating(s.rating, s.ratedRuns, stats.distance) : s.rating;
+        const ratingDelta = rated ? rating - s.rating : null;
+
+        // Heat mastery: the strongest stack carried past 2 km (roadmap 4.6).
+        const heatCleared =
+          mode === "endless" && stats.heat.length > 0 && stats.distance >= 2000
+            ? heatScoreMult(stats.heat)
+            : 1;
+
         set({
           deathStreak,
           bestScore: countsGlobal ? Math.max(s.bestScore, stats.score) : s.bestScore,
@@ -332,6 +443,14 @@ export const useMeta = create<MetaState>()(
           dailyBest,
           sprintBest,
           trialBest,
+          rating,
+          ratedRuns: rated ? s.ratedRuns + 1 : s.ratedRuns,
+          peakRating: Math.max(s.peakRating, rating),
+          sprintsFinished:
+            mode === "sprint" && stats.deathCause === null
+              ? s.sprintsFinished + 1
+              : s.sprintsFinished,
+          bestHeatCleared: Math.max(s.bestHeatCleared, heatCleared),
         });
         return {
           newBestScore,
@@ -340,18 +459,34 @@ export const useMeta = create<MetaState>()(
           newSprintBest,
           newTrialBest,
           medal,
+          ratingDelta,
           deathStreak: mode === "trial" ? 0 : (deathStreak?.count ?? 0),
         };
       },
 
+      completeQuest(day, index) {
+        const s = get();
+        // A new day resets the board; completion banks the moment it happens.
+        const questDone =
+          s.questDay === day ? [...s.questDone] : [false, false, false];
+        if (questDone[index]) return;
+        questDone[index] = true;
+        set({
+          questDay: day,
+          questDone,
+          questsCompleted: s.questsCompleted + 1,
+        });
+      },
+
       selectCraft: (selectedCraft) => set({ selectedCraft }),
       selectTrail: (selectedTrail) => set({ selectedTrail }),
+      selectHeat: (selectedHeat) => set({ selectedHeat }),
       markCelebrated: (id) =>
         set((s) => ({ celebrated: s.celebrated.includes(id) ? s.celebrated : [...s.celebrated, id] })),
     }),
     {
       name: "cubefield:meta",
-      version: 4,
+      version: 5,
       migrate: (persisted) => {
         const state = persisted as Partial<MetaState>;
         return {
@@ -363,22 +498,41 @@ export const useMeta = create<MetaState>()(
           // v4: per-mode ladders (roadmap 4.1 / 4.2).
           sprintBest: state.sprintBest ?? {},
           trialBest: state.trialBest ?? {},
+          // v5: rating, quests, heat, mastery counters (roadmap 4.3–4.6).
+          rating: state.rating ?? RATING.START,
+          ratedRuns: state.ratedRuns ?? 0,
+          peakRating: state.peakRating ?? 0,
+          questDay: state.questDay ?? null,
+          questDone: state.questDone ?? [],
+          questsCompleted: state.questsCompleted ?? 0,
+          sprintsFinished: state.sprintsFinished ?? 0,
+          bestHeatCleared: state.bestHeatCleared ?? 1,
+          selectedHeat: state.selectedHeat ?? [],
         } as MetaState;
       },
     },
   ),
 );
 
-export const metaSnapshot = (m: MetaState): MetaSnapshot => ({
-  bestScore: m.bestScore,
-  bestDistance: m.bestDistance,
-  totalRuns: m.totalRuns,
-  totalDistance: m.totalDistance,
-  totalShards: m.totalShards,
-  totalNearMisses: m.totalNearMisses,
-  totalPerfectPasses: m.totalPerfectPasses,
-  maxFlowTier: m.maxFlowTier,
-  bestFlowChain: m.bestFlowChain,
-  bestShardCombo: m.bestShardCombo,
-  dailiesPlayed: m.dailiesPlayed,
-});
+export const metaSnapshot = (m: MetaState): MetaSnapshot => {
+  const medals = Object.values(m.trialBest);
+  return {
+    bestScore: m.bestScore,
+    bestDistance: m.bestDistance,
+    totalRuns: m.totalRuns,
+    totalDistance: m.totalDistance,
+    totalShards: m.totalShards,
+    totalNearMisses: m.totalNearMisses,
+    totalPerfectPasses: m.totalPerfectPasses,
+    maxFlowTier: m.maxFlowTier,
+    bestFlowChain: m.bestFlowChain,
+    bestShardCombo: m.bestShardCombo,
+    dailiesPlayed: m.dailiesPlayed,
+    goldTrials: medals.filter((t) => t.medal === "gold" || t.medal === "author").length,
+    authorTrials: medals.filter((t) => t.medal === "author").length,
+    peakRating: m.peakRating,
+    questsCompleted: m.questsCompleted,
+    sprintsFinished: m.sprintsFinished,
+    bestHeatCleared: m.bestHeatCleared,
+  };
+};

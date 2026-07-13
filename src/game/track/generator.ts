@@ -1,4 +1,5 @@
 import { OVERDRIVE, overdriveAt, SPEED, TRACK } from "../core/constants";
+import { NO_HEAT, type HeatEffects } from "../core/heat";
 import { clamp, clamp01, lerp } from "../core/mathUtils";
 import type { Rng } from "../core/rng";
 import type {
@@ -86,6 +87,8 @@ export interface GeneratorEmit {
 export class TrackGenerator {
   private rng: Rng;
   private readonly trial: TrialDef | null;
+  /** Resolved heat stack (identity when unheated — bit-identical streams). */
+  private readonly heat: HeatEffects;
   generatedUpTo = 0;
   private exitLanes: Uint8Array;
   private sinceSetpiece = 0;
@@ -105,13 +108,19 @@ export class TrackGenerator {
   rejections = 0;
   fallbacks = 0;
 
-  constructor(rng: Rng, debug = false, trial: TrialDef | null = null) {
+  constructor(
+    rng: Rng,
+    debug = false,
+    trial: TrialDef | null = null,
+    heat: HeatEffects = NO_HEAT,
+  ) {
     this.rng = rng;
     this.debug = debug;
     this.trial = trial;
+    this.heat = heat;
     this.exitLanes = openLanes();
     this.nextSetpieceAt = rng.range(620, 900);
-    this.nextFieldAt = rng.range(240, 440);
+    this.nextFieldAt = rng.range(240, 440) * heat.fieldCadenceScale;
   }
 
   fill(target: number, emit: GeneratorEmit): void {
@@ -137,9 +146,10 @@ export class TrackGenerator {
 
   private nextChunk(): GeneratedChunk {
     // Randomized obstacle-free seam between patterns: repositioning slack for
-    // the craft and dilation room for the validator. Overdrive squeezes the
-    // seams toward a ~10–14 m floor so late track never offers free breath.
-    const seamScale = 1 / (1 + 0.35 * this.pressureFor(this.generatedUpTo));
+    // the craft and dilation room for the validator. Overdrive (and the Dense
+    // Field heat) squeezes the seams toward a ~10–14 m floor so late track
+    // never offers free breath.
+    const seamScale = this.heat.seamScale / (1 + 0.35 * this.pressureFor(this.generatedUpTo));
     const runway = this.rng.range(
       Math.max(10, 18 * seamScale),
       Math.max(14, 34 * seamScale),
@@ -185,6 +195,7 @@ export class TrackGenerator {
         baseCtx.entryX,
         tryCtx.difficulty,
         this.pressureFor(s0),
+        this.heat,
       );
       const v = validatePattern(
         built.obstacles,
@@ -194,6 +205,7 @@ export class TrackGenerator {
         runway,
         this.debug,
         tryCtx.difficulty,
+        this.heat.slackBias,
       );
       if (v.ok) {
         result = built;
@@ -234,7 +246,8 @@ export class TrackGenerator {
     }
     if (usedPattern.category === "field") {
       this.sinceField = 0;
-      this.nextFieldAt = this.rng.range(420, 760) * lerp(1, 0.74, difficulty);
+      this.nextFieldAt =
+        this.rng.range(420, 760) * lerp(1, 0.74, difficulty) * this.heat.fieldCadenceScale;
     } else {
       this.sinceField += span;
     }
@@ -380,11 +393,17 @@ export class TrackGenerator {
       }
       pickups.push({ type: "shard", s, x, y: 1.3, magnet: !riskRoute });
     }
-    const shieldChance = lerp(0.32, 0.1, difficulty);
+    // Heat: Scarce Shields thins and delays the drip; Tin Hull removes it —
+    // the chance draw still happens so unheated rng streams are untouched.
+    const shieldChance = lerp(0.32, 0.1, difficulty) * this.heat.shieldChanceScale;
     if (s0 > this.shieldCooldown && this.rng.chance(shieldChance)) {
       const [s, x] = v.path[Math.floor(v.path.length / 2)];
-      pickups.push({ type: "shield", s, x, y: 1.5 });
-      this.shieldCooldown = s0 + this.rng.range(1250, 2100) * lerp(1, 1.25, difficulty);
+      if (this.heat.shields) pickups.push({ type: "shield", s, x, y: 1.5 });
+      this.shieldCooldown =
+        s0 +
+        this.rng.range(1250, 2100) *
+          lerp(1, 1.25, difficulty) *
+          this.heat.shieldCooldownScale;
     }
   }
 }

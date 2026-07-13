@@ -37,9 +37,15 @@ import {
   THREAD,
   TRACK,
 } from "../src/game/core/constants";
+import { heatScoreMult, normalizeHeat, resolveHeat, NO_HEAT, type HeatId } from "../src/game/core/heat";
 import type { RunConfig } from "../src/game/core/modes";
-import { Motion } from "../src/game/core/types";
+import { questsForDay, QUESTS_PER_DAY, type QuestSample } from "../src/game/core/quests";
+import { RATING, ratingTier, runPerformance, updateRating, RATING_TIERS } from "../src/game/core/rating";
+import { createRng } from "../src/game/core/rng";
+import { Motion, type ObstacleSpec } from "../src/game/core/types";
+import { TrackGenerator } from "../src/game/track/generator";
 import { MEDAL_ORDER, TRIALS, medalFor, nextMedalFor, trialSeed } from "../src/game/track/trials";
+import { corridorLanes, validatePattern } from "../src/game/track/validator";
 import { autopilot, lookaheadPilot, superhumanPilot } from "./pilots";
 
 const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
@@ -1172,4 +1178,323 @@ console.log("edge-case assertions: PASS");
   resimulate(rec, replayed);
   assert.deepEqual(replayed.stats, live.stats, "replayed trial stats must be identical");
   console.log("trial gate: PASS (roster structure, walls, purity, replay exactness)");
+}
+
+// --- Phase 4.3: heat modifiers -------------------------------------------------
+{
+  // Canonicalization + identity: no heat resolves to exact identity knobs.
+  assert.deepEqual(normalizeHeat(undefined), []);
+  assert.deepEqual(normalizeHeat(["tinHull", "noMagnet", "tinHull", "bogus"]), [
+    "noMagnet",
+    "tinHull",
+  ]);
+  assert.equal(resolveHeat([]), NO_HEAT);
+  assert.equal(NO_HEAT.scoreMult, 1);
+  assert.ok(Math.abs(heatScoreMult(["noMagnet", "tinHull"]) - 1.1 * 1.35) < 1e-12);
+
+  // An explicit empty stack is the same run as no stack at all (bit-exact).
+  {
+    const plain = new SimWorld();
+    const empty = new SimWorld();
+    plain.start(endless("heat-identity"));
+    empty.start({ mode: "endless", seed: "heat-identity", heat: [] });
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    for (let i = 0; i < 2400; i++) {
+      input.axis = Math.sin(i * 0.013) * 0.7;
+      plain.update(FIXED_DT, input);
+      empty.update(FIXED_DT, input);
+    }
+    assert.deepEqual(empty.stats, plain.stats, "empty heat stack must be a plain run");
+  }
+
+  // Sim-side stacks that do not touch generation (noMagnet + tinHull) leave
+  // the track and the flown line identical — passive score scales by exactly
+  // the stack multiplier on an empty field.
+  {
+    const mult = heatScoreMult(["noMagnet", "tinHull"]);
+    const cruise = (heat: HeatId[]): number => {
+      const world = new SimWorld();
+      world.start({ mode: "endless", seed: "heat-cruise", heat });
+      world.clearField();
+      (world as unknown as { generator: null }).generator = null;
+      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      for (let i = 0; i < 3600; i++) world.update(FIXED_DT, input);
+      assert.equal(world.status, "running");
+      return world.score;
+    };
+    const plain = cruise([]);
+    const heated = cruise(["noMagnet", "tinHull"]);
+    assert.ok(
+      Math.abs(heated / plain - mult) < 1e-9,
+      `heat must scale passive score by the stack (${(heated / plain).toFixed(6)} vs ${mult})`,
+    );
+  }
+
+  // No Magnet: a magnetic shard 3 m off the line is a free catch on a plain
+  // run and stays uncollected under heat.
+  {
+    const magnetProbe = (heat: HeatId[]): number => {
+      const world = new SimWorld();
+      world.start({ mode: "endless", seed: "heat-magnet", heat });
+      world.clearField();
+      (world as unknown as { generator: null }).generator = null;
+      Object.assign(world.pickups[0], {
+        active: true, type: "shard", s: 40, x: 3, y: 1.3,
+        seeking: false, magnetic: true, spawnTime: 0,
+      });
+      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      for (let i = 0; i < 600; i++) world.update(FIXED_DT, input);
+      return world.stats.shards;
+    };
+    assert.equal(magnetProbe([]), 1, "plain magnet must reel in the offset shard");
+    assert.equal(magnetProbe(["noMagnet"]), 0, "No Magnet must not seek");
+  }
+
+  // Tin Hull: even a held shield cannot absorb — contact is death.
+  {
+    const hullProbe = (heat: HeatId[]): { status: string; shieldBreaks: number } => {
+      const world = new SimWorld();
+      world.start({ mode: "endless", seed: "heat-hull", heat });
+      world.clearField();
+      (world as unknown as { generator: null }).generator = null;
+      world.hasShield = true;
+      Object.assign(world.obstacles[0], {
+        active: true, kind: "box",
+        s: 30, x: 0, y: 1, hx: 2, hy: 2, hs: 2, yaw: 0,
+        motion: Motion.None, m0: 0, m1: 0, m2: 0, collidable: true,
+        cx: 0, cy: 1, cs: 30, cyaw: 0,
+        state: 0, landed: false,
+        nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+        patternId: "heatHull",
+      });
+      let shieldBreaks = 0;
+      world.events.on("shieldBreak", () => shieldBreaks++);
+      const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+      for (let i = 0; i < 400 && world.status === "running"; i++) {
+        world.update(FIXED_DT, input);
+      }
+      return { status: world.status, shieldBreaks };
+    };
+    const plain = hullProbe([]);
+    assert.equal(plain.shieldBreaks, 1, "plain shield must absorb the hit");
+    assert.equal(plain.status, "running");
+    const tin = hullProbe(["tinHull"]);
+    assert.equal(tin.shieldBreaks, 0, "Tin Hull must not absorb");
+    assert.equal(tin.status, "dead", "Tin Hull contact must be fatal");
+  }
+
+  // Generation-side heat: measured over the same three seeds' first 10 km
+  // (shield drips are rare events — a single seed is too noisy to gate).
+  {
+    const survey = (heat: HeatId[]) => {
+      let obstacles = 0;
+      let shields = 0;
+      let moverSpeedSum = 0;
+      let movers = 0;
+      let gapSum = 0;
+      let gaps = 0;
+      for (let seedIdx = 0; seedIdx < 3; seedIdx++) {
+        const gen = new TrackGenerator(
+          createRng(`heat-gen-${seedIdx}`),
+          false,
+          null,
+          resolveHeat(normalizeHeat(heat)),
+        );
+        let prevS1 = 0;
+        while (gen.generatedUpTo < 10000) {
+          gen.fill(10000, {
+            chunk: (c) => {
+              obstacles += c.obstacles.length;
+              for (const o of c.obstacles) {
+                if (o.motion === Motion.SweepX || o.motion === Motion.RotateYaw || o.motion === Motion.Piston) {
+                  moverSpeedSum += Math.abs(o.m0 ?? 0);
+                  movers++;
+                }
+              }
+              for (const p of c.pickups) if (p.type === "shield") shields++;
+              if (prevS1 > 0) {
+                gapSum += c.s0 - prevS1;
+                gaps++;
+              }
+              prevS1 = c.s1;
+            },
+          });
+        }
+      }
+      return {
+        obstacles,
+        shields,
+        moverSpeed: moverSpeedSum / Math.max(1, movers),
+        seam: gapSum / Math.max(1, gaps),
+      };
+    };
+    const plain = survey([]);
+    const scarce = survey(["scarceShields"]);
+    const dense = survey(["denseField"]);
+    const fast = survey(["fastMovers"]);
+    assert.ok(plain.shields >= 8, `plain track must drip shields (${plain.shields})`);
+    assert.ok(
+      scarce.shields < plain.shields * 0.55,
+      `Scarce Shields must thin the drip (${scarce.shields} vs ${plain.shields})`,
+    );
+    assert.ok(
+      dense.obstacles > plain.obstacles * 1.05,
+      `Dense Field must add geometry (${dense.obstacles} vs ${plain.obstacles})`,
+    );
+    assert.ok(
+      dense.seam < plain.seam * 0.9,
+      `Dense Field must shrink seams (${dense.seam.toFixed(1)}m vs ${plain.seam.toFixed(1)}m)`,
+    );
+    assert.ok(
+      fast.moverSpeed > plain.moverSpeed * 1.08,
+      `Fast Movers must speed movers (${fast.moverSpeed.toFixed(2)} vs ${plain.moverSpeed.toFixed(2)})`,
+    );
+    console.log(
+      `heat generation survey: shields ${plain.shields}->${scarce.shields}, ` +
+      `obstacles ${plain.obstacles}->${dense.obstacles}, ` +
+      `seam ${plain.seam.toFixed(1)}m->${dense.seam.toFixed(1)}m, ` +
+      `mover speed ${plain.moverSpeed.toFixed(2)}->${fast.moverSpeed.toFixed(2)}`,
+    );
+  }
+
+  // Narrow Gaps: the validator accepts a tighter corridor under the bias —
+  // the guaranteed line gets razor-thin, exactly as advertised. Full-width
+  // walls with one center gap, entered from a funneled corridor (as real
+  // patterns do — a wide-open entry could never fairly reach one needle).
+  {
+    const gapWalls = (gap: number): ObstacleSpec[] => {
+      const edge = gap / 2;
+      const XP = TRACK.X_PATTERN;
+      return [
+        { kind: "box", s: 2020, x: -(XP + edge) / 2, y: 2, hx: (XP - edge) / 2, hy: 3, hs: 1 },
+        { kind: "box", s: 2020, x: (XP + edge) / 2, y: 2, hx: (XP - edge) / 2, hy: 3, hs: 1 },
+      ];
+    };
+    const entry = corridorLanes(0, 4);
+    const tight = 3.2; // Passable only with the Narrow Gaps slack reduction.
+    const plainV = validatePattern(gapWalls(tight), 2000, 60, entry, 20, false, 0.5, 0);
+    const heatV = validatePattern(gapWalls(tight), 2000, 60, entry, 20, false, 0.5, 0.12);
+    assert.equal(plainV.ok, false, "baseline slack must reject the razor gap");
+    assert.equal(heatV.ok, true, "Narrow Gaps must accept the razor gap");
+  }
+
+  // Heated runs replay bit-exactly (the recording carries the stack) and are
+  // deterministic across twin worlds.
+  {
+    const heat = normalizeHeat(["denseField", "fastMovers", "narrowGaps", "tinHull"]);
+    const config: RunConfig = { mode: "endless", seed: "heat-replay", heat };
+    const live = new SimWorld();
+    live.start(config);
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const maxSteps = Math.floor(240 / FIXED_DT);
+    for (let i = 0; i < maxSteps && live.status === "running"; i++) {
+      autopilot(live, input, { boost: true });
+      live.update(FIXED_DT, input);
+    }
+    assert.equal(live.status, "dead", "full-stack heat run should find a wall");
+    assert.deepEqual(live.stats.heat, heat, "stats must carry the canonical stack");
+    const rec = live.getRecording();
+    assert.ok(rec && rec.complete);
+    assert.deepEqual(rec.heat, heat, "recording must carry the stack");
+    const replayed = new SimWorld();
+    resimulate(rec, replayed);
+    assert.deepEqual(replayed.stats, live.stats, "heated replay must be bit-exact");
+    console.log(
+      `heat gate: PASS (full stack died at ${live.distance.toFixed(0)}m, ` +
+      `×${live.heatFx.scoreMult.toFixed(2)} score)`,
+    );
+  }
+}
+
+// --- Phase 4.4: pilot rating ---------------------------------------------------
+{
+  // Monotone in distance, anchored to the calibrated walls.
+  let prev = -1;
+  for (const d of [50, 150, 400, 1133, 2000, 2686, 5000, 8000, 20000, 31547, 100000]) {
+    const p = runPerformance(d);
+    assert.ok(p >= prev, `runPerformance must be monotone (${d}m)`);
+    assert.ok(p >= RATING.FLOOR && p <= RATING.CEIL, "performance must stay clamped");
+    prev = p;
+  }
+  assert.ok(Math.abs(runPerformance(1133) - 1200) < 1, "greedy wall anchor");
+  assert.ok(Math.abs(runPerformance(2686) - 1700) < 1, "lookahead wall anchor");
+  assert.ok(Math.abs(runPerformance(31547) - 3000) < 1, "superhuman wall anchor");
+  assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
+
+  // Elo-ish convergence: repeated identical runs settle at the performance;
+  // the provisional phase moves faster than the settled phase.
+  let rating: number = RATING.START;
+  const deltas: number[] = [];
+  for (let runs = 0; runs < 40; runs++) {
+    const next = updateRating(rating, runs, 2686);
+    deltas.push(Math.abs(next - rating));
+    rating = next;
+  }
+  assert.ok(
+    Math.abs(rating - 1700) < 60,
+    `rating must converge to the run performance (${rating})`,
+  );
+  assert.ok(
+    deltas[0] > deltas[RATING.PROVISIONAL_RUNS + 4] || deltas[RATING.PROVISIONAL_RUNS + 4] === 0,
+    "provisional runs must move the needle faster",
+  );
+
+  // Tiers are ordered and total.
+  for (let i = 1; i < RATING_TIERS.length; i++) {
+    assert.ok(RATING_TIERS[i].min > RATING_TIERS[i - 1].min);
+  }
+  assert.equal(ratingTier(0).name, "DRIFTER");
+  assert.equal(ratingTier(runPerformance(31547)).name, "WEAVER");
+  console.log(`rating gate: PASS (convergence at ${rating}, ${ratingTier(rating).name})`);
+}
+
+// --- Phase 4.5: daily quests ---------------------------------------------------
+{
+  // Deterministic per day, three distinct templates.
+  const dayA = questsForDay("2026-07-13");
+  const dayA2 = questsForDay("2026-07-13");
+  assert.deepEqual(
+    dayA.map((q) => q.id),
+    dayA2.map((q) => q.id),
+    "the day's quest set must be stable",
+  );
+  assert.equal(dayA.length, QUESTS_PER_DAY);
+  assert.equal(new Set(dayA.map((q) => q.id.split(":")[0])).size, QUESTS_PER_DAY);
+
+  // Rotation: the pool is broad enough that a week of keys varies.
+  const sets = new Set<string>();
+  for (let d = 10; d < 17; d++) {
+    sets.add(questsForDay(`2026-07-${d}`).map((q) => q.id).join("|"));
+  }
+  assert.ok(sets.size >= 4, `daily quests must rotate (${sets.size}/7 distinct sets)`);
+
+  // Progress functions read a run correctly (synthetic sample).
+  const world = new SimWorld();
+  world.start(endless("quest-probe"));
+  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const maxSteps = Math.floor(200 / FIXED_DT);
+  for (let i = 0; i < maxSteps && world.status === "running"; i++) {
+    autopilot(world, input, { boost: true });
+    world.update(FIXED_DT, input);
+  }
+  assert.equal(world.status, "dead");
+  for (const sec of world.stats.sections) {
+    assert.ok(
+      sec.boostUptime >= 0 && sec.boostUptime <= 1,
+      "section boost uptime must be normalized",
+    );
+  }
+  const sample: QuestSample = {
+    stats: world.stats,
+    counters: { riskShards: 2, fastPerfects: 1 },
+  };
+  for (let d = 1; d <= 28; d++) {
+    for (const q of questsForDay(`2026-07-${String(d).padStart(2, "0")}`)) {
+      const p = q.progress(sample);
+      assert.ok(Number.isFinite(p) && p >= 0, `quest ${q.id} progress must be sane`);
+      assert.ok(q.target > 0, `quest ${q.id} target must be positive`);
+      assert.ok(q.label.length > 8, `quest ${q.id} needs a human label`);
+    }
+  }
+  console.log("quest gate: PASS (stable rotation, sane progress functions)");
 }

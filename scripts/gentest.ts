@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { overdriveAt, SPEED } from "../src/game/core/constants";
+import { HEATS, normalizeHeat, resolveHeat } from "../src/game/core/heat";
 import { createRng } from "../src/game/core/rng";
 import {
   TrackGenerator,
@@ -224,6 +225,49 @@ console.log("\n== deep overdrive: 1 × 60km ==");
     `overdrive must shrink runway seams (early ${earlyGap.toFixed(1)}m -> late ${lateGap.toFixed(1)}m)`,
   );
   assert.ok(lateGap >= 10, "late seams must respect the 10m floor");
+}
+
+// Worst-combo heat generation (roadmap 4.3): the full stack — dense field,
+// fast movers, narrow gaps, scarce shields, tin hull — must keep the chain
+// healthy: validation stays honest (every emitted chunk is still solver-
+// proven), fallbacks stay rare, seams respect the floor, no stalls.
+console.log("\n== full heat stack: 2 × 30km ==");
+{
+  const heat = resolveHeat(normalizeHeat(HEATS.map((h) => h.id)));
+  let chunks = 0;
+  let fallbacks = 0;
+  let rejections = 0;
+  for (let seedIndex = 0; seedIndex < 2; seedIndex++) {
+    const gen = new TrackGenerator(createRng(`heat-mix-${seedIndex}`), false, null, heat);
+    let prevS1 = 0;
+    while (gen.generatedUpTo < 30000) {
+      const before = gen.generatedUpTo;
+      gen.fill(30000, {
+        chunk: (c) => {
+          chunks++;
+          if (prevS1 > 0) {
+            assert.ok(
+              c.s0 - prevS1 >= 10 - 1e-9,
+              `heat seam collapsed (${(c.s0 - prevS1).toFixed(1)}m)`,
+            );
+          }
+          prevS1 = c.s1;
+        },
+      });
+      assert.ok(gen.generatedUpTo > before, `heat generator stalled at ${before.toFixed(0)}m`);
+    }
+    fallbacks += gen.fallbacks;
+    rejections += gen.rejections;
+  }
+  const rate = fallbacks / chunks;
+  console.log(
+    `chunks=${chunks}, fallbacks=${fallbacks} (${(rate * 100).toFixed(1)}%), rejections=${rejections}`,
+  );
+  assert.ok(rate < 0.05, `full-heat fallback rate ${(rate * 100).toFixed(1)}% is too high`);
+  assert.ok(
+    rejections / chunks < 1.2,
+    "full-heat generator retries are under excessive pressure",
+  );
 }
 
 // Trial-mode generation (roadmap 4.1): each roster trial loops its forced

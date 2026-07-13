@@ -8,6 +8,9 @@ import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "@/game/state/meta";
 import { resolveTier, useSettings, type QualityPreset } from "@/game/state/settings";
 import { dailyKey, weeklyKey } from "@/game/core/rng";
 import { FLOW, SPRINT_MODE } from "@/game/core/constants";
+import { HEATS, HEAT_BY_ID, heatScoreMult } from "@/game/core/heat";
+import { questsForDay } from "@/game/core/quests";
+import { ratingTier } from "@/game/core/rating";
 import { GRADE_MIN_INTENSITY, type SectionResult } from "@/game/core/world";
 import {
   MEDAL_ORDER,
@@ -74,6 +77,7 @@ export function Screens() {
       <AnimatePresence>
         {overlay === "hangar" && <HangarOverlay key="hangar" />}
         {overlay === "trials" && <TrialsOverlay key="trials" />}
+        {overlay === "heat" && <HeatOverlay key="heat" />}
         {overlay === "settings" && <SettingsOverlay key="settings" />}
         {overlay === "help" && <HelpOverlay key="help" />}
       </AnimatePresence>
@@ -158,6 +162,8 @@ function TitleScreen() {
   const dailyRecord = meta.dailyBest[today];
   const week = weeklyKey();
   const sprintRecord = meta.sprintBest[week];
+  const heatMult = heatScoreMult(meta.selectedHeat);
+  const tier = ratingTier(meta.rating);
 
   return (
     <Screen dim={false}>
@@ -176,9 +182,24 @@ function TitleScreen() {
           transition={{ duration: 0.5, delay: 0.15 }}
           className="flex flex-col items-center gap-3"
         >
-          <button className={`${btnPrimary} text-lg`} onClick={() => bundle.startRun("endless")}>
-            LAUNCH
-          </button>
+          <div className="flex items-stretch justify-center gap-2">
+            <button className={`${btnPrimary} text-lg`} onClick={() => bundle.startRun("endless")}>
+              LAUNCH
+              {heatMult > 1 && (
+                <span className="ml-2 text-xs tracking-widest text-orange-900/90">
+                  HEAT ×{heatMult.toFixed(2)}
+                </span>
+              )}
+            </button>
+            <button
+              className={`${btnGhost} !px-3 ${meta.selectedHeat.length > 0 ? "!border-orange-300/50 !text-orange-200" : ""}`}
+              onClick={() => setOverlay("heat")}
+              title="Opt-in burdens for a multiplied score"
+              aria-label="Configure heat modifiers"
+            >
+              HEAT
+            </button>
+          </div>
           <div className="flex flex-wrap justify-center gap-2">
             <button className={btnGhost} onClick={() => bundle.startRun("daily")}>
               DAILY COURSE
@@ -195,6 +216,7 @@ function TitleScreen() {
               </span>
             </button>
           </div>
+          <DailyQuestCard />
           <div className="mt-1 flex flex-wrap justify-center gap-2">
             <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("trials")}>
               TRIALS
@@ -220,6 +242,11 @@ function TitleScreen() {
           {meta.bestScore > 0 && (
             <div className="mb-1 tabular-nums">
               PERSONAL BEST {meta.bestScore.toLocaleString()} · {Math.floor(meta.bestDistance).toLocaleString()} m
+            </div>
+          )}
+          {meta.ratedRuns > 0 && (
+            <div className="mb-1 tabular-nums tracking-[0.14em] text-cyan-200/70">
+              PILOT RATING {meta.rating.toLocaleString()} · {tier.name}
             </div>
           )}
           <div className="tracking-[0.2em]">
@@ -366,6 +393,12 @@ function GameOverScreen() {
                 ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
                 : "SIGNAL TERMINATED"}
           </div>
+          {s.heat.length > 0 && (
+            <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-orange-300/90">
+              HEAT ×{heatScoreMult(s.heat).toFixed(2)} ·{" "}
+              {s.heat.map((id) => HEAT_BY_ID[id].name.toUpperCase()).join(" · ")}
+            </div>
+          )}
           {outcome.deathStreak >= 2 && s.deathCause && (
             <div className="mt-1 text-[11px] font-semibold tracking-[0.14em] text-rose-300/90">
               {ordinal(outcome.deathStreak).toUpperCase()} RUN IN A ROW ENDED BY{" "}
@@ -417,7 +450,14 @@ function GameOverScreen() {
               {Math.ceil(outcome.distanceDelta).toLocaleString()} m short of your farthest flight
             </div>
           ) : null}
+          {outcome.ratingDelta !== null && <RatingLine delta={outcome.ratingDelta} />}
         </div>
+
+        {mode === "daily" && (
+          <div className="mt-4 flex justify-center">
+            <DailyQuestCard />
+          </div>
+        )}
 
         {outcome.forensics && <DeathForensicsPanel forensics={outcome.forensics} />}
 
@@ -451,6 +491,27 @@ function GameOverScreen() {
         <div className="mt-3 text-center text-xs text-white/40">R / ENTER for instant restart</div>
       </motion.div>
     </Screen>
+  );
+}
+
+/** Post-run pilot-rating movement (roadmap 4.4). */
+function RatingLine({ delta }: { delta: number }) {
+  const rating = useMeta((s) => s.rating);
+  const tier = ratingTier(rating);
+  return (
+    <div className="mt-1.5 text-xs tabular-nums text-white/60">
+      <span className="tracking-[0.14em] text-white/40">PILOT RATING </span>
+      <span className="font-semibold text-cyan-200/90">
+        {rating.toLocaleString()} · {tier.name}
+      </span>
+      <span
+        className={`ml-1.5 font-semibold ${
+          delta > 0 ? "text-emerald-300/90" : delta < 0 ? "text-rose-300/80" : "text-white/40"
+        }`}
+      >
+        {delta > 0 ? `+${delta}` : delta}
+      </span>
+    </div>
   );
 }
 
@@ -531,6 +592,117 @@ function TrialResult({
         <MedalLadder trial={trial} distance={distance} />
       </div>
     </div>
+  );
+}
+
+/** Today's three skill quests, shared by every pilot (roadmap 4.5). */
+function DailyQuestCard() {
+  const questDay = useMeta((s) => s.questDay);
+  const questDone = useMeta((s) => s.questDone);
+  const today = dailyKey();
+  const quests = useMemo(() => questsForDay(today), [today]);
+  const done = questDay === today ? questDone : [];
+  const doneCount = done.filter(Boolean).length;
+
+  return (
+    <div className="w-[min(88vw,26rem)] rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-left">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[10px] tracking-[0.3em] text-white/45">DAILY QUESTS</span>
+        <span className="text-[10px] tabular-nums text-white/45">
+          {doneCount}/{quests.length}
+        </span>
+      </div>
+      <div className="mt-1.5 flex flex-col gap-1">
+        {quests.map((q, i) => (
+          <div key={q.id} className="flex items-center gap-2 text-[11px] leading-tight">
+            <span
+              className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border text-[9px] ${
+                done[i]
+                  ? "border-emerald-300/70 bg-emerald-300/20 text-emerald-200"
+                  : "border-white/20 text-transparent"
+              }`}
+              aria-hidden="true"
+            >
+              ✓
+            </span>
+            <span className={done[i] ? "text-white/40 line-through" : "text-white/70"}>
+              {q.label}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Pre-run heat configuration: opt-in burdens, multiplied payout (4.3). */
+function HeatOverlay() {
+  const bundle = useGameBundle();
+  const setOverlay = useGame((s) => s.setOverlay);
+  const selectedHeat = useMeta((s) => s.selectedHeat);
+  const selectHeat = useMeta((s) => s.selectHeat);
+  const mult = heatScoreMult(selectedHeat);
+
+  return (
+    <OverlayShell title="HEAT">
+      <div className="mb-4 text-xs leading-relaxed text-white/55">
+        Burdens for the endless track — each one makes the run genuinely harder and multiplies
+        every point you score. Stack them if you dare. Daily, sprint, and trials always run pure.
+      </div>
+      <div className="flex flex-col gap-2">
+        {HEATS.map((h) => {
+          const on = selectedHeat.includes(h.id);
+          return (
+            <button
+              key={h.id}
+              role="switch"
+              aria-checked={on}
+              onClick={() =>
+                selectHeat(
+                  on ? selectedHeat.filter((id) => id !== h.id) : [...selectedHeat, h.id],
+                )
+              }
+              className={`flex items-center justify-between gap-3 rounded-xl border p-3 text-left transition-all ${
+                on
+                  ? "border-orange-300/60 bg-orange-400/10 shadow-[0_0_16px_rgba(251,146,60,0.2)]"
+                  : "border-white/10 bg-white/5 hover:bg-white/10"
+              }`}
+            >
+              <div>
+                <div className={`font-display text-sm font-bold tracking-wider ${on ? "text-orange-200" : "text-white"}`}>
+                  {h.name}
+                </div>
+                <div className="mt-0.5 text-[11px] text-white/55">{h.desc}</div>
+              </div>
+              <div
+                className={`shrink-0 rounded-md px-2 py-1 font-display text-xs font-bold tabular-nums ${
+                  on ? "bg-orange-300/25 text-orange-100" : "bg-white/10 text-white/50"
+                }`}
+              >
+                ×{h.mult.toFixed(2)}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-5 flex items-center justify-between gap-3">
+        <div className="text-sm text-white/70">
+          TOTAL{" "}
+          <span className={`font-display font-bold tabular-nums ${mult > 1 ? "text-orange-200" : "text-white/50"}`}>
+            ×{mult.toFixed(2)}
+          </span>
+        </div>
+        <button
+          className={btnPrimary}
+          onClick={() => {
+            setOverlay("none");
+            bundle.startRun("endless");
+          }}
+        >
+          {mult > 1 ? "IGNITE" : "LAUNCH CLEAN"}
+        </button>
+      </div>
+    </OverlayShell>
   );
 }
 
@@ -783,6 +955,17 @@ function HangarOverlay() {
         <Stat label="PERFECT" value={String(meta.totalPerfectPasses)} />
         <Stat label="BEST CHAIN" value={String(meta.bestFlowChain)} />
         <Stat label="SHARD COMBO" value={String(meta.bestShardCombo)} />
+        <Stat
+          label="PEAK RATING"
+          value={meta.peakRating > 0 ? meta.peakRating.toLocaleString() : "—"}
+        />
+        <Stat label="GOLD TRIALS" value={String(snap.goldTrials)} />
+        <Stat label="SPRINTS DONE" value={String(meta.sprintsFinished)} />
+        <Stat label="QUESTS DONE" value={String(meta.questsCompleted)} />
+        <Stat
+          label="HEAT CLEARED"
+          value={meta.bestHeatCleared > 1 ? `×${meta.bestHeatCleared.toFixed(2)}` : "—"}
+        />
       </div>
     </OverlayShell>
   );
@@ -950,6 +1133,14 @@ function HelpOverlay() {
           <span className="font-bold text-amber-200">Trials</span> loop a single pattern at
           ever-rising speed: chase Bronze, Silver, Gold, and Author medals, and race your own
           ghost line.
+        </div>
+        <div>
+          <span className="font-bold text-orange-300">Heat</span> stacks opt-in burdens on the
+          endless track — scarcer shields, denser fields, narrower gaps — and multiplies every
+          point you score. Your <span className="font-bold text-cyan-200">Pilot Rating</span>{" "}
+          climbs as your plain endless and daily flights push past the calibrated walls, and
+          three fresh <span className="font-bold text-lime-200">daily quests</span> reward
+          skill, never grind.
         </div>
       </div>
     </OverlayShell>

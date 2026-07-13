@@ -1,4 +1,5 @@
 import { overdriveAt, TRACK } from "../core/constants";
+import { NO_HEAT, type HeatEffects } from "../core/heat";
 import type { Rng } from "../core/rng";
 import { Motion, type PatternCategory, type PatternResult } from "../core/types";
 
@@ -27,6 +28,8 @@ export function mutatePattern(
   // (log) — determinism is safe because od is a pure function of s0 and no
   // rng draw becomes conditional on it. Trials pass their own pressure ramp.
   od: number = overdriveAt(s0),
+  // Heat scales (identity when unheated — the rng stream is unchanged).
+  heat: HeatEffects = NO_HEAT,
 ): MutationLog {
   const log: MutationLog = { mirrored: false, scatterAdded: 0, jittered: false, moverBoost: 1 };
 
@@ -64,9 +67,13 @@ export function mutatePattern(
     }
   }
 
-  // Speed up movers a touch (more often, and harder, deep in overdrive).
-  if (rng.chance(Math.min(0.9, 0.14 + difficulty * 0.34 + od * 0.1))) {
-    log.moverBoost = rng.range(1.04, 1.2 + difficulty * 0.34 + Math.min(0.6, od * 0.15));
+  // Speed up movers a touch (more often, and harder, deep in overdrive; the
+  // Fast Movers heat multiplies both the odds and the magnitude). The cap
+  // only rises under heat so unheated streams stay bit-identical.
+  const moverCap = heat.moverChanceScale > 1 ? 0.92 : 0.9;
+  if (rng.chance(Math.min(moverCap, (0.14 + difficulty * 0.34 + od * 0.1) * heat.moverChanceScale))) {
+    log.moverBoost =
+      rng.range(1.04, 1.2 + difficulty * 0.34 + Math.min(0.6, od * 0.15)) * heat.moverMagScale;
     for (const o of result.obstacles) {
       switch (o.motion) {
         case Motion.SweepX:
@@ -86,9 +93,16 @@ export function mutatePattern(
 
   // Sprinkle a few extra loose objects over normal patterns so even a
   // memorized layout stays alive. (Fields are already chaos; set-pieces stay
-  // authored.)
-  if (category === "normal" && rng.chance(Math.min(0.9, 0.2 + difficulty * 0.24 + od * 0.1))) {
-    const n = rng.int(2, 4 + Math.round(difficulty * 3) + Math.round(Math.min(4, od * 1.2)));
+  // authored.) The Dense Field heat raises the odds, the count, and the cap.
+  const scatterCap = heat.scatterChanceScale > 1 ? 0.95 : 0.9;
+  if (
+    category === "normal" &&
+    rng.chance(Math.min(scatterCap, (0.2 + difficulty * 0.24 + od * 0.1) * heat.scatterChanceScale))
+  ) {
+    const n = rng.int(
+      2 + heat.scatterCountBonus,
+      4 + heat.scatterCountBonus + Math.round(difficulty * 3) + Math.round(Math.min(4, od * 1.2)),
+    );
     for (let i = 0; i < n; i++) {
       const s = s0 + rng.range(14, result.length - 10);
       const x = rng.range(-XP + 3, XP - 3);

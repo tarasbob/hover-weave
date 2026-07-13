@@ -14,6 +14,7 @@ import {
   TRACK,
 } from "./constants";
 import { Emitter } from "./events";
+import { NO_HEAT, normalizeHeat, resolveHeat, type HeatEffects, type HeatId } from "./heat";
 import type { InputState } from "./input";
 import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils";
 import type { GameMode, RunConfig } from "./modes";
@@ -66,6 +67,8 @@ export interface SectionResult {
   composite: number;
   events: number;
   flowUptime: number;
+  /** Fraction of in-chunk steps spent boosting (quest fuel, roadmap 4.5). */
+  boostUptime: number;
   pace: number;
 }
 
@@ -212,6 +215,8 @@ export interface RunStats {
   mode: GameMode;
   /** Trial roster id (mode === "trial" only). */
   trialId: string | null;
+  /** Canonical heat stack the run was flown under (endless only). */
+  heat: HeatId[];
   /** Null for a survived time-limited run (sprint finish). */
   deathCause: DeathCause | null;
   /** Per-chunk line grades in traversal order (roadmap 3.4). */
@@ -237,6 +242,8 @@ export class SimWorld {
   timeLimit = 0;
   /** Ambient target-speed curve (trials swap in their own escalation). */
   private speedCurve: (s: number) => number = speedAt;
+  /** Resolved heat modifiers (identity when the stack is empty). */
+  heatFx: HeatEffects = NO_HEAT;
   status: RunStatus = "idle";
 
   // Craft state.
@@ -294,6 +301,7 @@ export class SimWorld {
     enteredAt: number;
     steps: number;
     flowSteps: number;
+    boostSteps: number;
     speedSum: number;
     events: number;
   } | null = null;
@@ -350,7 +358,7 @@ export class SimWorld {
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
-      seed: "", mode: "endless", trialId: null, deathCause: null,
+      seed: "", mode: "endless", trialId: null, heat: [], deathCause: null,
       sections: [], lineRating: null,
     };
   }
@@ -374,13 +382,19 @@ export class SimWorld {
   start(config: RunConfig): void {
     const seed = config.seed;
     const skipTo = config.skipTo ?? 0;
-    this.config = config;
+    // Canonicalize the heat stack (endless only) so run identity — and with
+    // it recordings, ghosts, and determinism — never depends on stack order.
+    const heat = config.mode === "endless" ? normalizeHeat(config.heat) : [];
+    this.config = { ...config };
+    if (heat.length > 0) this.config.heat = heat;
+    else delete this.config.heat;
     this.seed = seed;
     this.mode = config.mode;
     this.trialId = config.mode === "trial" ? (config.trialId ?? null) : null;
     this.trial = this.trialId ? (trialById(this.trialId) ?? null) : null;
     this.timeLimit = config.mode === "sprint" ? SPRINT_MODE.DURATION : 0;
     this.speedCurve = this.trial ? this.trial.speedAt : speedAt;
+    this.heatFx = resolveHeat(heat);
     this.status = "running";
     this.x = 0;
     this.latVel = 0;
@@ -415,6 +429,7 @@ export class SimWorld {
     this.stats.seed = seed;
     this.stats.mode = this.mode;
     this.stats.trialId = this.trialId;
+    this.stats.heat = heat;
     // Recording is only meaningful for real runs from the start line.
     this.recorder.reset(this.recordInputs && skipTo === 0);
     this.chunkLog.length = 0;
@@ -433,7 +448,12 @@ export class SimWorld {
     for (let i = PICKUP_CAP - 1; i >= 0; i--) this.pickupFree.push(i);
     this.debugChunks.length = 0;
 
-    this.generator = new TrackGenerator(createRng(seed), this.collectDebug, this.trial);
+    this.generator = new TrackGenerator(
+      createRng(seed),
+      this.collectDebug,
+      this.trial,
+      this.heatFx,
+    );
     if (skipTo > 0) {
       this.distance = skipTo;
       this.prevDistance = skipTo;
@@ -635,10 +655,11 @@ export class SimWorld {
 
       if (this.iframes > 0) this.iframes -= dt;
 
-      // Score: distance rate scaled by flow multiplier and local danger —
-      // flying where the geometry is dense pays; empty-edge hugging doesn't.
+      // Score: distance rate scaled by flow multiplier, local danger, and the
+      // heat stack — flying where the geometry is dense pays; empty-edge
+      // hugging doesn't; opt-in burdens pay multiplicatively (roadmap 4.3).
       const mult = 1 + this.flowPoints * FLOW.MULT_PER_POINT;
-      this.score += this.speed * dt * mult * this.dangerFactor;
+      this.score += this.speed * dt * mult * this.dangerFactor * this.heatFx.scoreMult;
 
       this.stats.score = Math.floor(this.score);
       this.stats.distance = this.distance;
@@ -692,7 +713,7 @@ export class SimWorld {
         if (d >= c.s0 && d <= c.s1) {
           this.section = {
             s0: c.s0, s1: c.s1, patternId: c.patternId, intensity: c.intensity,
-            enteredAt: d, steps: 0, flowSteps: 0, speedSum: 0, events: 0,
+            enteredAt: d, steps: 0, flowSteps: 0, boostSteps: 0, speedSum: 0, events: 0,
           };
           break;
         }
@@ -703,6 +724,7 @@ export class SimWorld {
       sec.steps++;
       sec.speedSum += this.speed;
       if (this.flowPoints >= FLOW.POINTS_PER_TIER) sec.flowSteps++;
+      if (this.boosting) sec.boostSteps++;
     }
   }
 
@@ -724,7 +746,8 @@ export class SimWorld {
     this.stats.sections.push({
       patternId: sec.patternId, intensity: sec.intensity,
       s0: sec.s0, s1: sec.s1,
-      grade, composite, events: sec.events, flowUptime, pace,
+      grade, composite, events: sec.events, flowUptime,
+      boostUptime: sec.boostSteps / sec.steps, pace,
     });
     if (sec.intensity >= GRADE_MIN_INTENSITY) {
       this.events.emit("sectionGrade", {
@@ -848,6 +871,9 @@ export class SimWorld {
   private spawnChunk(chunk: GeneratedChunk): void {
     for (const spec of chunk.obstacles) this.spawnObstacle(spec, chunk.patternId);
     for (const p of chunk.pickups) {
+      // Tin Hull also silences pattern-authored shields (the generator's own
+      // path shields are already suppressed at placement).
+      if (p.type === "shield" && !this.heatFx.shields) continue;
       const idx = this.pickupFree.pop();
       if (idx === undefined) {
         this.stats.pickupDrops++;
@@ -1198,7 +1224,8 @@ export class SimWorld {
       Math.max(0, this.flowChain - 1) * FLOW.CHAIN_SCORE_STEP,
     );
     const scoreAward = Math.round(
-      reward.baseScore * this.flowMultiplier * chainBonus * this.speedRewardFactor,
+      reward.baseScore * this.flowMultiplier * chainBonus * this.speedRewardFactor *
+        this.heatFx.scoreMult,
     );
     this.score += scoreAward;
     this.events.emit("nearMiss", {
@@ -1223,7 +1250,10 @@ export class SimWorld {
     const worse = Math.max(prev.clearance, cur.clearance);
     const tightness = clamp01(1 - worse / THREAD.CLEARANCE);
     const base = THREAD.SCORE_MIN + (THREAD.SCORE_MAX - THREAD.SCORE_MIN) * tightness * tightness;
-    let scoreAward = Math.round(base * this.flowMultiplier * this.speedRewardFactor);
+    // The double-graze repay below reuses awards that already carry heat.
+    let scoreAward = Math.round(
+      base * this.flowMultiplier * this.speedRewardFactor * this.heatFx.scoreMult,
+    );
     // A true double-graze needle also repays both awards multiplicatively
     // (they already carry the flow/speed multipliers — no re-scaling).
     if (prev.award > 0 && cur.award > 0) {
@@ -1245,7 +1275,8 @@ export class SimWorld {
   }
 
   private onHit(o: Obstacle): void {
-    if (this.hasShield) {
+    // Tin Hull: shields neither spawn nor absorb — every contact is fatal.
+    if (this.hasShield && this.heatFx.shields) {
       this.hasShield = false;
       this.iframes = RUN.SHIELD_IFRAMES;
       this.flowPoints = Math.max(0, this.flowPoints - FLOW.SHIELD_PENALTY);
@@ -1314,7 +1345,12 @@ export class SimWorld {
       const distSq = dS * dS + dx * dx;
 
       if (p.type === "shard") {
-        if (p.magnetic && !p.seeking && distSq < ENERGY.MAGNET_RADIUS * ENERGY.MAGNET_RADIUS) {
+        if (
+          this.heatFx.magnet &&
+          p.magnetic &&
+          !p.seeking &&
+          distSq < ENERGY.MAGNET_RADIUS * ENERGY.MAGNET_RADIUS
+        ) {
           p.seeking = true;
         }
         if (p.seeking) {
@@ -1349,7 +1385,8 @@ export class SimWorld {
             ENERGY.SHARD_SCORE *
             (1 + (this.shardCombo - 1) * ENERGY.COMBO_SCORE_STEP) *
             this.flowMultiplier *
-            riskBonus,
+            riskBonus *
+            this.heatFx.scoreMult,
           );
           this.score += scoreAward;
           this.stats.shards++;

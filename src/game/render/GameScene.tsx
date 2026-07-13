@@ -208,6 +208,7 @@ export function GameScene() {
           objective,
           objectiveHit,
           timeLeft: world.timeLimit > 0 ? Math.max(0, world.timeLimit - world.time) : null,
+          heatMult: world.heatFx.scoreMult,
           ghostDelta: showGhost ? ghost.deltaTo(world.distance) : null,
         });
       }
