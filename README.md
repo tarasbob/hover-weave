@@ -26,6 +26,12 @@ combos. **Shields** (increasingly scarce) forgive one collision.
 own personal best. Distance, flow streaks, lifetime totals and daily play
 unlock craft designs and trail cosmetics — skill only, nothing for sale.
 
+Every run is recorded (a few KB of input, replayed bit-exactly by the
+deterministic sim): a **spectral PB ghost** races beside you — line-for-line
+on the daily, best-run pace on endless — and death opens a scrubbable
+**kill-cam** showing your flown line against the generator's proven safe
+path, plus per-section S/A/B/C line grades and repeat-death notes.
+
 ## Development
 
 ```bash

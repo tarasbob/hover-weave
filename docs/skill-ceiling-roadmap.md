@@ -82,11 +82,19 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 3.1 | **Input recording + replay** — record per-fixed-step axis/boost (delta/RLE compressed, few KB/run); re-sim to replay. Foundation for everything below. | todo | Sim is already deterministic at fixed 120 Hz |
-| 3.2 | **PB ghost** — race your best run's ghost on daily + endless; post-death "race your ghost from the last 500 m". | todo | Render ghost craft from replayed sim |
-| 3.3 | **Death forensics** — kill-cam scrub: your line vs. the validator's solved path (`v.path`), clearance, speed, repeat-death streak notes ("3rd death to pistonCorridor"). | todo | `deathCause` + validator path already exist |
-| 3.4 | **Section grades** — S/A/B/C per chunk (clearance percentile, speed vs. base, flow uptime) + end-of-run line rating. | todo | Chunks already carry `patternId`/`intensity`/`skills` |
-| 3.5 | **PB pressure HUD** — subtle live delta-to-PB; on death, "you were 220 m short" beside the restart prompt. | todo | `Hud.tsx`, `Screens.tsx` |
+| 3.1 | **Input recording + replay** — record per-fixed-step axis/boost (delta/RLE compressed, few KB/run); re-sim to replay. Foundation for everything below. | done | The sim now consumes a 1/127-quantized axis, so recordings replay **bit-exactly** (stats/events deep-equal, enforced in `simtest.ts`). RLE over packed (axis, boost): keyboard-style 3-min run ≈ 0.4 KB, worst-case continuous analog ≈ 6 KB per 2.3 km; an over-cap stream marks itself `complete: false` and is never used as a ghost. `src/game/core/replay.ts` (`InputRecorder`, `ReplayCursor`, `resimulate`), `SimWorld.getRecording()` |
+| 3.2 | **PB ghost** — race your best run's ghost on daily + endless; post-death "race your ghost from the last 500 m". | done | `GhostDriver` steps a second `SimWorld` in lockstep with the live sim clock (lazy — allocated only when a ghost exists; lockstep exactness gated in `simtest.ts`). Daily = same-seed true spatial ghost; endless = cross-seed pace ghost (see Decision Log). Additive hologram in `Ghost.tsx`, live "±n m GHOST" in the HUD, settings toggle. Recordings persist per mode in `state/replays.ts` (version-guarded, last 3 daily keys). "Race from the last 500 m" folded into ghost + shortfall pressure (Decision Log) |
+| 3.3 | **Death forensics** — kill-cam scrub: your line vs. the validator's solved path (`v.path`), clearance, speed, repeat-death streak notes ("3rd death to pistonCorridor"). | done | Death screen kill-cam (`ui/DeathForensics.tsx`): scrubbable top-down map of the last ~320 m — your 30 Hz traced line vs. the validator's dashed safe line, obstacle envelopes as they stood at impact (a recycled-envelope log keeps the field behind the craft), impact marker, and a per-moment speed / clearance / flow readout on the scrub. Streak note ("3rd run in a row ended by …") from persisted `meta.deathStreak`. 2D scrub instead of a 3D rewind (Decision Log) |
+| 3.4 | **Section grades** — S/A/B/C per chunk (clearance percentile, speed vs. base, flow uptime) + end-of-run line rating. | done | Graded on chunk exit: composite = 0.45·precision (events per 100 m vs. authored intensity) + 0.30·flow uptime + 0.25·pace (avg speed vs. `speedAt`); intensity < 2 chunks are transit, never graded. `sectionGrade` event → transient HUD chip; death screen shows the intensity-weighted **line rating** + weakest section. Calibration gates in `simtest.ts` (elite line S, edge-hug C, monotone, intensity raises the bar) |
+| 3.5 | **PB pressure HUD** — subtle live delta-to-PB; on death, "you were 220 m short" beside the restart prompt. | done | Quiet "PB IN n" under the live score (flips to the existing NEW PERSONAL BEST once ahead); death readout adds "n m short of your farthest flight" / "FARTHEST FLIGHT YET" beside the PB score delta |
+
+**Acceptance criteria**
+
+- [x] Replay re-simulation reproduces recorded stats exactly (roadmap verification metric). *(Bot run with boost + continuous axis → record → re-sim: `stats` deep-equal, score/distance/x exact, event streams identical)*
+- [x] Recording size stays a few KB for human-style input. *(0.4 KB for a 3-min held-keys run; continuous analog worst case bounded and gated)*
+- [x] Ghost lockstep matches the straight re-sim exactly under ragged frame slices. *(Uneven 60 Hz-ish sync → same death step, distance, score)*
+- [x] Section grades calibrate: elite line S, edge-hugging C, harder chunks grade lower for the same play. *(Unit gates + bot-run integration: ordered sections, one event per graded chunk, line rating present)*
+- [x] Forensics snapshot is complete at death: chronological trace ending at the impact, killing geometry present, validator path segments included. *(Gated in `simtest.ts`)*
 
 ## Phase 4 — Modes & ladder
 
@@ -117,7 +125,7 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 - **Gap ratio:** p99/p50 score across sessions. Baseline ≈ ×3–5. Target ≥ ×30 by Phase 4.
 - **Floor check:** new-player time-to-death and first-2 km experience unchanged (autopilot baseline ±10%).
 - **Wall check:** each autopilot tier dies at a stable, distinct distance.
-- **Determinism:** replay re-simulation reproduces recorded stats exactly.
+- **Determinism:** replay re-simulation reproduces recorded stats exactly. *(Enforced in `simtest.ts` since Phase 3.)*
 
 ## Decision log
 
@@ -136,6 +144,12 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 | 2026-07-12 | Wall bots are boost-free. | Walls must measure track scaling, not economy skill; boost uptime is already gated separately. |
 | 2026-07-12 | Superhuman tier = TAS-style rollout search (simulates exact steering dynamics), not a validator-path follower. | Path followers died at 1–5 km to model mismatch (corner-cutting between 4 m slices, replan dither), under-reporting the true wall. The rollout searcher only dies when *no* input stream survives its horizon — walls at ~18 km are genuinely overdrive-made. |
 | 2026-07-12 | `debugChunks` retention switched from "last 8" to distance-based pruning (craft − despawn … horizon, cap 64). | Debug-mode only. Kill-cam/forensics (Phase 3) and any path-based tooling need the chunks the craft is *inside*, which "last 8" evicts at the old horizon. |
+| 2026-07-13 | Steering axis quantized to 1/127 steps *at sim consumption* (`quantizeAxis` in `step()`), not just at recording. | The only way replays are bit-exact: the recorded value **is** the executed value. 1/127 (~0.008) is far below perceptual/control resolution. Side effect: the chaotic TAS wall bot found a new equilibrium — its rollout candidates are now pre-quantized to keep its "no model mismatch" property, and its wall baseline recalibrated 18 360 m → 31 547 m (greedy/lookahead tiers and the novice ±10% floor gate were unaffected). |
+| 2026-07-13 | Endless ghost = cross-seed *pace* ghost (re-flies its own recorded track); daily ghost = same-seed spatial ghost. | Endless seeds are unique per run, so a positional ghost on live geometry is impossible; racing your PB's pace still shows the gap. On the daily the seed matches, so the ghost is a true line-for-line rival. Ghosts are spectral (additive, non-colliding) by design. |
+| 2026-07-13 | Kill-cam is a scrubbable 2D top-down map (your line vs. validator path + envelope field + per-moment readout), not a 3D camera rewind. | The sim cannot step backward, and a 3D replay would need a second full render world for one screen. The teaching tool is the *line comparison* — the 2D map shows it more legibly than a cinematic scrub, at ~zero runtime cost. |
+| 2026-07-13 | "Race your ghost from the last 500 m" (3.2's post-death idea) folded into the PB ghost + shortfall messaging. | A mid-track spawn would need synthetic sim state (energy/flow/speed at that point) that no real run produced — it breaks the "recording = truth" invariant and the determinism story. The death screen's "n m short" + racing the full ghost covers the same motivational loop. |
+| 2026-07-13 | Recordings carry `REPLAY_VERSION`; the replays store drops mismatched or incomplete recordings on rehydrate and never persists truncated streams as ghosts. | Any future physics/economy retune silently invalidates old input streams — a stale ghost desyncing mid-run is worse than no ghost. |
+| 2026-07-13 | Chunk log (bounds/intensity/validator path) + recycled-obstacle envelope log are always-on sim state, pruned to craft − 380 m. | The kill-cam window reaches ~320 m behind the craft; `DESPAWN_BEHIND` is 26 m, so the field the player just died threading would otherwise already be recycled. Both logs are tiny (≤ 64 chunks / ≤ 600 envelopes) and allocation-light. |
 
 ## Progress log
 
@@ -173,3 +187,29 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
   automation here). Sprint 3 candidate: Phase 3 (make the gap visible —
   input recording/replay first; `debugChunks` retention already fixed for
   the kill-cam).
+- **2026-07-13** — **Phase 3 (make the gap visible) complete.** The mastery
+  gap is now something a player can *watch*: every run records its input
+  stream (RLE, ~0.4 KB for keyboard play; the sim consumes a 1/127-quantized
+  axis so replays are bit-exact), and your best run comes back as a spectral
+  hologram to race — same-seed line-for-line on the daily, pace ghost on
+  endless — with a live "±n m GHOST" readout. Deaths teach: the death screen
+  gained a scrubbable 2D kill-cam (your flown line vs. the validator's solved
+  safe line over the obstacle field as it stood at impact, with per-moment
+  speed/clearance/flow), a repeat-death streak note ("3rd run in a row ended
+  by Piston Corridor"), an intensity-weighted S/A/B/C **line rating** with
+  weakest-section callout, and "n m short of your farthest flight" beside the
+  PB delta; chunks flash their grade as you exit them mid-run, and a quiet
+  "PB IN n" sits under the live score until it flips to NEW PERSONAL BEST.
+  Instant restart untouched (R on the death screen, zero added friction).
+  New simtest gates: replay exactness (stats/events deep-equal), recording
+  size, ghost lockstep, grade calibration (elite S / edge-hug C / monotone),
+  forensics completeness; determinism gate extended with `sectionGrade`
+  events. One knock-on recalibration: quantizing the axis moved the chaotic
+  TAS wall bot's equilibrium (superhuman wall 18.4 km → 31.5 km median,
+  candidates now pre-quantized; greedy/lookahead walls and the −5.5% novice
+  drift unchanged). All suites green (sim, gen, graphics, types, lint,
+  production build); in-app visual spot-check of the ghost hologram is
+  pending (browser tooling unavailable this session — DOM/SVG panels were
+  verified by SSR render against real death data instead). Sprint 4
+  candidate: Phase 4 (modes & ladder — trials mode first; `PatternDef.build`
+  + validator make it nearly free).

@@ -44,6 +44,13 @@ export type GameEvents = {
   boostStart: undefined;
   boostEnd: undefined;
   flowTier: { tier: number; prev: number };
+  /** A graded chunk was fully traversed (roadmap 3.4). */
+  sectionGrade: {
+    patternId: string;
+    intensity: number;
+    grade: "S" | "A" | "B" | "C";
+    composite: number;
+  };
   biome: { index: number; name: string };
   lightning: { intensity: number };
   setpiece: { name: string };

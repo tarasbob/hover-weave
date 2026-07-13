@@ -15,6 +15,7 @@ import {
 import { Emitter } from "./events";
 import type { InputState } from "./input";
 import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils";
+import { InputRecorder, quantizeAxis, type RunRecording } from "./replay";
 import { createRng } from "./rng";
 import {
   Motion,
@@ -46,6 +47,110 @@ export interface DeathCause {
   patternId: string;
   obstacleKind: ObstacleKind;
   motion: MotionType;
+}
+
+// --- Section grades (roadmap 3.4) ------------------------------------------
+
+export type SectionGrade = "S" | "A" | "B" | "C";
+
+export interface SectionResult {
+  patternId: string;
+  intensity: number;
+  s0: number;
+  s1: number;
+  grade: SectionGrade;
+  /** 0..1 blended line quality (precision / flow uptime / pace). */
+  composite: number;
+  events: number;
+  flowUptime: number;
+  pace: number;
+}
+
+export interface SectionMetrics {
+  intensity: number;
+  /** Precision events (near misses + 2x threads) while inside the chunk. */
+  events: number;
+  /** Meters actually traversed inside the chunk. */
+  traversed: number;
+  /** Fraction of in-chunk steps spent at flow tier 1+. */
+  flowUptime: number;
+  /** Average speed inside vs. the ambient target here. */
+  avgSpeed: number;
+  baseSpeed: number;
+}
+
+/**
+ * Grade a traversed chunk. Precision demand scales with the chunk's authored
+ * intensity, pace pays for holding boost through it, flow uptime for keeping
+ * the meter alive — an edge-hugging cruise grades C, a threaded boost line S.
+ */
+export function gradeSection(m: SectionMetrics): {
+  grade: SectionGrade;
+  composite: number;
+  precision: number;
+  pace: number;
+} {
+  const eventRate = (m.events / Math.max(1, m.traversed)) * 100;
+  const precision = clamp01(eventRate / (1.1 * Math.max(1, m.intensity)));
+  const pace = clamp01((m.avgSpeed / Math.max(1, m.baseSpeed) - 0.92) / 0.5);
+  const composite = 0.45 * precision + 0.3 * m.flowUptime + 0.25 * pace;
+  const grade: SectionGrade =
+    composite >= 0.8 ? "S" : composite >= 0.55 ? "A" : composite >= 0.3 ? "B" : "C";
+  return { grade, composite, precision, pace };
+}
+
+/** Sections below this intensity are transit, not tests — never graded. */
+export const GRADE_MIN_INTENSITY = 2;
+
+// --- Forensics (roadmap 3.3) ------------------------------------------------
+
+/** 30 Hz craft trace sample (line, speed, flow, tightest clearance). */
+export interface TraceSample {
+  s: number;
+  x: number;
+  speed: number;
+  flow: number;
+  /** Tightest hull clearance observed since the previous sample (99 = open). */
+  clearance: number;
+}
+
+export const TRACE_OPEN_CLEARANCE = 99;
+const TRACE_EVERY_STEPS = 4; // 120 Hz sim -> 30 Hz trace.
+const TRACE_CAP = 1024;
+
+/** Lightweight always-on record of a streamed chunk (forensics + grading). */
+export interface ChunkRecord {
+  s0: number;
+  s1: number;
+  patternId: string;
+  intensity: number;
+  /** Validator's solved safe line through the chunk, as [s, x] pairs. */
+  path: [number, number][];
+}
+
+export interface ForensicsObstacle {
+  kind: ObstacleKind;
+  s: number;
+  x: number;
+  hx: number;
+  hs: number;
+  yaw: number;
+  inner: number;
+}
+
+export interface DeathForensics {
+  deathS: number;
+  deathX: number;
+  deathSpeed: number;
+  /** Along-track window covered by the snapshot. */
+  s0: number;
+  s1: number;
+  /** Your flown line up to the impact. */
+  trace: TraceSample[];
+  /** Validator-solved safe line, one polyline segment per chunk. */
+  path: [number, number][][];
+  /** Obstacle envelopes (current transforms at the death step). */
+  obstacles: ForensicsObstacle[];
 }
 
 export interface PrecisionReward {
@@ -103,6 +208,10 @@ export interface RunStats {
   seed: string;
   daily: boolean;
   deathCause: DeathCause | null;
+  /** Per-chunk line grades in traversal order (roadmap 3.4). */
+  sections: SectionResult[];
+  /** Intensity-weighted aggregate of the graded sections (null = none graded). */
+  lineRating: SectionGrade | null;
 }
 
 /**
@@ -148,9 +257,38 @@ export class SimWorld {
 
   stats: RunStats = this.emptyStats();
 
+  // Input recording (roadmap 3.1). The sim consumes the quantized axis, so a
+  // saved recording re-simulates the run bit-exactly.
+  readonly recorder = new InputRecorder();
+  /** Disable for replay/ghost worlds (a replay of a replay is itself). */
+  recordInputs = true;
+
+  // Always-on forensics + grading state (roadmap 3.3 / 3.4).
+  readonly chunkLog: ChunkRecord[] = [];
+  private traceRing: TraceSample[] = [];
+  private traceIdx = 0;
+  /** Envelopes of recently recycled obstacles — the kill-cam window reaches
+   *  well past DESPAWN_BEHIND, so the field behind the craft must be kept. */
+  private recentObstacles: ForensicsObstacle[] = [];
+  private stepCounter = 0;
+  /** Tightest hull clearance seen since the last trace sample. */
+  private sampleClearance = Infinity;
+  private section: {
+    s0: number;
+    s1: number;
+    patternId: string;
+    intensity: number;
+    enteredAt: number;
+    steps: number;
+    flowSteps: number;
+    speedSum: number;
+    events: number;
+  } | null = null;
+
   // Death.
   deathTimer = 0;
   deathX = 0;
+  deathSpeed = 0;
 
   // Pools.
   readonly obstacles: Obstacle[] = [];
@@ -200,6 +338,7 @@ export class SimWorld {
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
       seed: "", daily: false, deathCause: null,
+      sections: [], lineRating: null,
     };
   }
 
@@ -246,6 +385,7 @@ export class SimWorld {
     this.dangerFactor = 1;
     this.lastPass = null;
     this.deathTimer = 0;
+    this.deathSpeed = 0;
     this.accumulator = 0;
     this.prevX = 0;
     this.prevDistance = 0;
@@ -254,6 +394,15 @@ export class SimWorld {
     this.stats = this.emptyStats();
     this.stats.seed = seed;
     this.stats.daily = daily;
+    // Recording is only meaningful for real runs from the start line.
+    this.recorder.reset(this.recordInputs && skipTo === 0);
+    this.chunkLog.length = 0;
+    this.traceRing.length = 0;
+    this.traceIdx = 0;
+    this.recentObstacles.length = 0;
+    this.stepCounter = 0;
+    this.sampleClearance = Infinity;
+    this.section = null;
 
     for (const o of this.obstacles) o.active = false;
     for (const p of this.pickups) p.active = false;
@@ -340,6 +489,11 @@ export class SimWorld {
     this.time += dt;
     const alive = this.status === "running";
 
+    // The sim consumes the quantized axis — the recorded stream then replays
+    // bit-exactly (roadmap 3.1). Dead/idle steps consume no input.
+    const axis = alive ? quantizeAxis(input.axis) : 0;
+    if (alive) this.recorder.record(axis, input.boost);
+
     // --- Speed ---------------------------------------------------------
     const launch = clamp01(this.time / SPEED.LAUNCH_RAMP);
     // Flow keeps paying score without bound, but its speed bonus stops at the
@@ -392,7 +546,6 @@ export class SimWorld {
     const maxLat = Math.max(10, this.speed) * STEER.RATIO;
     if (alive) {
       const authority = this.boosting ? STEER.BOOST_AUTHORITY : 1;
-      const axis = input.axis;
       this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
       const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
       this.latVel *= Math.exp(-drag * dt * (this.boosting ? 0.85 : 1));
@@ -417,6 +570,10 @@ export class SimWorld {
 
     // --- Streaming -----------------------------------------------------
     this.streamAhead();
+
+    // --- Section tracking (before obstacle events, so passes confirmed
+    // this step attribute to the chunk the craft is currently inside) -----
+    if (alive) this.updateSection();
 
     // --- Obstacles: motion + collision + near miss ----------------------
     this.updateObstacles(dt, alive);
@@ -463,6 +620,10 @@ export class SimWorld {
       this.stats.distance = this.distance;
       this.stats.duration = this.time;
       this.stats.maxFlowPoints = Math.max(this.stats.maxFlowPoints, this.flowPoints);
+
+      // 30 Hz line trace for the kill-cam (roadmap 3.3).
+      this.stepCounter++;
+      if (this.stepCounter % TRACE_EVERY_STEPS === 0) this.pushTrace();
     }
   }
 
@@ -486,6 +647,157 @@ export class SimWorld {
       this.stats.maxFlowTier = Math.max(this.stats.maxFlowTier, tier);
       this.events.emit("flowTier", { tier, prev });
     }
+  }
+
+  // --- Sections + trace + forensics -----------------------------------------
+
+  /** Enter/exit chunk sections as the craft crosses them; accumulate metrics. */
+  private updateSection(): void {
+    const d = this.distance;
+    if (this.section && d > this.section.s1) this.finalizeSection();
+    if (!this.section) {
+      for (const c of this.chunkLog) {
+        if (c.s0 > d) break; // chunkLog is in track order
+        if (d >= c.s0 && d <= c.s1) {
+          this.section = {
+            s0: c.s0, s1: c.s1, patternId: c.patternId, intensity: c.intensity,
+            enteredAt: d, steps: 0, flowSteps: 0, speedSum: 0, events: 0,
+          };
+          break;
+        }
+      }
+    }
+    const sec = this.section;
+    if (sec) {
+      sec.steps++;
+      sec.speedSum += this.speed;
+      if (this.flowPoints >= FLOW.POINTS_PER_TIER) sec.flowSteps++;
+    }
+  }
+
+  private finalizeSection(): void {
+    const sec = this.section;
+    this.section = null;
+    if (!sec || sec.steps < 30) return; // Sub-quarter-second slivers are noise.
+    const traversed = Math.min(this.distance, sec.s1) - sec.enteredAt;
+    if (traversed < 20) return;
+    const flowUptime = sec.flowSteps / sec.steps;
+    const { grade, composite, pace } = gradeSection({
+      intensity: sec.intensity,
+      events: sec.events,
+      traversed,
+      flowUptime,
+      avgSpeed: sec.speedSum / sec.steps,
+      baseSpeed: speedAt((sec.s0 + sec.s1) / 2),
+    });
+    this.stats.sections.push({
+      patternId: sec.patternId, intensity: sec.intensity,
+      s0: sec.s0, s1: sec.s1,
+      grade, composite, events: sec.events, flowUptime, pace,
+    });
+    if (sec.intensity >= GRADE_MIN_INTENSITY) {
+      this.events.emit("sectionGrade", {
+        patternId: sec.patternId, intensity: sec.intensity, grade, composite,
+      });
+    }
+  }
+
+  private computeLineRating(): SectionGrade | null {
+    const graded = this.stats.sections.filter((s) => s.intensity >= GRADE_MIN_INTENSITY);
+    if (graded.length === 0) return null;
+    let weight = 0;
+    let sum = 0;
+    for (const s of graded) {
+      weight += s.intensity;
+      sum += s.composite * s.intensity;
+    }
+    const c = sum / weight;
+    return c >= 0.8 ? "S" : c >= 0.55 ? "A" : c >= 0.3 ? "B" : "C";
+  }
+
+  private pushTrace(): void {
+    const sample: TraceSample = {
+      s: this.distance,
+      x: this.x,
+      speed: this.speed,
+      flow: this.flowPoints,
+      clearance: Math.min(this.sampleClearance, TRACE_OPEN_CLEARANCE),
+    };
+    if (this.traceRing.length < TRACE_CAP) {
+      this.traceRing.push(sample);
+    } else {
+      this.traceRing[this.traceIdx] = sample;
+      this.traceIdx = (this.traceIdx + 1) % TRACE_CAP;
+    }
+    this.sampleClearance = Infinity;
+  }
+
+  /** Trace samples in chronological order. */
+  getTrace(): TraceSample[] {
+    if (this.traceRing.length < TRACE_CAP) return [...this.traceRing];
+    return [
+      ...this.traceRing.slice(this.traceIdx),
+      ...this.traceRing.slice(0, this.traceIdx),
+    ];
+  }
+
+  /** The finished run's input recording (null while recording is disabled). */
+  getRecording(): RunRecording | null {
+    return this.recorder.toRecording(
+      this.seed, this.daily, this.stats.score, this.stats.distance,
+    );
+  }
+
+  /**
+   * Snapshot everything the kill-cam needs (roadmap 3.3): your traced line,
+   * the validator's solved path, and obstacle envelopes around the impact.
+   * Call right after death — pools still hold the killing geometry.
+   */
+  buildForensics(behind = 320, ahead = 50): DeathForensics | null {
+    if (this.status !== "dead") return null;
+    const deathS = this.distance;
+    const s0 = deathS - behind;
+    const s1 = deathS + ahead;
+
+    const trace = this.getTrace().filter((t) => t.s >= s0);
+
+    const path: [number, number][][] = [];
+    for (const c of this.chunkLog) {
+      if (c.s1 < s0 || c.s0 > s1) continue;
+      const seg = c.path.filter(([s]) => s >= s0 && s <= s1);
+      if (seg.length >= 2) path.push(seg);
+    }
+
+    let obstacles: ForensicsObstacle[] = [];
+    for (const rec of this.recentObstacles) {
+      if (rec.s >= s0 && rec.s <= s1) obstacles.push(rec);
+    }
+    for (const o of this.obstacles) {
+      if (!o.active || !o.collidable || o.kind === "decor") continue;
+      if (o.cs < s0 || o.cs > s1) continue;
+      const vHalf = o.kind === "ring" ? o.hx : o.hy;
+      if (o.cy - vHalf > CRAFT.Y_MAX || o.cy + vHalf < CRAFT.Y_MIN) continue;
+      obstacles.push({
+        kind: o.kind, s: o.cs, x: o.cx,
+        hx: o.hx, hs: o.hs, yaw: o.cyaw, inner: o.inner,
+      });
+    }
+    if (obstacles.length > 240) {
+      obstacles = obstacles
+        .sort((a, b) => Math.abs(a.s - deathS) - Math.abs(b.s - deathS))
+        .slice(0, 240);
+    }
+
+    return {
+      deathS,
+      deathX: this.deathX,
+      deathSpeed: this.deathSpeed,
+      s0,
+      s1,
+      trace,
+      path,
+      obstacles,
+    };
   }
 
   /**
@@ -524,6 +836,22 @@ export class SimWorld {
     }
     if (chunk.announce) {
       this.events.emit("setpiece", { name: chunk.announce });
+    }
+    // Always-on lightweight chunk record: section grading needs the bounds
+    // and intensity, the kill-cam needs the validator's solved path — keep
+    // enough behind the craft to cover the forensics window.
+    this.chunkLog.push({
+      s0: chunk.s0,
+      s1: chunk.s1,
+      patternId: chunk.patternId,
+      intensity: chunk.intensity,
+      path: chunk.path,
+    });
+    while (
+      this.chunkLog.length > 64 ||
+      (this.chunkLog.length > 0 && this.chunkLog[0].s1 < this.distance - 380)
+    ) {
+      this.chunkLog.shift();
     }
     if (this.collectDebug && chunk.debug) {
       // Retain everything between the craft and the horizon (path-follower
@@ -588,6 +916,24 @@ export class SimWorld {
       if (!o.active) continue;
 
       if (obstacleTrailingEdge(o) < behind) {
+        // Keep the envelope around for the kill-cam: its window reaches far
+        // past the recycling line.
+        if (o.collidable && o.kind !== "decor") {
+          const vHalf = o.kind === "ring" ? o.hx : o.hy;
+          if (o.cy - vHalf < CRAFT.Y_MAX && o.cy + vHalf > CRAFT.Y_MIN) {
+            this.recentObstacles.push({
+              kind: o.kind, s: o.cs, x: o.cx,
+              hx: o.hx, hs: o.hs, yaw: o.cyaw, inner: o.inner,
+            });
+            while (
+              this.recentObstacles.length > 600 ||
+              (this.recentObstacles.length > 0 &&
+                this.recentObstacles[0].s < craftS - 380)
+            ) {
+              this.recentObstacles.shift();
+            }
+          }
+        }
         o.active = false;
         this.obstacleFree.push(o.id);
         continue;
@@ -702,6 +1048,10 @@ export class SimWorld {
             clearance = Math.max(0, Math.sqrt(distSq) - rr);
           }
 
+          // Kill-cam trace: tightest hull clearance this sample window.
+          if (hit) this.sampleClearance = 0;
+          else if (clearance < this.sampleClearance) this.sampleClearance = clearance;
+
           if (hit) {
             // A collision cannot also pay out as a precision pass, including
             // contacts absorbed during shield iframes.
@@ -803,6 +1153,7 @@ export class SimWorld {
     this.flowPoints += reward.flowPoints * this.speedFlowFactor;
     this.flowTimer = 0;
     this.stats.nearMisses++;
+    if (this.section) this.section.events++;
 
     // Grazes fund boost — the perpetual-boost loop for elite play.
     const grazeEnergy =
@@ -854,6 +1205,7 @@ export class SimWorld {
     this.flowTimer = 0;
     this.grantEnergy(THREAD.ENERGY);
     this.stats.threads++;
+    if (this.section) this.section.events += 2;
     this.events.emit("thread", {
       x: o.cx,
       s: o.cs,
@@ -877,6 +1229,10 @@ export class SimWorld {
     this.status = "dead";
     this.deathTimer = 0;
     this.deathX = this.x;
+    this.deathSpeed = this.speed;
+    this.pushTrace(); // The impact itself always lands in the trace.
+    this.finalizeSection(); // Partial section where the run ended still counts.
+    this.stats.lineRating = this.computeLineRating();
     this.stats.score = Math.floor(this.score);
     this.stats.distance = this.distance;
     this.stats.duration = this.time;

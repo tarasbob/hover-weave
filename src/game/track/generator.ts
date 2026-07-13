@@ -32,6 +32,8 @@ export interface GeneratedChunk {
   announce?: string;
   obstacles: ObstacleSpec[];
   pickups: PickupSpec[];
+  /** Validator's solved safe line, [s, x] pairs (kill-cam + tooling). */
+  path: [number, number][];
   debug?: ValidationResult;
 }
 
@@ -245,6 +247,7 @@ export class TrackGenerator {
       announce: result.announce,
       obstacles: result.obstacles,
       pickups,
+      path: validation.path,
     };
     if (this.debug) chunk.debug = validation;
     return chunk;

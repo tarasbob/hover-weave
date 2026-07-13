@@ -94,6 +94,8 @@ interface SettingsState {
   reduceFlash: boolean;
   highContrast: boolean;
   showFps: boolean;
+  /** Race a spectral ghost of your best run (roadmap 3.2). */
+  showGhost: boolean;
   setQuality(q: QualityPreset): void;
   setAutoTier(t: QualityTier): void;
   setMusicVolume(v: number): void;
@@ -103,6 +105,7 @@ interface SettingsState {
   setReduceFlash(v: boolean): void;
   setHighContrast(v: boolean): void;
   setShowFps(v: boolean): void;
+  setShowGhost(v: boolean): void;
 }
 
 export const useSettings = create<SettingsState>()(
@@ -117,6 +120,7 @@ export const useSettings = create<SettingsState>()(
       reduceFlash: false,
       highContrast: false,
       showFps: false,
+      showGhost: true,
       setQuality: (quality) => set({ quality }),
       setAutoTier: (autoTier) => set({ autoTier }),
       setMusicVolume: (musicVolume) => set({ musicVolume }),
@@ -126,6 +130,7 @@ export const useSettings = create<SettingsState>()(
       setReduceFlash: (reduceFlash) => set({ reduceFlash }),
       setHighContrast: (highContrast) => set({ highContrast }),
       setShowFps: (showFps) => set({ showFps }),
+      setShowGhost: (showGhost) => set({ showGhost }),
     }),
     { name: "cubefield:settings" },
   ),

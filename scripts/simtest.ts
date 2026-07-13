@@ -13,10 +13,20 @@
  */
 import assert from "node:assert/strict";
 import {
+  GRADE_MIN_INTENSITY,
   SimWorld,
+  gradeSection,
   obstacleTrailingEdge,
   precisionRewardAt,
 } from "../src/game/core/world";
+import { GhostDriver } from "../src/game/core/ghost";
+import {
+  packInput,
+  quantizeAxis,
+  resimulate,
+  unpackAxis,
+  unpackBoost,
+} from "../src/game/core/replay";
 import type { InputState } from "../src/game/core/input";
 import {
   CRAFT,
@@ -252,8 +262,10 @@ interface Envelope {
 }
 
 const ROLL_DT = 1 / 60;
-const ROLL_PHASE1 = [-1, -0.55, -0.22, 0, 0.22, 0.55, 1];
-const ROLL_PHASE2 = [-1, -0.4, 0, 0.4, 1];
+// Candidates pre-quantized so rollout dynamics match what the sim executes
+// (the world consumes a 1/127-step axis since input recording landed).
+const ROLL_PHASE1 = [-1, -0.55, -0.22, 0, 0.22, 0.55, 1].map(quantizeAxis);
+const ROLL_PHASE2 = [-1, -0.4, 0, 0.4, 1].map(quantizeAxis);
 const envScratch: Envelope[] = [];
 
 function gatherEnvelopes(world: SimWorld, out: Envelope[], sEnd: number): void {
@@ -620,6 +632,7 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
     world.events.on("shard", (event) => out.push(["shard", event]));
     world.events.on("flowTier", (event) => out.push(["flowTier", event]));
     world.events.on("biome", (event) => out.push(["biome", event]));
+    world.events.on("sectionGrade", (event) => out.push(["sectionGrade", event]));
     world.events.on("death", (event) => out.push(["death", event]));
   };
   wire(a, eventsA);
@@ -639,6 +652,225 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   assert.deepEqual(a.stats, b.stats);
   assert.deepEqual(eventsA, eventsB);
   console.log(`determinism: PASS (dist=${a.distance.toFixed(2)} vs ${b.distance.toFixed(2)})`);
+}
+
+// --- Phase 3: input recording + replay (roadmap 3.1) -------------------------
+// A recorded run must re-simulate bit-exactly: same stats, same score, same
+// death — the roadmap's determinism metric ("replay re-simulation reproduces
+// recorded stats exactly").
+{
+  // Quantization round-trips: replaying a recording re-quantizes the axis,
+  // so quantizeAxis must be idempotent and packing lossless.
+  for (const axis of [-1, -0.73, -1 / 3, 0, 0.05, 0.4999, 0.999, 1]) {
+    const q = quantizeAxis(axis);
+    assert.equal(quantizeAxis(q), q, `quantizeAxis must be idempotent (${axis})`);
+    for (const boost of [false, true]) {
+      const packed = packInput(axis, boost);
+      assert.equal(unpackAxis(packed), q, `axis pack round-trip (${axis})`);
+      assert.equal(unpackBoost(packed), boost, `boost pack round-trip (${axis})`);
+    }
+  }
+
+  // Record a full bot run to death (boost on: exercises the energy loop and
+  // the boost bit; the bot's continuous axis exercises quantization).
+  const live = new SimWorld();
+  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  live.start("replay-exact", false);
+  const liveEvents: unknown[] = [];
+  live.events.on("nearMiss", (e) => liveEvents.push(["nearMiss", e]));
+  live.events.on("thread", (e) => liveEvents.push(["thread", e]));
+  live.events.on("sectionGrade", (e) => liveEvents.push(["sectionGrade", e]));
+  live.events.on("death", (e) => liveEvents.push(["death", e]));
+  const maxSteps = Math.floor(240 / FIXED_DT);
+  for (let i = 0; i < maxSteps && live.status === "running"; i++) {
+    autopilot(live, input, { boost: true });
+    live.update(FIXED_DT, input);
+  }
+  assert.equal(live.status, "dead", "replay probe run must end at a wall");
+  const rec = live.getRecording();
+  assert.ok(rec, "a finished run must produce a recording");
+  assert.ok(rec.complete, "probe recording must fit the RLE cap");
+  assert.equal(rec.seed, "replay-exact");
+  assert.equal(rec.score, live.stats.score);
+  let rleSteps = 0;
+  for (let i = 1; i < rec.data.length; i += 2) rleSteps += rec.data[i];
+  assert.equal(rleSteps, rec.steps, "RLE run lengths must sum to the step count");
+
+  const replayed = new SimWorld();
+  const replayEvents: unknown[] = [];
+  replayed.events.on("nearMiss", (e) => replayEvents.push(["nearMiss", e]));
+  replayed.events.on("thread", (e) => replayEvents.push(["thread", e]));
+  replayed.events.on("sectionGrade", (e) => replayEvents.push(["sectionGrade", e]));
+  replayed.events.on("death", (e) => replayEvents.push(["death", e]));
+  resimulate(rec, replayed);
+  assert.equal(replayed.status, "dead", "replay must reproduce the death");
+  assert.equal(replayed.distance, live.distance, "replay distance must be exact");
+  assert.equal(replayed.score, live.score, "replay score must be exact");
+  assert.equal(replayed.x, live.x, "replay lateral position must be exact");
+  assert.deepEqual(replayed.stats, live.stats, "replay stats must be identical");
+  assert.deepEqual(replayEvents, liveEvents, "replay event stream must be identical");
+  assert.equal(replayed.getRecording(), null, "replay worlds must not re-record");
+
+  // Size: human-style input (held keys, sparse changes) stays a few KB.
+  const keyed = new SimWorld();
+  keyed.start("replay-size", false);
+  const keyInput: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  const keySteps = Math.floor(180 / FIXED_DT); // 3-minute run
+  for (let i = 0; i < keySteps && keyed.status === "running"; i++) {
+    // Direction changes every ~0.4 s, boost toggles every ~2 s — a busy human.
+    const phase = Math.floor(i / 48) % 3;
+    keyInput.axis = phase === 0 ? -1 : phase === 1 ? 1 : 0;
+    keyInput.boost = i % 240 < 90;
+    keyed.update(FIXED_DT, keyInput);
+  }
+  const keyRec = keyed.getRecording();
+  assert.ok(keyRec && keyRec.complete);
+  const keyBytes = JSON.stringify(keyRec).length;
+  assert.ok(
+    keyBytes < 32_000,
+    `keyboard-style recording must stay a few KB (${(keyBytes / 1024).toFixed(1)} KB)`,
+  );
+  // Continuous analog input (bot stream) is the worst case — bounded, not tiny.
+  const botBytes = JSON.stringify(rec).length;
+  assert.ok(
+    botBytes < 1_500_000,
+    `continuous recording must stay bounded (${(botBytes / 1024).toFixed(0)} KB)`,
+  );
+  console.log(
+    `replay gate: PASS (exact re-sim at ${live.distance.toFixed(0)}m; ` +
+    `keyboard rec ${(keyBytes / 1024).toFixed(1)} KB, bot rec ${(botBytes / 1024).toFixed(0)} KB)`,
+  );
+
+  // Ghost lockstep (roadmap 3.2): a GhostDriver synced in ragged render-frame
+  // slices must land exactly where the straight re-sim landed.
+  const ghost = new GhostDriver();
+  ghost.arm(rec);
+  assert.ok(ghost.active, "ghost must arm from a complete recording");
+  const totalTime = rec.steps * FIXED_DT;
+  let clock = 0;
+  let frame = 0;
+  while (clock < totalTime + 0.1) {
+    clock += 1 / 60 + (frame % 7) * 0.003; // deliberately uneven frames
+    ghost.sync(clock);
+    frame++;
+  }
+  assert.ok(ghost.finished, "ghost must exhaust the recording");
+  assert.equal(ghost.world?.status, "dead", "ghost must die where the run died");
+  assert.equal(ghost.world?.distance, replayed.distance, "ghost distance must be exact");
+  assert.equal(ghost.world?.stats.score, replayed.stats.score, "ghost score must be exact");
+  assert.equal(ghost.deltaTo(replayed.distance), 0, "ghost delta must close to zero");
+  console.log("ghost lockstep gate: PASS");
+}
+
+// --- Phase 3: section grades (roadmap 3.4) -----------------------------------
+{
+  // Unit calibration: an elite line through a hard chunk grades S, an
+  // edge-hugging cruise grades C, and grades are monotone in engagement.
+  const elite = gradeSection({
+    intensity: 4,
+    events: 14, // ~threaded every gate across 120 m
+    traversed: 120,
+    flowUptime: 0.95,
+    avgSpeed: 120,
+    baseSpeed: 85,
+  });
+  assert.equal(elite.grade, "S", `elite line must grade S (${elite.composite.toFixed(2)})`);
+
+  const hug = gradeSection({
+    intensity: 4,
+    events: 0,
+    traversed: 120,
+    flowUptime: 0,
+    avgSpeed: 82,
+    baseSpeed: 85,
+  });
+  assert.equal(hug.grade, "C", `edge-hugging must grade C (${hug.composite.toFixed(2)})`);
+
+  const cautious = gradeSection({
+    intensity: 3,
+    events: 3,
+    traversed: 120,
+    flowUptime: 0.4,
+    avgSpeed: 86,
+    baseSpeed: 85,
+  });
+  assert.ok(
+    cautious.composite > hug.composite && cautious.composite < elite.composite,
+    "grades must be monotone in line quality",
+  );
+  // Same play against a harder chunk must never grade higher.
+  const sameLineHarder = gradeSection({
+    intensity: 5,
+    events: 3,
+    traversed: 120,
+    flowUptime: 0.4,
+    avgSpeed: 86,
+    baseSpeed: 85,
+  });
+  assert.ok(sameLineHarder.composite <= cautious.composite, "intensity must raise the bar");
+
+  // Integration: a real bot run produces ordered, sane sections and — since
+  // it dies — an aggregate line rating.
+  const world = new SimWorld();
+  const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+  world.start("test-0", false);
+  const emitted: { patternId: string; grade: string }[] = [];
+  world.events.on("sectionGrade", (e) => emitted.push(e));
+  const maxSteps = Math.floor(180 / FIXED_DT);
+  for (let i = 0; i < maxSteps && world.status === "running"; i++) {
+    autopilot(world, input);
+    world.update(FIXED_DT, input);
+  }
+  assert.equal(world.status, "dead");
+  const sections = world.stats.sections;
+  assert.ok(sections.length >= 3, `bot run must traverse sections (${sections.length})`);
+  for (let i = 0; i < sections.length; i++) {
+    const s = sections[i];
+    assert.ok(["S", "A", "B", "C"].includes(s.grade));
+    assert.ok(s.composite >= 0 && s.composite <= 1, "composite must be normalized");
+    assert.ok(s.s1 > s.s0);
+    if (i > 0) assert.ok(s.s0 >= sections[i - 1].s0, "sections must be in track order");
+  }
+  const graded = sections.filter((s) => s.intensity >= GRADE_MIN_INTENSITY);
+  assert.equal(
+    emitted.length,
+    graded.length,
+    "every graded section must emit exactly one event",
+  );
+  if (graded.length > 0) {
+    assert.ok(world.stats.lineRating !== null, "a run with graded sections gets a line rating");
+  }
+  console.log(
+    `section grade gate: PASS (${sections.length} sections, ` +
+    `${graded.length} graded, line rating ${world.stats.lineRating ?? "n/a"})`,
+  );
+
+  // Forensics snapshot (roadmap 3.3): the kill-cam data is complete.
+  const f = world.buildForensics();
+  assert.ok(f, "a dead world must produce forensics");
+  assert.ok(f.trace.length > 10, "forensics must include the flown line");
+  const lastSample = f.trace[f.trace.length - 1];
+  assert.ok(
+    Math.abs(lastSample.s - f.deathS) < 2,
+    `the trace must end at the impact (${lastSample.s.toFixed(1)} vs ${f.deathS.toFixed(1)})`,
+  );
+  for (let i = 1; i < f.trace.length; i++) {
+    assert.ok(f.trace[i].s >= f.trace[i - 1].s, "trace must be chronological");
+  }
+  assert.ok(f.obstacles.length > 0, "forensics must include the killing geometry");
+  assert.ok(
+    f.obstacles.some((o) => Math.abs(o.s - f.deathS) < 30),
+    "forensics obstacles must cover the impact zone",
+  );
+  assert.ok(f.path.length > 0, "forensics must include the validator's solved path");
+  assert.ok(f.deathSpeed > 0, "death speed must be captured before crash deceleration");
+  const alive = new SimWorld();
+  alive.start("forensics-alive", false);
+  assert.equal(alive.buildForensics(), null, "forensics only exist after death");
+  console.log(
+    `forensics gate: PASS (trace ${f.trace.length} samples, ` +
+    `${f.obstacles.length} obstacles, ${f.path.length} path segments)`,
+  );
 }
 
 // Focused mastery-economy checks.
@@ -1009,13 +1241,15 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Calibrated 2026-07 (Phase 2 landing). The sim is deterministic, so these
-  // reproduce exactly until tuning constants move — the loose band catches
-  // real difficulty regressions in either direction.
+  // Calibrated 2026-07 (Phase 2 landing; superhuman recalibrated at Phase 3
+  // when input quantization landed — the sim consumes a 1/127-step axis now,
+  // which nudged the chaotic rollout searcher into a new equilibrium). The
+  // sim is deterministic, so these reproduce exactly until tuning constants
+  // move — the loose band catches real difficulty regressions either way.
   const WALL_BASELINE: Record<Tier, number> = {
     greedy: 1133,
     lookahead: 2686,
-    superhuman: 18360,
+    superhuman: 31547,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);

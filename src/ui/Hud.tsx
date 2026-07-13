@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
-import { useGame, type SkillMoment } from "@/game/state/game";
+import { useGame, type SectionGradeToast, type SkillMoment } from "@/game/state/game";
 import { useMeta } from "@/game/state/meta";
 import { useSettings } from "@/game/state/settings";
 
@@ -13,6 +13,7 @@ export function Hud() {
   const mode = useGame((s) => s.mode);
   const callout = useGame((s) => s.callout);
   const skillMoment = useGame((s) => s.skillMoment);
+  const sectionGrade = useGame((s) => s.sectionGrade);
   const fps = useGame((s) => s.fps);
   const graphics = useGame((s) => s.graphics);
   const showFps = useSettings((s) => s.showFps);
@@ -34,11 +35,16 @@ export function Hud() {
         <div className="text-3xl font-bold tabular-nums text-white drop-shadow-[0_0_12px_rgba(90,220,255,0.55)] sm:text-4xl">
           {hud.score.toLocaleString()}
         </div>
-        {hud.personalBestBeaten && (
+        {/* PB pressure: a quiet live delta that flips gold once you're ahead. */}
+        {hud.personalBestBeaten ? (
           <div className="mt-0.5 text-[10px] font-bold tracking-[0.22em] text-amber-200">
             NEW PERSONAL BEST
           </div>
-        )}
+        ) : bestScore > 0 ? (
+          <div className="mt-0.5 text-[10px] tracking-[0.22em] text-white/35 tabular-nums">
+            PB IN {Math.max(0, bestScore - hud.score).toLocaleString()}
+          </div>
+        ) : null}
         <div className="mt-2 flex max-w-[62vw] flex-wrap items-center gap-1.5 sm:gap-2">
           <div
             className={`rounded-md px-2 py-0.5 text-sm font-bold tabular-nums transition-colors ${
@@ -93,13 +99,23 @@ export function Hud() {
         )}
       </div>
 
-      {/* Distance + speed */}
+      {/* Distance + speed + ghost race */}
       <div className="absolute bottom-3 right-3 text-right sm:bottom-5 sm:right-5">
         <div className="text-2xl font-bold tabular-nums text-white/90">
           {hud.distance.toLocaleString()}
           <span className="ml-1 text-sm font-normal text-white/50">m</span>
         </div>
         <div className="text-sm tabular-nums text-white/60">{hud.speedKmh} km/h</div>
+        {hud.ghostDelta !== null && (
+          <div
+            className={`mt-0.5 text-[11px] font-semibold tabular-nums tracking-[0.14em] ${
+              hud.ghostDelta >= 0 ? "text-emerald-300/90" : "text-sky-300/70"
+            }`}
+          >
+            {hud.ghostDelta >= 0 ? "+" : "−"}
+            {Math.abs(Math.round(hud.ghostDelta)).toLocaleString()} m GHOST
+          </div>
+        )}
       </div>
 
       {/* Energy + shield */}
@@ -158,10 +174,63 @@ export function Hud() {
         key={`skill-${skillMoment?.at ?? "none"}`}
         moment={skillMoment}
       />
+      <SectionGradeChip
+        key={`grade-${sectionGrade?.at ?? "none"}`}
+        toast={sectionGrade}
+      />
       <UnlockToasts />
       </div>
     </MotionConfig>
   );
+}
+
+export const GRADE_COLORS: Record<string, string> = {
+  S: "text-amber-200 border-amber-300/50 bg-amber-300/10",
+  A: "text-emerald-200 border-emerald-300/40 bg-emerald-300/10",
+  B: "text-sky-200 border-sky-300/35 bg-sky-300/10",
+  C: "text-white/55 border-white/20 bg-white/5",
+};
+
+/** Transient per-chunk line grade (roadmap 3.4) beside the distance readout. */
+function SectionGradeChip({ toast }: { toast: SectionGradeToast | null }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!toast) return;
+    setVisible(true);
+    const t = setTimeout(() => setVisible(false), 1500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  return (
+    <AnimatePresence>
+      {visible && toast && (
+        <motion.div
+          role="status"
+          aria-live="polite"
+          initial={{ opacity: 0, x: 14 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: 10 }}
+          transition={{ duration: 0.2 }}
+          className="absolute bottom-20 right-3 flex items-center gap-2 sm:bottom-24 sm:right-5"
+        >
+          <span className="text-[9px] tracking-[0.24em] text-white/45">
+            {formatPatternId(toast.patternId)}
+          </span>
+          <span
+            className={`inline-flex h-7 w-7 items-center justify-center rounded-lg border font-display text-sm font-black ${
+              GRADE_COLORS[toast.grade]
+            }`}
+          >
+            {toast.grade}
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function formatPatternId(id: string): string {
+  return id.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase();
 }
 
 function boostHint(): string {

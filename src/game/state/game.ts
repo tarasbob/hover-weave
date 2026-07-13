@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { ENERGY } from "../core/constants";
-import type { RunStats } from "../core/world";
+import type { DeathForensics, RunStats, SectionGrade } from "../core/world";
 
 export type GamePhase = "boot" | "title" | "running" | "paused" | "dead";
 export type GameMode = "endless" | "daily";
@@ -22,6 +22,8 @@ export interface HudSnapshot {
   distance: number;
   biome: string;
   personalBestBeaten: boolean;
+  /** Live meters ahead (+) / behind (−) the PB ghost. Null = no ghost armed. */
+  ghostDelta: number | null;
 }
 
 export interface SkillMoment {
@@ -37,7 +39,18 @@ export interface RunOutcome {
   newBestDistance: boolean;
   newDailyBest: boolean;
   scoreDelta: number;
+  /** Meters short of the best distance (negative = new farthest flight). */
+  distanceDelta: number;
+  /** Consecutive runs ended by this same pattern (1 = first time). */
+  deathStreak: number;
+  forensics: DeathForensics | null;
   unlocked: { kind: "craft" | "trail"; id: string; name: string }[];
+}
+
+export interface SectionGradeToast {
+  grade: SectionGrade;
+  patternId: string;
+  at: number;
 }
 
 export interface GraphicsStats {
@@ -57,6 +70,7 @@ interface GameState {
   /** Set-piece / biome callout toast. */
   callout: { text: string; sub?: string; at: number } | null;
   skillMoment: SkillMoment | null;
+  sectionGrade: SectionGradeToast | null;
   overlay: "none" | "hangar" | "settings" | "help";
   webgpu: boolean | null;
   fps: number;
@@ -67,6 +81,7 @@ interface GameState {
   setOutcome(o: RunOutcome | null): void;
   setCallout(text: string, sub?: string): void;
   setSkillMoment(text: string, detail: string, tone: SkillMoment["tone"]): void;
+  setSectionGrade(grade: SectionGrade, patternId: string): void;
   clearRunFeedback(): void;
   setOverlay(o: GameState["overlay"]): void;
   setWebgpu(v: boolean): void;
@@ -82,10 +97,12 @@ export const useGame = create<GameState>((set) => ({
     flowGrace: 1, flowChain: 0, shardCombo: 0,
     energy: ENERGY.START, boosting: false, shield: false,
     speedKmh: 0, distance: 0, biome: "Crystal Desert", personalBestBeaten: false,
+    ghostDelta: null,
   },
   outcome: null,
   callout: null,
   skillMoment: null,
+  sectionGrade: null,
   overlay: "none",
   webgpu: null,
   fps: 0,
@@ -104,7 +121,9 @@ export const useGame = create<GameState>((set) => ({
   setCallout: (text, sub) => set({ callout: { text, sub, at: Date.now() } }),
   setSkillMoment: (text, detail, tone) =>
     set({ skillMoment: { text, detail, tone, at: Date.now() } }),
-  clearRunFeedback: () => set({ callout: null, skillMoment: null }),
+  setSectionGrade: (grade, patternId) =>
+    set({ sectionGrade: { grade, patternId, at: Date.now() } }),
+  clearRunFeedback: () => set({ callout: null, skillMoment: null, sectionGrade: null }),
   setOverlay: (overlay) => set({ overlay }),
   setWebgpu: (webgpu) => set({ webgpu }),
   setFps: (fps) => set({ fps }),

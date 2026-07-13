@@ -8,16 +8,19 @@ import {
   type ReactNode,
 } from "react";
 import { SimWorld } from "./core/world";
+import { GhostDriver } from "./core/ghost";
 import { InputManager } from "./core/input";
 import { EnvState } from "./render/env";
 import { AudioEngine } from "./audio/engine";
 import { dailyKey, dailySeed, randomSeed } from "./core/rng";
 import { useGame, type GameMode } from "./state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "./state/meta";
+import { useReplays } from "./state/replays";
 import { useSettings } from "./state/settings";
 
 export interface GameBundle {
   world: SimWorld;
+  ghost: GhostDriver;
   input: InputManager;
   env: EnvState;
   audio: AudioEngine;
@@ -40,6 +43,7 @@ export function useGameBundle(): GameBundle {
 export function GameProvider({ children }: { children: ReactNode }) {
   const bundle = useMemo<GameBundle>(() => {
     const world = new SimWorld();
+    const ghost = new GhostDriver();
     const input = new InputManager();
     const env = new EnvState();
     const audio = new AudioEngine();
@@ -58,6 +62,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
         skipTo = Math.max(0, Number(new URLSearchParams(location.search).get("start")) || 0);
       }
       world.start(seed, daily, skipTo);
+      // Race your PB ghost: daily = same seed (true spatial ghost), endless =
+      // your best run's pace on its own track. Skipped runs race nothing.
+      ghost.arm(
+        useSettings.getState().showGhost && skipTo === 0
+          ? useReplays.getState().ghostFor(mode, dailyKey())
+          : null,
+      );
       useGame.getState().setPhase("running");
       audio.startMusic();
     };
@@ -80,12 +91,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const backToTitle = () => {
       world.status = "idle";
       world.clearField();
+      ghost.arm(null);
       useGame.getState().setPhase("title");
       useGame.getState().setOutcome(null);
       audio.pauseMusic();
     };
 
-    return { world, input, env, audio, ambient, startRun, restart, togglePause, backToTitle };
+    return { world, ghost, input, env, audio, ambient, startRun, restart, togglePause, backToTitle };
   }, []);
 
   // Dev-only console handle (assigned post-commit so Strict Mode's discarded
@@ -111,6 +123,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
         const daily = world.daily ? dailyKey() : null;
         const res = meta.recordRun(stats, daily);
         const after = metaSnapshot(useMeta.getState());
+        // Persist the run's input recording — tomorrow's ghost (roadmap 3.1/3.2).
+        const recording = world.getRecording();
+        if (recording) useReplays.getState().recordRun(recording, daily);
         const unlocked: { kind: "craft" | "trail"; id: string; name: string }[] = [];
         for (const c of CRAFTS) {
           if (!c.unlock.check(before) && c.unlock.check(after)) {
@@ -126,6 +141,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
           stats: { ...stats },
           ...res,
           scoreDelta: stats.score - before.bestScore,
+          distanceDelta: before.bestDistance - stats.distance,
+          forensics: world.buildForensics(),
           unlocked,
         });
         g.setPhase("dead");
@@ -182,6 +199,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
           audio.flowTierUp(e.tier);
           if (e.tier >= 2) useGame.getState().setCallout(`FLOW ${e.tier}`, "WORLD SYNC");
         }
+      }),
+      world.events.on("sectionGrade", (e) => {
+        useGame.getState().setSectionGrade(e.grade, e.patternId);
       }),
       world.events.on("setpiece", (e) => useGame.getState().setCallout(e.name)),
       world.events.on("biome", (e) => {

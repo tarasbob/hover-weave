@@ -11,6 +11,7 @@ import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
 import { CameraRig } from "./CameraRig";
 import { Craft } from "./Craft";
 import { Decor } from "./Decor";
+import { Ghost } from "./Ghost";
 import { HorizonLandmarks } from "./HorizonLandmarks";
 import { Lightning } from "./Lightning";
 import { ObstacleField } from "./ObstacleField";
@@ -26,7 +27,7 @@ const HUD_INTERVAL = 1 / 12;
 
 export function GameScene() {
   const bundle = useGameBundle();
-  const { world, input, env, audio, ambient } = bundle;
+  const { world, ghost, input, env, audio, ambient } = bundle;
   const scene = useThree((s) => s.scene);
   const setDpr = useThree((s) => s.setDpr);
   const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
@@ -34,6 +35,7 @@ export function GameScene() {
   const tier = useSettings((s) => resolveTier(s));
   const quality = QUALITY_CONFIGS[tier];
   const sensitivity = useSettings((s) => s.sensitivity);
+  const showGhost = useSettings((s) => s.showGhost);
 
   const hudClock = useRef(0);
   const fpsEma = useRef(16.7);
@@ -117,6 +119,7 @@ export function GameScene() {
     if (throttled && g.phase === "running") bundle.togglePause();
     if ((g.phase === "running" || g.phase === "dead") && !throttled) {
       world.update(dt, input.state);
+      ghost.sync(world.time);
     } else if (g.phase === "title") {
       ambient.value += dt * 9;
     }
@@ -161,6 +164,7 @@ export function GameScene() {
           distance: Math.floor(world.distance),
           biome: env.biomeLabelAt(world.distance),
           personalBestBeaten: world.score > useMeta.getState().bestScore,
+          ghostDelta: showGhost ? ghost.deltaTo(world.distance) : null,
         });
       }
       // FPS + dynamic resolution.
@@ -219,6 +223,7 @@ export function GameScene() {
       <ObstacleField shadows={quality.shadows} />
       <Pickups />
       <Craft />
+      <Ghost />
       <Particles max={quality.maxParticles} />
       <Lightning />
       <CameraRig />

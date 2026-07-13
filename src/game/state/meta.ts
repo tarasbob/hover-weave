@@ -179,13 +179,26 @@ interface DailyRecord {
   distance: number;
 }
 
+/** Consecutive deaths to the same pattern (forensics streak note). */
+export interface DeathStreak {
+  patternId: string;
+  count: number;
+}
+
 interface MetaState extends MetaSnapshot {
   dailyBest: Record<string, DailyRecord>;
+  deathStreak: DeathStreak | null;
   selectedCraft: string;
   selectedTrail: string;
   /** Ids the player has seen the "unlocked!" toast for. */
   celebrated: string[];
-  recordRun(stats: RunStats, dailyKey: string | null): { newBestScore: boolean; newBestDistance: boolean; newDailyBest: boolean };
+  recordRun(stats: RunStats, dailyKey: string | null): {
+    newBestScore: boolean;
+    newBestDistance: boolean;
+    newDailyBest: boolean;
+    /** How many runs in a row have now ended on this pattern (1 = first). */
+    deathStreak: number;
+  };
   selectCraft(id: string): void;
   selectTrail(id: string): void;
   markCelebrated(id: string): void;
@@ -206,6 +219,7 @@ export const useMeta = create<MetaState>()(
       bestShardCombo: 0,
       dailiesPlayed: 0,
       dailyBest: {},
+      deathStreak: null,
       selectedCraft: "interceptor",
       selectedTrail: "cyan",
       celebrated: ["interceptor", "cyan"],
@@ -225,7 +239,15 @@ export const useMeta = create<MetaState>()(
             newDailyBest = true;
           }
         }
+        const killer = stats.deathCause?.patternId ?? null;
+        const deathStreak: DeathStreak | null = killer
+          ? {
+              patternId: killer,
+              count: s.deathStreak?.patternId === killer ? s.deathStreak.count + 1 : 1,
+            }
+          : null;
         set({
+          deathStreak,
           bestScore: Math.max(s.bestScore, stats.score),
           bestDistance: Math.max(s.bestDistance, stats.distance),
           totalRuns: s.totalRuns + 1,
@@ -239,7 +261,12 @@ export const useMeta = create<MetaState>()(
           dailiesPlayed,
           dailyBest,
         });
-        return { newBestScore, newBestDistance, newDailyBest };
+        return {
+          newBestScore,
+          newBestDistance,
+          newDailyBest,
+          deathStreak: deathStreak?.count ?? 0,
+        };
       },
 
       selectCraft: (selectedCraft) => set({ selectedCraft }),
@@ -249,7 +276,7 @@ export const useMeta = create<MetaState>()(
     }),
     {
       name: "cubefield:meta",
-      version: 2,
+      version: 3,
       migrate: (persisted) => {
         const state = persisted as Partial<MetaState>;
         return {
@@ -257,6 +284,7 @@ export const useMeta = create<MetaState>()(
           totalPerfectPasses: state.totalPerfectPasses ?? 0,
           bestFlowChain: state.bestFlowChain ?? 0,
           bestShardCombo: state.bestShardCombo ?? 0,
+          deathStreak: state.deathStreak ?? null,
         } as MetaState;
       },
     },

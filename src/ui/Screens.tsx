@@ -8,6 +8,9 @@ import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "@/game/state/meta";
 import { resolveTier, useSettings, type QualityPreset } from "@/game/state/settings";
 import { dailyKey } from "@/game/core/rng";
 import { FLOW } from "@/game/core/constants";
+import { GRADE_MIN_INTENSITY, type SectionResult } from "@/game/core/world";
+import { DeathForensicsPanel } from "@/ui/DeathForensics";
+import { GRADE_COLORS } from "@/ui/Hud";
 
 const panel =
   "rounded-2xl border border-white/10 bg-[#0b0a1a]/70 backdrop-blur-xl shadow-[0_0_60px_rgba(80,40,180,0.25)]";
@@ -250,6 +253,14 @@ function GameOverScreen() {
 
   if (!outcome || !show) return null;
   const s = outcome.stats;
+  const graded = s.sections.filter(
+    (section) => section.intensity >= GRADE_MIN_INTENSITY,
+  );
+  const weakest = graded.reduce<SectionResult | null>(
+    (worst, section) =>
+      worst === null || section.composite < worst.composite ? section : worst,
+    null,
+  );
 
   return (
     <Screen>
@@ -257,7 +268,7 @@ function GameOverScreen() {
         initial={{ y: 26, opacity: 0, scale: 0.97 }}
         animate={{ y: 0, opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className={`${panel} pointer-events-auto max-h-[92vh] w-[min(94vw,500px)] overflow-y-auto px-5 py-6 sm:px-8 sm:py-8`}
+        className={`${panel} pointer-events-auto max-h-[92vh] w-[min(94vw,540px)] overflow-y-auto px-5 py-6 sm:px-8 sm:py-8`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="game-over-title"
@@ -298,6 +309,29 @@ function GameOverScreen() {
               ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
               : "SIGNAL TERMINATED"}
           </div>
+          {outcome.deathStreak >= 2 && s.deathCause && (
+            <div className="mt-1 text-[11px] font-semibold tracking-[0.14em] text-rose-300/90">
+              {ordinal(outcome.deathStreak).toUpperCase()} RUN IN A ROW ENDED BY{" "}
+              {formatPattern(s.deathCause.patternId).toUpperCase()}
+            </div>
+          )}
+          {s.lineRating && (
+            <div className="mt-2 flex items-center justify-center gap-2 text-xs text-white/70">
+              <span className="tracking-[0.18em] text-white/45">LINE RATING</span>
+              <span
+                className={`inline-flex h-6 w-6 items-center justify-center rounded-md border font-display text-sm font-black ${
+                  GRADE_COLORS[s.lineRating]
+                }`}
+              >
+                {s.lineRating}
+              </span>
+              {weakest && weakest.grade !== "S" && (
+                <span className="text-[11px] text-white/55">
+                  weakest: {formatPattern(weakest.patternId)} ({weakest.grade})
+                </span>
+              )}
+            </div>
+          )}
           <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
             {outcome.scoreDelta > 0
               ? `PB +${outcome.scoreDelta.toLocaleString()}`
@@ -305,7 +339,18 @@ function GameOverScreen() {
                 ? "MATCHED PERSONAL BEST"
               : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of PB`}
           </div>
+          {outcome.newBestDistance ? (
+            <div className="mt-0.5 text-xs font-semibold text-amber-200">
+              FARTHEST FLIGHT YET
+            </div>
+          ) : outcome.distanceDelta > 0 ? (
+            <div className="mt-0.5 text-xs text-white/50">
+              {Math.ceil(outcome.distanceDelta).toLocaleString()} m short of your farthest flight
+            </div>
+          ) : null}
         </div>
+
+        {outcome.forensics && <DeathForensicsPanel forensics={outcome.forensics} />}
 
         {outcome.unlocked.length > 0 && (
           <div className="mt-5 rounded-xl border border-cyan-300/25 bg-cyan-300/10 px-4 py-3">
@@ -346,6 +391,15 @@ function formatPattern(id: string): string {
   return id
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/^./, (char) => char.toUpperCase());
+}
+
+function ordinal(n: number): string {
+  const rem10 = n % 10;
+  const rem100 = n % 100;
+  if (rem10 === 1 && rem100 !== 11) return `${n}st`;
+  if (rem10 === 2 && rem100 !== 12) return `${n}nd`;
+  if (rem10 === 3 && rem100 !== 13) return `${n}rd`;
+  return `${n}th`;
 }
 
 function OverlayShell({ title, children }: { title: string; children: React.ReactNode }) {
@@ -563,6 +617,9 @@ function SettingsOverlay() {
             max={1.5}
             onChange={s.setSensitivity}
           />
+        </Row>
+        <Row label="PB GHOST" hint="Race a hologram of your best run">
+          <Toggle label="PB ghost" value={s.showGhost} onChange={s.setShowGhost} />
         </Row>
         <Row label="REDUCE MOTION" hint="Softer camera shake and FOV kicks">
           <Toggle label="Reduce motion" value={s.reduceMotion} onChange={s.setReduceMotion} />
