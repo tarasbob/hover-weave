@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
-import { TRACK } from "../core/constants";
+import { LOOKAHEAD } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import { BIOMES, biomeIndexAt } from "../track/biomes";
 import { createObstacleMaterial } from "./obstacleMaterial";
@@ -193,11 +193,12 @@ export function Decor() {
       mesh.count = 0;
       return { kind, mesh, attr, capacity, count: 0 };
     };
+    // Capacities sized for the LOOKAHEAD.MAX view distance (~2.2× baseline).
     return [
-      make("crystal", new THREE.OctahedronGeometry(1.25, 0), 96),
-      make("pillar", new THREE.CylinderGeometry(1, 1.18, 2, 6), 80),
-      make("sphere", new THREE.IcosahedronGeometry(1, 2), 48),
-      make("ring", new THREE.TorusGeometry(1, 0.16, 10, 36), 48),
+      make("crystal", new THREE.OctahedronGeometry(1.25, 0), 200),
+      make("pillar", new THREE.CylinderGeometry(1, 1.18, 2, 6), 168),
+      make("sphere", new THREE.IcosahedronGeometry(1, 2), 100),
+      make("ring", new THREE.TorusGeometry(1, 0.16, 10, 36), 100),
     ] as DecorPool[];
   }, [env]);
   const poolByKind = useMemo(
@@ -217,13 +218,16 @@ export function Decor() {
   useFrame(() => {
     const dist = world.status === "idle" ? ambient.value : world.renderDistance;
     const t = world.status === "idle" ? performance.now() * 0.001 : world.time;
+    const view = env.viewDistance;
+    const matStart = view * LOOKAHEAD.MATERIALIZE_START_FRAC;
+    const matEnd = view * LOOKAHEAD.MATERIALIZE_END_FRAC;
     for (const p of pools) p.count = 0;
 
     const place = (slot: SlotDesc, s: number) => {
       const pool = poolByKind.get(slot.kind);
       if (!pool || pool.count >= pool.capacity) return;
       const ahead = s - dist;
-      const grow = smoothstep(TRACK.MATERIALIZE_START, TRACK.MATERIALIZE_END, ahead);
+      const grow = smoothstep(matStart, matEnd, ahead);
       if (grow <= 0.002) return;
       const bob = slot.bobAmp > 0 ? Math.sin(t * slot.bobSpeed + slot.phase) * slot.bobAmp : 0;
       _p.set(slot.x, slot.y + bob, -(ahead));
@@ -238,7 +242,7 @@ export function Decor() {
 
     // Ground slots on both sides.
     const g0 = Math.floor((dist - 40) / SLOT_SPACING);
-    const g1 = Math.ceil((dist + TRACK.GEN_HORIZON + 60) / SLOT_SPACING);
+    const g1 = Math.ceil((dist + view + 60) / SLOT_SPACING);
     for (let i = g0; i <= g1; i++) {
       const s = i * SLOT_SPACING + (hash01(i * 31 + 5) - 0.5) * SLOT_SPACING * 0.8;
       const biome = biomeIndexAt(s);
@@ -250,7 +254,7 @@ export function Decor() {
 
     // Floaters.
     const f0 = Math.floor((dist - 40) / FLOAT_SPACING);
-    const f1 = Math.ceil((dist + TRACK.GEN_HORIZON + 60) / FLOAT_SPACING);
+    const f1 = Math.ceil((dist + view + 60) / FLOAT_SPACING);
     for (let i = f0; i <= f1; i++) {
       const s = i * FLOAT_SPACING + (hash01(i * 17 + 3) - 0.5) * FLOAT_SPACING * 0.7;
       const slot = floatSlot(i, biomeIndexAt(s));

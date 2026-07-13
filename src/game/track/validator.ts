@@ -1,4 +1,4 @@
-import { CRAFT, STEER, TRACK } from "../core/constants";
+import { CRAFT, overdriveAt, STEER, TRACK } from "../core/constants";
 import { clamp } from "../core/mathUtils";
 import { Motion, type ObstacleSpec } from "../core/types";
 
@@ -46,11 +46,27 @@ export interface ValidationResult {
 }
 
 /**
+ * Safety slack added around the craft radius when rasterizing blocked lanes.
+ * The minimum passable corridor is ~2·(CRAFT.RADIUS + slack) + one lane, so
+ * this is the "min-corridor" dial: overdrive tightens it from the baseline
+ * toward a hard floor (~2.5 m gaps — razor-grade but honestly dodgeable).
+ */
+export const BASE_MARGIN_SLACK = 0.42;
+export const MIN_MARGIN_SLACK = 0.24;
+
+export function marginSlackAt(s: number): number {
+  return Math.max(MIN_MARGIN_SLACK, BASE_MARGIN_SLACK - overdriveAt(s) * 0.06);
+}
+
+/**
  * Worst-case lateral extents an obstacle can block, independent of time.
  * Conservative: motion sweeps use their full envelope, so a validated chunk
  * is passable no matter the phase of any mover.
  */
-export function blockedRanges(o: ObstacleSpec): [number, number][] {
+export function blockedRanges(
+  o: ObstacleSpec,
+  slack: number = BASE_MARGIN_SLACK,
+): [number, number][] {
   if (o.collidable === false || o.noValidate) return [];
 
   // Vertical: does it intersect the craft band? FallY uses its resting y,
@@ -61,7 +77,7 @@ export function blockedRanges(o: ObstacleSpec): [number, number][] {
   const vHalf = o.kind === "ring" ? o.hx : o.hy;
   if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) return [];
 
-  const margin = CRAFT.RADIUS + 0.42;
+  const margin = CRAFT.RADIUS + slack;
 
   if (o.kind === "ring") {
     const inner = o.inner ?? 2.5;
@@ -171,12 +187,14 @@ export function validatePattern(
   const reachLanes = reachLanesAt(difficulty);
   const runwayLanes = Math.floor((pathSlopeAt(difficulty) * Math.max(0, runway)) / LANE_W);
   const entry = dilateLanes(entryLanes, runwayLanes);
+  // Overdrive tightens the guaranteed corridor toward its hard floor.
+  const slack = marginSlackAt(s0);
 
   // Rasterize blocked masks.
   const blocked: Uint8Array[] = [];
   for (let k = 0; k <= steps; k++) blocked.push(new Uint8Array(LANE_COUNT));
   for (const o of obstacles) {
-    const ranges = blockedRanges(o);
+    const ranges = blockedRanges(o, slack);
     if (ranges.length === 0) continue;
     const hs = sHalfExtent(o);
     const k0 = clamp(Math.floor((o.s - hs - s0) / DS), 0, steps);

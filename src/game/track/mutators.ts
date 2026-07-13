@@ -1,4 +1,4 @@
-import { TRACK } from "../core/constants";
+import { overdriveAt, TRACK } from "../core/constants";
 import type { Rng } from "../core/rng";
 import { Motion, type PatternCategory, type PatternResult } from "../core/types";
 
@@ -25,6 +25,10 @@ export function mutatePattern(
   difficulty = 0,
 ): MutationLog {
   const log: MutationLog = { mirrored: false, scatterAdded: 0, jittered: false, moverBoost: 1 };
+  // Late-game aggression channel: probabilities cap, magnitudes grow slowly
+  // (log) — determinism is safe because od is a pure function of s0 and no
+  // rng draw becomes conditional on it.
+  const od = overdriveAt(s0);
 
   // Mirror the whole pattern left<->right. Only safe when the entry corridor
   // is roughly centered — patterns author their lead-in relative to entryX,
@@ -49,19 +53,20 @@ export function mutatePattern(
 
   // Positional jitter on free-standing obstacles (walls and wide slabs are
   // left alone so corridors keep their authored shape).
-  if (category !== "setpiece" && rng.chance(0.26 + difficulty * 0.24)) {
+  if (category !== "setpiece" && rng.chance(Math.min(0.92, 0.26 + difficulty * 0.24 + od * 0.08))) {
     log.jittered = true;
+    const odScale = 1 + Math.min(1, od * 0.22);
     for (const o of result.obstacles) {
       if (o.hx > 6 || o.motion) continue;
-      const jitter = 0.8 + difficulty * 0.8;
+      const jitter = (0.8 + difficulty * 0.8) * odScale;
       o.x += rng.range(-jitter, jitter);
-      o.s += rng.range(-1.8 - difficulty, 1.8 + difficulty);
+      o.s += rng.range(-1.8 - difficulty, 1.8 + difficulty) * odScale;
     }
   }
 
-  // Speed up movers a touch.
-  if (rng.chance(0.14 + difficulty * 0.34)) {
-    log.moverBoost = rng.range(1.04, 1.2 + difficulty * 0.34);
+  // Speed up movers a touch (more often, and harder, deep in overdrive).
+  if (rng.chance(Math.min(0.9, 0.14 + difficulty * 0.34 + od * 0.1))) {
+    log.moverBoost = rng.range(1.04, 1.2 + difficulty * 0.34 + Math.min(0.6, od * 0.15));
     for (const o of result.obstacles) {
       switch (o.motion) {
         case Motion.SweepX:
@@ -82,8 +87,8 @@ export function mutatePattern(
   // Sprinkle a few extra loose objects over normal patterns so even a
   // memorized layout stays alive. (Fields are already chaos; set-pieces stay
   // authored.)
-  if (category === "normal" && rng.chance(0.2 + difficulty * 0.24)) {
-    const n = rng.int(2, 4 + Math.round(difficulty * 3));
+  if (category === "normal" && rng.chance(Math.min(0.9, 0.2 + difficulty * 0.24 + od * 0.1))) {
+    const n = rng.int(2, 4 + Math.round(difficulty * 3) + Math.round(Math.min(4, od * 1.2)));
     for (let i = 0; i < n; i++) {
       const s = s0 + rng.range(14, result.length - 10);
       const x = rng.range(-XP + 3, XP - 3);

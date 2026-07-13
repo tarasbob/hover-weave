@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import * as THREE from "three/webgpu";
 import { useGame } from "../state/game";
 import { GameScene } from "./GameScene";
+import { CAMERA_FAR } from "./visualConstants";
 
 /**
  * R3F canvas backed by three's WebGPURenderer.
@@ -15,7 +16,7 @@ export function GameCanvas() {
   return (
     <Canvas
       className="!fixed inset-0"
-      camera={{ fov: 68, near: 0.1, far: 1400, position: [0, 4.6, 9] }}
+      camera={{ fov: 68, near: 0.1, far: CAMERA_FAR, position: [0, 4.6, 9] }}
       gl={async (props) => {
         // `?gl=webgl` forces the WebGL2 backend (also what non-WebGPU
         // browsers get automatically).

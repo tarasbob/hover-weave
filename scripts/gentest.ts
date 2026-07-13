@@ -3,6 +3,7 @@
  * pressure across deterministic seeds.
  */
 import assert from "node:assert/strict";
+import { overdriveAt, SPEED } from "../src/game/core/constants";
 import { createRng } from "../src/game/core/rng";
 import {
   TrackGenerator,
@@ -101,6 +102,27 @@ assert.ok(difficultyAt(500) < 0.32, "opening difficulty should remain readable")
 assert.ok(difficultyAt(2500) > 0.62, "expert ramp should arrive by roughly 2.5km");
 assert.ok(speedAt(2500) > 50, "speed ramp should create meaningful pressure by 2.5km");
 
+// Overdrive: exactly zero through the authored game, slow unbounded log
+// growth past it — speed never stops climbing, but climbs slowly.
+assert.equal(overdriveAt(0), 0);
+assert.equal(overdriveAt(7999), 0, "overdrive must not leak below its start");
+assert.ok(Math.abs(overdriveAt(16000) - 1) < 1e-9, "one octave at 16km");
+assert.ok(Math.abs(overdriveAt(32000) - Math.log2(4)) < 1e-9, "two octaves at 32km");
+assert.ok(
+  Math.abs(speedAt(7999) - (30 + 60 * (1 - Math.exp(-7999 / SPEED.RAMP_DISTANCE)))) < 1e-9,
+  "pre-overdrive speed curve must be untouched",
+);
+assert.ok(speedAt(16000) > speedAt(7999) + 5, "overdrive speed growth must engage by 16km");
+assert.ok(speedAt(32000) > SPEED.MAX + 10, "overdrive speed keeps growing past MAX");
+assert.ok(
+  speedAt(40000) > speedAt(8000) + 15,
+  "the treadmill must keep meaningfully accelerating deep into overdrive",
+);
+assert.ok(
+  speedAt(64000) - speedAt(32000) < speedAt(32000) - speedAt(16000) + 1e-9,
+  "late speed growth must decelerate (log), not explode",
+);
+
 // Full-chain generation mix across seeds.
 console.log("\n== chained generation mix over 8 × 30km ==");
 const counts = new Map<string, number>();
@@ -149,6 +171,58 @@ assert.ok(totalRejections / totalChunks < 0.5, "generator retries are under exce
 assert.ok(latePeakSeen, "late generation never produced an intensity-5 peak");
 for (const id of ["precisionLadder", "pulseWeave", "rotorRhythm", "splitDecision", "apexGauntlet"]) {
   assert.ok((counts.get(id) ?? 0) > 0, `${id} never appeared across fixed generation seeds`);
+}
+
+// Deep-overdrive chained generation (60km): validation must stay healthy
+// under tightened corridors, shrunken seams, and hotter mutators — and the
+// seam shrink itself must be visible in the emitted chunk gaps.
+console.log("\n== deep overdrive: 1 × 60km ==");
+{
+  const gen = new TrackGenerator(createRng("deep-overdrive"), false);
+  let prevS1 = 0;
+  let chunks = 0;
+  let earlyGapSum = 0;
+  let earlyGapN = 0;
+  let lateGapSum = 0;
+  let lateGapN = 0;
+  while (gen.generatedUpTo < 60000) {
+    const before = gen.generatedUpTo;
+    gen.fill(60000, {
+      chunk: (c) => {
+        const gap = c.s0 - prevS1;
+        if (prevS1 > 0) {
+          if (c.s0 < 6000) {
+            earlyGapSum += gap;
+            earlyGapN++;
+          } else if (c.s0 > 32000) {
+            lateGapSum += gap;
+            lateGapN++;
+          }
+          assert.ok(gap >= 10 - 1e-9, `seam collapsed below the 10m floor (${gap.toFixed(1)}m)`);
+        }
+        prevS1 = c.s1;
+        chunks++;
+      },
+    });
+    assert.ok(gen.generatedUpTo > before, `deep generator stalled at ${before.toFixed(0)}m`);
+  }
+  const earlyGap = earlyGapSum / earlyGapN;
+  const lateGap = lateGapSum / lateGapN;
+  const deepFallbackRate = gen.fallbacks / chunks;
+  console.log(
+    `chunks=${chunks}, fallbacks=${gen.fallbacks} (${(deepFallbackRate * 100).toFixed(1)}%), ` +
+    `rejections=${gen.rejections}, seam early=${earlyGap.toFixed(1)}m late=${lateGap.toFixed(1)}m, ` +
+    `overdrive@60km=${overdriveAt(60000).toFixed(2)}`,
+  );
+  assert.ok(
+    deepFallbackRate < 0.04,
+    `deep-overdrive fallback rate ${(deepFallbackRate * 100).toFixed(1)}% is too high`,
+  );
+  assert.ok(
+    lateGap < earlyGap * 0.66,
+    `overdrive must shrink runway seams (early ${earlyGap.toFixed(1)}m -> late ${lateGap.toFixed(1)}m)`,
+  );
+  assert.ok(lateGap >= 10, "late seams must respect the 10m floor");
 }
 
 console.log("generator assertions: PASS");

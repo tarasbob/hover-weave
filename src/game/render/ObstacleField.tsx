@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
-import { POOL_SIZES, TRACK } from "../core/constants";
+import { LOOKAHEAD, POOL_SIZES } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import type { Obstacle, ObstacleKind } from "../core/types";
 import { createObstacleMaterial } from "./obstacleMaterial";
@@ -100,6 +100,10 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
 
   useFrame((_, rawDt) => {
     const dist = world.renderDistance;
+    // Materialize band tracks the speed-proportional view distance so growth
+    // always happens deep inside the (equally scaled) fog.
+    const matStart = env.viewDistance * LOOKAHEAD.MATERIALIZE_START_FRAC;
+    const matEnd = env.viewDistance * LOOKAHEAD.MATERIALIZE_END_FRAC;
     nearFlash.current.value = Math.max(0, nearFlash.current.value - Math.min(rawDt, 0.08) * 4.2);
     for (const p of pools) p.count = 0;
 
@@ -107,7 +111,7 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
       if (!o.active) continue;
       const pool = poolByKind.get(o.kind) ?? pools[0];
       if (pool.count >= pool.capacity) continue;
-      writeInstance(pool, pool.count++, o, dist, nearFlash.current);
+      writeInstance(pool, pool.count++, o, dist, nearFlash.current, matStart, matEnd);
     }
 
     for (const p of pools) {
@@ -132,6 +136,8 @@ function writeInstance(
   o: Obstacle,
   dist: number,
   nearFlash: { x: number; s: number; value: number },
+  matStart: number,
+  matEnd: number,
 ): void {
   const ahead = o.cs - dist;
   const z = -ahead;
@@ -139,7 +145,7 @@ function writeInstance(
 
   // Materialize deep inside the fog: scale up across the far band so nothing
   // ever pops into view.
-  const grow = smoothstep(TRACK.MATERIALIZE_START, TRACK.MATERIALIZE_END, ahead);
+  const grow = smoothstep(matStart, matEnd, ahead);
 
   switch (o.kind) {
     case "pillar":

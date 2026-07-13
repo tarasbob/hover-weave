@@ -22,6 +22,7 @@ import {
   pow,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
+import { OCEAN_DEPTH } from "./visualConstants";
 
 /**
  * Planar-reflection water strip along the track (digital-ocean biome).
@@ -74,10 +75,10 @@ export function Ocean({ resolutionScale }: { resolutionScale: number }) {
       return env.uReflectivity.mul(edgeFade);
     })();
 
-    const geo = new THREE.PlaneGeometry(130, 640);
+    const geo = new THREE.PlaneGeometry(130, OCEAN_DEPTH);
     geo.rotateX(-Math.PI / 2);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(0, 0.05, -250);
+    mesh.position.set(0, 0.05, -OCEAN_DEPTH / 2 + 120);
     mesh.frustumCulled = false;
     mesh.renderOrder = -1;
     g.add(mesh);

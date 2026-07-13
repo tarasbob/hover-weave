@@ -3,6 +3,7 @@
 import { Color, Vector4 } from "three/webgpu";
 import { uniform } from "three/tsl";
 import { BIOMES, biomeBlendAt, type BiomeSpec } from "../track/biomes";
+import { lookaheadFor, TRACK } from "../core/constants";
 import type { SimWorld } from "../core/world";
 import { clamp01, damp, lerp } from "../core/mathUtils";
 import type { Rng } from "../core/rng";
@@ -102,6 +103,14 @@ export class EnvState {
   ambient = 0.5;
   lightningActive = false;
 
+  /**
+   * Smoothed speed-proportional view distance (m ahead). Every depth-driven
+   * render system (materialize bands, decor/landmark loops, pickup culling)
+   * derives from this, and fog density scales inversely so the horizon stays
+   * buried at any speed.
+   */
+  viewDistance: number = TRACK.GEN_HORIZON;
+
   /** Smoothed values for CPU consumers. */
   private flowSmooth = 0;
   private flashV = 0;
@@ -170,7 +179,13 @@ export class EnvState {
     lerpColor(this.uTerrainB.value, CA.terrainB, CB.terrainB, t);
     lerpColor(this.lightColor, CA.light, CB.light, t);
 
-    this.uFogDensity.value = lerp(A.fogDensity, B.fogDensity, t);
+    // Speed-proportional visibility: the lookahead grows with speed and fog
+    // thins by exactly the inverse factor, so (density × distance) — and with
+    // it the depth at which geometry is fully hidden — scales with the
+    // horizon. Damped so boost ignition/end reads as a smooth push.
+    this.viewDistance = damp(this.viewDistance, lookaheadFor(world.speed), 1.6, dt);
+    const fogScale = TRACK.GEN_HORIZON / this.viewDistance;
+    this.uFogDensity.value = lerp(A.fogDensity, B.fogDensity, t) * fogScale;
     this.uNebulaAmt.value = lerp(A.nebulaAmount, B.nebulaAmount, t);
     this.uStars.value = lerp(A.stars, B.stars, t);
     this.uAuroraAmt.value = lerp(A.auroraAmount, B.auroraAmount, t);

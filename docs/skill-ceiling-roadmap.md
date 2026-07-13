@@ -68,15 +68,15 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 2.1 | **Endless difficulty scaling** — past ~8 km: slow unbounded speed growth (log), validator min-corridor tightens toward a hard floor, mover frequencies up, runway seams shrink (18–34 → ~10), mutator aggression up. | todo | `difficultyAt`, `speedAt`, `validator.ts`, `mutators.ts` |
-| 2.2 | **Speed-proportional lookahead** — `GEN_HORIZON` / materialize band / fog must scale with speed (720 m = 8 s at speed 90 but 3.6 s at 200). | todo | `TRACK` constants, `Terrain`/`env` fog, pool caps may need bumps |
-| 2.3 | **Wall calibration** — tune scaling so autopilot tiers (greedy / lookahead / superhuman) die at predictably increasing walls. | todo | Extend `scripts/simtest.ts` with bot tiers |
+| 2.1 | **Endless difficulty scaling** — past ~8 km: slow unbounded speed growth (log), validator min-corridor tightens toward a hard floor, mover frequencies up, runway seams shrink (18–34 → ~10), mutator aggression up. | done | New unbounded channel `overdriveAt(s) = log2(1 + (s−8km)/8km)` (`constants.ts`) — `difficultyAt` stays 0..1 (see Decision Log). `speedAt` += 7 m/s per octave (exactly 0 below 8 km); seams ÷(1+0.35·od) with a 10–14 m floor; validator slack 0.42 → 0.24 floor (`marginSlackAt`, min gap ≈ 2.5 m); mutator jitter/mover/scatter chances +od (capped ≤ 0.9), magnitudes log-scaled |
+| 2.2 | **Speed-proportional lookahead** — `GEN_HORIZON` / materialize band / fog must scale with speed (720 m = 8 s at speed 90 but 3.6 s at 200). | done | `lookaheadFor(speed) = clamp(speed × 8 s, 720, 1560)`; sim streams to it (`world.genHorizon`); render reads damped `env.viewDistance` — materialize band = 0.94/0.75 × view (ObstacleField, Pickups, Decor, HorizonLandmarks), fog density × (720/view) keeps density×depth invariant. Far field re-budgeted: camera far 2400, terrain/ocean depth 1700, sky dome R 2000; pools ×~1.7–2.2 (sim 2600/420); headroom asserted at max horizon in `simtest.ts` |
+| 2.3 | **Wall calibration** — tune scaling so autopilot tiers (greedy / lookahead / superhuman) die at predictably increasing walls. | done | Three tiers in `simtest.ts`: greedy band-scan; lookahead = live lane×slice reachability DP (~2.4 s ahead); superhuman = TAS-style rollout search over exact steering dynamics (35 two-phase candidates × 1.9 s horizon). Walls (6 deterministic seeds, medians): 1 133 m / 2 686 m / 18 360 m — every tier dies pre-cap, ≥1.5× separation, baselines baked with ×0.55–1.8 drift gates |
 
 **Acceptance criteria**
 
-- [ ] Every autopilot tier dies at a stable, distinct distance band (its "wall").
-- [ ] No visible pop-in at 2× current max speed (manual + graphics test).
-- [ ] `gentest.ts` validation rates stay healthy at high difficulty inputs.
+- [x] Every autopilot tier dies at a stable, distinct distance band (its "wall"). *(1.1 km / 2.7 km / 18.4 km medians; superhuman must die past 8 km so overdrive itself is exercised; deterministic seeds make the bands exactly reproducible)*
+- [x] No visible pop-in at 2× current max speed (manual + graphics test). *(Static invariant enforced in `graphicstest.ts`: worst-case materialize-start transmittance ≤ 1.3e-3 across 30–220 m/s at obstacle heights, plus far-plane/terrain/ocean/sky-dome ≥ LOOKAHEAD.MAX checks. In-app spot-check still pending — Cursor's embedded browser throttles rAF for hidden tabs so the render loop never ran; use `?start=25000` (dev-only skip param, added this sprint) to eyeball it in a real browser)*
+- [x] `gentest.ts` validation rates stay healthy at high difficulty inputs. *(New 60 km chained run: fallbacks 1.3% (gate < 4%), seams 26.8 m → 14.1 m with a hard 10 m floor, generator never stalls; standalone per-pattern rates unchanged ≥ 95%)*
 
 ## Phase 3 — Make the gap visible
 
@@ -131,6 +131,11 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 | 2026-07-12 | 1.5 shipped option (a): uncapped flow with continuous quadratic overcap bleed. | Continuous, preserves the meter-tension loop, and needs no new UI legibility. The bleed (no grace above 28) makes the overcap regime an equilibrium of event rate — patience alone cannot hold it. Option (b) banking shelved; revisit only if playtesting finds the top-end too volatile. |
 | 2026-07-12 | 1.1 graze energy shipped hotter than sketched (perfect +12 / razor +7, refund ×1.75, drain 30). | The roadmap's +4/+1.5 with ×1.5 refund cannot outpace 34/s drain at realistic graze rates (~1–2/s through hard rows). Tuned until the gauntlet's tight line sustains 96% uptime while shard-only play stays ≤20%. |
 | 2026-07-12 | Uncapped `flowTier` consumers clamped at the render/audio edge (FOV ≤ tier 6, particle bursts ≤ tier 8, BPM ≤ tier 8). | Scoring must be uncapped; camera distortion and mix intensity must not be. |
+| 2026-07-12 | 2.1 keeps `difficultyAt` bounded 0..1; late pressure is a separate unbounded `overdriveAt` channel. | Every pattern is authored against the 0..1 envelope — pushing difficulty past 1 would extrapolate lerps into broken geometry. Overdrive drives speed, seams, validator slack, and mutators instead. |
+| 2026-07-12 | Lookahead capped at `LOOKAHEAD.MAX = 1560 m` (8 s holds through ~195 m/s, degrades gently beyond). | "Nothing caps" applies to scoring/difficulty, not render budgets: fog floor, far plane, terrain depth are sized against this bound. Speed growth is log, so even 100 km runs sit near it. |
+| 2026-07-12 | Wall bots are boost-free. | Walls must measure track scaling, not economy skill; boost uptime is already gated separately. |
+| 2026-07-12 | Superhuman tier = TAS-style rollout search (simulates exact steering dynamics), not a validator-path follower. | Path followers died at 1–5 km to model mismatch (corner-cutting between 4 m slices, replan dither), under-reporting the true wall. The rollout searcher only dies when *no* input stream survives its horizon — walls at ~18 km are genuinely overdrive-made. |
+| 2026-07-12 | `debugChunks` retention switched from "last 8" to distance-based pruning (craft − despawn … horizon, cap 64). | Debug-mode only. Kill-cam/forensics (Phase 3) and any path-based tooling need the chunks the craft is *inside*, which "last 8" evicts at the old horizon. |
 
 ## Progress log
 
@@ -147,3 +152,24 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
   New run stats: `threads`, `boostTime` (both shown on the death screen).
   Sprint 2 candidate: Phase 2 (uncap the treadmill — endless difficulty,
   speed-proportional lookahead, wall calibration bots).
+- **2026-07-12** — **Phase 2 (uncap the treadmill) complete.** The game no
+  longer stops getting harder: past 8 km an unbounded overdrive channel
+  (log2 octaves) keeps speed growing (+7 m/s per octave), shrinks runway
+  seams toward a 10 m floor, tightens the validator's guaranteed corridor to
+  a 2.5 m hard floor, and heats up mutator jitter/mover/scatter. Lookahead,
+  materialize band, and fog now scale together with speed
+  (`lookaheadFor(speed)`, ≤ 1560 m) so warning time stays ~8 s instead of
+  shrinking — fog thins by exactly the inverse factor (no pop-in, enforced as
+  a static invariant in `graphicstest.ts`), far field re-budgeted (camera far
+  2400 m, terrain 1700 m, sky dome 2000 m), pools ×~2. Wall calibration:
+  three bot tiers land at 1.1 km (greedy) / 2.7 km (lookahead DP) /
+  18.4 km (TAS rollout search) medians with ≥1.5× separation and baked
+  regression gates. All suites green (sim, gen incl. new 60 km deep-overdrive
+  run, graphics, types, lint); first-2 km novice line untouched (drift −5.5%,
+  same as Phase 1). Dev nicety: `?start=<meters>` (dev builds) spawns deep
+  into a run for manual overdrive checks; an in-app visual pass in a real
+  browser is the one outstanding nice-to-have (Cursor's embedded browser
+  suspends rAF for hidden tabs, so the render loop cannot be driven from
+  automation here). Sprint 3 candidate: Phase 3 (make the gap visible —
+  input recording/replay first; `debugChunks` retention already fixed for
+  the kill-cam).

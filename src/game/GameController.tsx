@@ -51,7 +51,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
       useGame.getState().setMode(mode);
       useGame.getState().setOutcome(null);
       useGame.getState().clearRunFeedback();
-      world.start(seed, daily);
+      // Dev probe: `?start=25000` spawns deep into the run (overdrive
+      // speeds/density) for pop-in and pacing checks. Never in production.
+      let skipTo = 0;
+      if (process.env.NODE_ENV === "development" && typeof location !== "undefined") {
+        skipTo = Math.max(0, Number(new URLSearchParams(location.search).get("start")) || 0);
+      }
+      world.start(seed, daily, skipTo);
       useGame.getState().setPhase("running");
       audio.startMusic();
     };

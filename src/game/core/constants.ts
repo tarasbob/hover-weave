@@ -10,21 +10,75 @@ export const TRACK = {
   /** Patterns may place geometry within this half width. */
   X_PATTERN: 33,
   /**
-   * Distance ahead of the craft that must always be generated. Deep enough
-   * that everything materializes fully buried in fog — no visible pop-in.
+   * Minimum distance ahead of the craft that must always be generated. The
+   * live horizon is speed-proportional (see LOOKAHEAD / lookaheadFor) so the
+   * warning window stays measured in seconds, not meters.
    */
   GEN_HORIZON: 720,
   /** Obstacles further behind than this are recycled. */
   DESPAWN_BEHIND: 26,
-  /** Instances scale from 0 to full size across this band inside the horizon. */
-  MATERIALIZE_START: 680,
-  MATERIALIZE_END: 540,
 } as const;
+
+/**
+ * Speed-proportional lookahead. Generation, the materialize band, and fog
+ * visibility all scale together with speed so "seconds of warning" is
+ * constant: fog density is multiplied by GEN_HORIZON / lookahead, keeping
+ * (density × materialize distance) invariant — geometry always materializes
+ * fully buried in fog, no pop-in at any speed.
+ */
+export const LOOKAHEAD = {
+  /** Seconds of generated + visible track ahead at the current speed. */
+  SECONDS: 8,
+  /**
+   * Render-budget bound on the horizon (fog floor, camera far plane, terrain
+   * depth are sized against it). Holds the full 8 s window through ~195 m/s;
+   * beyond that the window degrades gently instead of costs growing.
+   */
+  MAX: 1560,
+  /** Instances scale 0 → full across this band (fractions of the horizon). */
+  MATERIALIZE_START_FRAC: 680 / 720,
+  MATERIALIZE_END_FRAC: 540 / 720,
+} as const;
+
+/** Generated/visible distance ahead for a given speed (720 m ⇔ 8 s at 90). */
+export function lookaheadFor(speed: number): number {
+  return Math.min(
+    LOOKAHEAD.MAX,
+    Math.max(TRACK.GEN_HORIZON, speed * LOOKAHEAD.SECONDS),
+  );
+}
+
+/**
+ * The endless late game. Difficulty's 0..1 envelope saturates by ~8 km (all
+ * patterns are authored against it); overdrive is the unbounded pressure
+ * channel that keeps climbing past it: +1 per doubling of distance beyond
+ * START. Drives late speed growth, seam shrink, validator corridor
+ * tightening, and mutator aggression.
+ */
+export const OVERDRIVE = {
+  /** Track distance (m) where the late-game channel opens. */
+  START: 8000,
+  /** Distance scale of one overdrive octave (log2 doubling). */
+  HALF: 8000,
+  /** Extra target speed per overdrive octave (m/s, slow and unbounded). */
+  SPEED_PER_OCTAVE: 7,
+} as const;
+
+/** Unbounded late-game pressure: 0 through START, then log2 growth. */
+export function overdriveAt(s: number): number {
+  if (s <= OVERDRIVE.START) return 0;
+  return Math.log2(1 + (s - OVERDRIVE.START) / OVERDRIVE.HALF);
+}
 
 export const SPEED = {
   BASE: 30,
+  /**
+   * Asymptote of the early speed ramp — not a cap. Past OVERDRIVE.START the
+   * target speed keeps growing by OVERDRIVE.SPEED_PER_OCTAVE per octave
+   * (speedNorm and other FX consumers saturate here by design).
+   */
   MAX: 90,
-  /** Distance (m) over which speed approaches max (asymptotic). */
+  /** Distance (m) over which speed approaches MAX (asymptotic). */
   RAMP_DISTANCE: 5600,
   /** Speed multiplier while boosting. */
   BOOST_MULT: 1.45,
@@ -196,15 +250,19 @@ export const MAX_STEPS_PER_FRAME = 30;
 export const BIOME_LENGTH = 2400;
 export const BIOME_TRANSITION = 320;
 
+/**
+ * Render instance pools. Sized for the LOOKAHEAD.MAX horizon (~2.2× the
+ * 720 m baseline); simtest asserts per-kind peak headroom.
+ */
 export const POOL_SIZES = {
-  box: 640,
-  pillar: 320,
-  crystal: 256,
-  sphere: 96,
-  ring: 48,
-  shard: 160,
-  shield: 12,
-  decor: 220,
+  box: 1100,
+  pillar: 560,
+  crystal: 440,
+  sphere: 170,
+  ring: 84,
+  shard: 280,
+  shield: 18,
+  decor: 380,
 } as const;
 
 export type PoolName = keyof typeof POOL_SIZES;

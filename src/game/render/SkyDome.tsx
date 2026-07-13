@@ -23,7 +23,7 @@ import {
   vec2,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
-import { SUN_DIRECTION } from "./visualConstants";
+import { SKYDOME_RADIUS, SUN_DIRECTION } from "./visualConstants";
 
 /**
  * Procedural sky: vertical gradient, drifting nebula, hash-grid stars,
@@ -36,7 +36,7 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
   const mesh = useMemo(() => {
     const [widthSegments, heightSegments] =
       detail === 0 ? [32, 20] : detail === 1 ? [48, 32] : [64, 40];
-    const geo = new THREE.SphereGeometry(980, widthSegments, heightSegments);
+    const geo = new THREE.SphereGeometry(SKYDOME_RADIUS, widthSegments, heightSegments);
     const mat = new THREE.MeshBasicNodeMaterial();
     mat.side = THREE.BackSide;
     mat.depthWrite = false;

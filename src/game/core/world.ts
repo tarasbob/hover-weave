@@ -4,6 +4,7 @@ import {
   ENERGY,
   FIXED_DT,
   FLOW,
+  lookaheadFor,
   MAX_STEPS_PER_FRAME,
   RUN,
   SPEED,
@@ -28,8 +29,9 @@ import {
 import { biomeIndexAt, BIOMES } from "../track/biomes";
 import { speedAt, TrackGenerator, type GeneratedChunk } from "../track/generator";
 
-const OBSTACLE_CAP = 1400;
-const PICKUP_CAP = 240;
+// Sized for the LOOKAHEAD.MAX horizon (~2.2× the 720 m baseline peaks).
+const OBSTACLE_CAP = 2600;
+const PICKUP_CAP = 420;
 
 export function obstacleTrailingEdge(o: Obstacle): number {
   if (o.motion === Motion.RotateYaw) return o.cs + Math.hypot(o.hx, o.hs);
@@ -211,8 +213,13 @@ export class SimWorld {
     for (let i = PICKUP_CAP - 1; i >= 0; i--) this.pickupFree.push(i);
   }
 
-  /** Reset everything and start a new run. Instant — all pools are reused. */
-  start(seed: string, daily: boolean): void {
+  /**
+   * Reset everything and start a new run. Instant — all pools are reused.
+   * `skipTo` (dev/testing) jumps the craft deep into the run: chunks up to
+   * the skip point are generated and discarded (same RNG stream as playing
+   * there), so the field around the craft matches a real run exactly.
+   */
+  start(seed: string, daily: boolean, skipTo = 0): void {
     this.seed = seed;
     this.daily = daily;
     this.status = "running";
@@ -257,9 +264,22 @@ export class SimWorld {
     this.debugChunks.length = 0;
 
     this.generator = new TrackGenerator(createRng(seed), this.collectDebug);
+    if (skipTo > 0) {
+      this.distance = skipTo;
+      this.prevDistance = skipTo;
+      this.speed = speedAt(skipTo);
+      this.time = SPEED.LAUNCH_RAMP; // Skip the launch ramp too.
+      this.lastBiomeIndex = biomeIndexAt(skipTo);
+      this.generator.fill(Math.max(0, skipTo - TRACK.DESPAWN_BEHIND - 50), {
+        chunk: () => {},
+      });
+    }
     this.streamAhead();
     this.events.emit("runStart", { seed, daily });
-    this.events.emit("biome", { index: 0, name: BIOMES[0].label });
+    this.events.emit("biome", {
+      index: this.lastBiomeIndex,
+      name: BIOMES[this.lastBiomeIndex].label,
+    });
   }
 
   /** Advance sim by wall-clock dt (handles fixed-step accumulation + slow-mo). */
@@ -468,10 +488,18 @@ export class SimWorld {
     }
   }
 
+  /**
+   * Generated (and visible) distance ahead — speed-proportional so the
+   * warning window stays constant in seconds as the treadmill accelerates.
+   */
+  get genHorizon(): number {
+    return lookaheadFor(this.speed);
+  }
+
   private streamAhead(): void {
     const gen = this.generator;
     if (!gen) return;
-    gen.fill(this.distance + TRACK.GEN_HORIZON, {
+    gen.fill(this.distance + this.genHorizon, {
       chunk: (chunk) => this.spawnChunk(chunk),
     });
   }
@@ -498,8 +526,17 @@ export class SimWorld {
       this.events.emit("setpiece", { name: chunk.announce });
     }
     if (this.collectDebug && chunk.debug) {
+      // Retain everything between the craft and the horizon (path-follower
+      // bots and the kill-cam need chunks the craft is currently inside, not
+      // just the freshest ones), pruning what falls behind.
       this.debugChunks.push(chunk);
-      while (this.debugChunks.length > 8) this.debugChunks.shift();
+      while (
+        this.debugChunks.length > 64 ||
+        (this.debugChunks.length > 0 &&
+          this.debugChunks[0].s1 < this.distance - TRACK.DESPAWN_BEHIND - 60)
+      ) {
+        this.debugChunks.shift();
+      }
     }
   }
 

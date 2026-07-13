@@ -1,4 +1,4 @@
-import { SPEED, TRACK } from "../core/constants";
+import { OVERDRIVE, overdriveAt, SPEED, TRACK } from "../core/constants";
 import { clamp, clamp01, lerp } from "../core/mathUtils";
 import type { Rng } from "../core/rng";
 import type {
@@ -35,16 +35,26 @@ export interface GeneratedChunk {
   debug?: ValidationResult;
 }
 
-/** Difficulty curve: fast early growth, asymptotic tail, gentle waves. */
+/**
+ * Difficulty curve: fast early growth, asymptotic tail, gentle waves.
+ * Deliberately bounded to 0..1 — every pattern is authored against this
+ * envelope. Late-game pressure past ~8 km comes from `overdriveAt` instead
+ * (speed growth, seam shrink, validator tightening, mutator aggression).
+ */
 export function difficultyAt(s: number): number {
   const base = 1 - Math.exp(-s / 2400);
   const wave = Math.sin(s * 0.0011) * 0.07;
   return clamp01(base * 0.96 + wave + 0.035);
 }
 
-/** Target craft speed at distance s (before boost/flow modifiers). */
+/**
+ * Target craft speed at distance s (before boost/flow modifiers). Asymptotic
+ * toward SPEED.MAX early, then slow unbounded log growth in overdrive — the
+ * treadmill never stops accelerating, it just accelerates slowly.
+ */
 export function speedAt(s: number): number {
-  return lerp(SPEED.BASE, SPEED.MAX, 1 - Math.exp(-s / SPEED.RAMP_DISTANCE));
+  const base = lerp(SPEED.BASE, SPEED.MAX, 1 - Math.exp(-s / SPEED.RAMP_DISTANCE));
+  return base + OVERDRIVE.SPEED_PER_OCTAVE * overdriveAt(s);
 }
 
 export function patternIntensity(pattern: PatternDef): number {
@@ -103,8 +113,13 @@ export class TrackGenerator {
 
   private nextChunk(): GeneratedChunk {
     // Randomized obstacle-free seam between patterns: repositioning slack for
-    // the craft and dilation room for the validator.
-    const runway = this.rng.range(18, 34);
+    // the craft and dilation room for the validator. Overdrive squeezes the
+    // seams toward a ~10–14 m floor so late track never offers free breath.
+    const seamScale = 1 / (1 + 0.35 * overdriveAt(this.generatedUpTo));
+    const runway = this.rng.range(
+      Math.max(10, 18 * seamScale),
+      Math.max(14, 34 * seamScale),
+    );
     const s0 = this.generatedUpTo + runway;
 
     // Per-chunk difficulty surprise (after the opening stretch) keeps the

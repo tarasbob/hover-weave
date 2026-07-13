@@ -43,11 +43,8 @@ interface PilotOpts {
   boost?: boolean;
 }
 
-function autopilot(world: SimWorld, input: InputState, opts: PilotOpts = {}): void {
-  const craftS = world.distance;
-  const bandStart = craftS + 2;
-  const bandEnd = craftS + 10 + Math.max(world.speed, 20) * 1.35;
-
+/** Lateral gaps between worst-case obstacle envelopes inside an s-band. */
+function scanGaps(world: SimWorld, bandStart: number, bandEnd: number): [number, number][] {
   const blocked: [number, number][] = [];
   for (const o of world.obstacles) {
     if (!o.active || !o.collidable) continue;
@@ -67,26 +64,299 @@ function autopilot(world: SimWorld, input: InputState, opts: PilotOpts = {}): vo
     cursor = Math.max(cursor, b1);
   }
   if (cursor < TRACK.X_LIMIT - 2) gaps.push([cursor, TRACK.X_LIMIT]);
+  return gaps;
+}
 
-  let targetX = world.x;
-  if (gaps.length > 0) {
-    let bestCost = Infinity;
-    for (const [g0, g1] of gaps) {
-      const gx = Math.min(Math.max(world.x, g0 + 1.2), g1 - 1.2);
-      const width = g1 - g0;
-      const cost = Math.abs(gx - world.x) - Math.min(width, 10) * 0.4;
-      if (cost < bestCost) {
-        bestCost = cost;
-        targetX = gx;
-      }
-    }
-  }
-
+function steerToward(world: SimWorld, input: InputState, targetX: number): void {
   const err = targetX - world.x;
   const maxLat = Math.max(10, world.speed) * STEER.RATIO;
   const desiredVel = Math.sign(err) * Math.min(Math.abs(err) * 4, maxLat);
   input.axis = Math.max(-1, Math.min(1, (desiredVel - world.latVel) * 0.3));
+}
+
+/** Best single-band gap target (shared by greedy and fallbacks). */
+function greedyTargetX(world: SimWorld): number {
+  const craftS = world.distance;
+  const gaps = scanGaps(world, craftS + 2, craftS + 10 + Math.max(world.speed, 20) * 1.35);
+  let targetX = world.x;
+  let bestCost = Infinity;
+  for (const [g0, g1] of gaps) {
+    const gx = Math.min(Math.max(world.x, g0 + 1.2), g1 - 1.2);
+    const width = g1 - g0;
+    const cost = Math.abs(gx - world.x) - Math.min(width, 10) * 0.4;
+    if (cost < bestCost) {
+      bestCost = cost;
+      targetX = gx;
+    }
+  }
+  return targetX;
+}
+
+/** Tier 1 "greedy": single-band nearest-workable-gap chaser. */
+function autopilot(world: SimWorld, input: InputState, opts: PilotOpts = {}): void {
+  steerToward(world, input, greedyTargetX(world));
   input.boost = opts.boost ? (world.boosting ? true : world.energy > 14) : false;
+}
+
+/**
+ * Tier 2 "lookahead": a live reachability planner. Rasterizes worst-case
+ * obstacle envelopes into lane × slice cells over several speed-scaled bands
+ * ahead, runs a forward/backward connectivity DP (like the validator, but on
+ * the live field), and steers toward the surviving corridor — so it never
+ * commits to a near gap that dead-ends, which is exactly how greedy dies.
+ */
+function lookaheadPilot(
+  world: SimWorld,
+  input: InputState,
+  mem: { targetX: number } = { targetX: 0 },
+): void {
+  const craftS = world.distance;
+  const speed = Math.max(world.speed, 20);
+  const DS = 4;
+  const LANE = 0.5;
+  const LANES = Math.round((TRACK.X_LIMIT * 2) / LANE) + 1;
+  const laneX = (l: number) => -TRACK.X_LIMIT + l * LANE;
+  // Plan ~2.4 s ahead (greedy reads ~1.35 s and cannot see dead-ends).
+  const horizon = 10 + speed * 2.4;
+  const slices = Math.min(80, Math.ceil(horizon / DS));
+
+  const blocked: Uint8Array[] = [];
+  for (let k = 0; k < slices; k++) blocked.push(new Uint8Array(LANES));
+  const band0 = craftS + 2;
+  for (const o of world.obstacles) {
+    if (!o.active || !o.collidable) continue;
+    const sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx + 2;
+    if (o.cs + sExt < band0 || o.cs - sExt > band0 + slices * DS) continue;
+    const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
+    const vHalf = o.kind === "ring" ? o.hx : o.hy;
+    if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
+    const k0 = Math.max(0, Math.floor((o.cs - sExt - band0) / DS));
+    const k1 = Math.min(slices - 1, Math.floor((o.cs + sExt - band0) / DS));
+    if (k1 < k0) continue;
+    for (const [x0, x1] of blockedRanges(specOf(o))) {
+      const l0 = Math.max(0, Math.floor((x0 + TRACK.X_LIMIT) / LANE));
+      const l1 = Math.min(LANES - 1, Math.ceil((x1 + TRACK.X_LIMIT) / LANE));
+      for (let k = k0; k <= k1; k++) {
+        const row = blocked[k];
+        for (let l = l0; l <= l1; l++) row[l] = 1;
+      }
+    }
+  }
+
+  // Forward reachability from the craft (sustainable lateral slope ~0.4).
+  const reachLanes = Math.max(1, Math.round((DS * 0.4) / LANE));
+  const cl = Math.round((world.x + TRACK.X_LIMIT) / LANE);
+  const fwd: Uint8Array[] = [];
+  const start = new Uint8Array(LANES);
+  for (let l = Math.max(0, cl - 2); l <= Math.min(LANES - 1, cl + 2); l++) {
+    if (!blocked[0][l]) start[l] = 1;
+  }
+  if (!start.some((v) => v)) start[Math.max(0, Math.min(LANES - 1, cl))] = 1;
+  fwd.push(start);
+  for (let k = 1; k < slices; k++) {
+    const prev = fwd[k - 1];
+    const cur = new Uint8Array(LANES);
+    for (let l = 0; l < LANES; l++) {
+      if (blocked[k][l]) continue;
+      const lo = Math.max(0, l - reachLanes);
+      const hi = Math.min(LANES - 1, l + reachLanes);
+      for (let p = lo; p <= hi; p++) {
+        if (prev[p]) {
+          cur[l] = 1;
+          break;
+        }
+      }
+    }
+    fwd.push(cur);
+  }
+
+  // Deepest reachable slice, then walk one greedy step back toward the craft
+  // picking centered-in-corridor lanes — the near-term steering target is the
+  // path cell a few slices ahead, so commitment always leads somewhere.
+  let deepest = 0;
+  for (let k = slices - 1; k >= 0; k--) {
+    let any = false;
+    for (let l = 0; l < LANES; l++) {
+      if (fwd[k][l]) {
+        any = true;
+        break;
+      }
+    }
+    if (any) {
+      deepest = k;
+      break;
+    }
+  }
+  // Backward pass: lanes that still lead to the deepest slice.
+  const alive: Uint8Array[] = new Array(deepest + 1);
+  alive[deepest] = fwd[deepest];
+  for (let k = deepest - 1; k >= 0; k--) {
+    const next = alive[k + 1];
+    const cur = new Uint8Array(LANES);
+    for (let l = 0; l < LANES; l++) {
+      if (!fwd[k][l]) continue;
+      const lo = Math.max(0, l - reachLanes);
+      const hi = Math.min(LANES - 1, l + reachLanes);
+      for (let n = lo; n <= hi; n++) {
+        if (next[n]) {
+          cur[l] = 1;
+          break;
+        }
+      }
+    }
+    alive[k] = cur;
+  }
+
+  // Steering target: on the slice ~10 m out, the surviving lane whose local
+  // corridor is widest — tie-broken toward the craft and (hysteresis) toward
+  // the previous frame's choice so the pilot never dithers between corridors.
+  const kTarget = Math.min(deepest, Math.max(2, Math.round(10 / DS)));
+  let targetX = world.x;
+  {
+    const row = alive[kTarget];
+    let bestScore = -Infinity;
+    let runStart = -1;
+    for (let l = 0; l <= LANES; l++) {
+      const on = l < LANES && row[l];
+      if (on && runStart === -1) runStart = l;
+      if (!on && runStart !== -1) {
+        const x0 = laneX(runStart);
+        const x1 = laneX(l - 1);
+        const width = x1 - x0;
+        const cx = width > 2.4
+          ? Math.min(Math.max(world.x, x0 + 1.2), x1 - 1.2)
+          : (x0 + x1) / 2;
+        const score =
+          Math.min(width, 10) * 0.55 -
+          Math.abs(cx - world.x) * 0.5 -
+          Math.abs(cx - mem.targetX) * 0.3;
+        if (score > bestScore) {
+          bestScore = score;
+          targetX = cx;
+        }
+        runStart = -1;
+      }
+    }
+  }
+
+  mem.targetX = targetX;
+  steerToward(world, input, targetX);
+  input.boost = false;
+}
+
+interface Envelope {
+  s0: number;
+  s1: number;
+  x0: number;
+  x1: number;
+}
+
+const ROLL_DT = 1 / 60;
+const ROLL_PHASE1 = [-1, -0.55, -0.22, 0, 0.22, 0.55, 1];
+const ROLL_PHASE2 = [-1, -0.4, 0, 0.4, 1];
+const envScratch: Envelope[] = [];
+
+function gatherEnvelopes(world: SimWorld, out: Envelope[], sEnd: number): void {
+  out.length = 0;
+  const s0 = world.distance - 4;
+  for (const o of world.obstacles) {
+    if (!o.active || !o.collidable) continue;
+    // Along-track worst-case extent (mirrors the validator's sHalfExtent).
+    let sExt: number;
+    if (o.motion === Motion.RotateYaw) sExt = Math.hypot(o.hx, o.hs);
+    else if (o.motion === Motion.OrbitXZ) sExt = Math.abs(o.m0) + Math.max(o.hx, o.hs);
+    else {
+      sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
+    }
+    if (o.s + sExt < s0 || o.s - sExt > sEnd) continue;
+    const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
+    const vHalf = o.kind === "ring" ? o.hx : o.hy;
+    if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
+    // Tight slack: the search shaves far closer than the validator plans.
+    for (const [x0, x1] of blockedRanges(specOf(o), 0.06)) {
+      out.push({ s0: o.s - sExt - 1, s1: o.s + sExt + 1, x0, x1 });
+    }
+  }
+  out.sort((a, b) => a.s0 - b.s0);
+}
+
+/** Roll the exact lateral dynamics forward; survival steps + min clearance. */
+function rollout(
+  envs: Envelope[],
+  sStart: number,
+  xStart: number,
+  vStart: number,
+  speed: number,
+  a1: number,
+  a2: number,
+  steps: number,
+): { survived: number; clearance: number } {
+  let s = sStart;
+  let x = xStart;
+  let v = vStart;
+  const maxLat = Math.max(10, speed) * STEER.RATIO;
+  let clearance = Infinity;
+  for (let i = 0; i < steps; i++) {
+    const axis = i < steps / 2 ? a1 : a2;
+    v += axis * Math.max(10, speed) * STEER.ACCEL_K * ROLL_DT;
+    const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
+    v *= Math.exp(-drag * ROLL_DT);
+    if (v > maxLat) v = maxLat;
+    else if (v < -maxLat) v = -maxLat;
+    x += v * ROLL_DT;
+    if (x < -TRACK.X_LIMIT) {
+      x = -TRACK.X_LIMIT;
+      v = Math.max(0, v) * 0.4;
+    } else if (x > TRACK.X_LIMIT) {
+      x = TRACK.X_LIMIT;
+      v = Math.min(0, v) * 0.4;
+    }
+    s += speed * ROLL_DT;
+    for (const e of envs) {
+      if (e.s0 > s) break;
+      if (e.s1 < s) continue;
+      if (x > e.x0 && x < e.x1) return { survived: i, clearance: 0 };
+      const c = Math.min(Math.abs(x - e.x0), Math.abs(x - e.x1));
+      if (c < clearance) clearance = c;
+    }
+  }
+  return { survived: steps, clearance };
+}
+
+/**
+ * Tier 3 "superhuman": TAS-style forward rollout search. Every control tick
+ * it simulates the craft's exact lateral dynamics through a family of
+ * two-phase input candidates against worst-case obstacle envelopes and picks
+ * the sequence that survives longest (ties: clearance). No plan, no model
+ * mismatch — it only dies when *no* input stream survives its horizon, which
+ * is precisely the overdrive wall Phase 2 is supposed to build.
+ */
+function superhumanPilot(world: SimWorld, input: InputState): void {
+  const speed = Math.max(world.speed, 10);
+  const horizonS = 1.9;
+  const steps = Math.round(horizonS / ROLL_DT);
+  gatherEnvelopes(world, envScratch, world.distance + speed * horizonS + 12);
+
+  let bestAxis = 0;
+  let bestSurvived = -1;
+  let bestClearance = -1;
+  for (const a1 of ROLL_PHASE1) {
+    for (const a2 of ROLL_PHASE2) {
+      const r = rollout(
+        envScratch, world.distance, world.x, world.latVel, speed, a1, a2, steps,
+      );
+      const better =
+        r.survived > bestSurvived ||
+        (r.survived === bestSurvived && r.clearance > bestClearance);
+      if (better) {
+        bestSurvived = r.survived;
+        bestClearance = r.clearance;
+        bestAxis = a1;
+      }
+    }
+  }
+  input.axis = bestAxis;
+  input.boost = false;
 }
 
 // --- Conservative-bot survival + pool pressure + first-2km economy gate ----
@@ -679,3 +949,142 @@ console.log("simulation assertions: PASS");
 }
 
 console.log("edge-case assertions: PASS");
+
+// --- Phase 2 wall calibration ------------------------------------------------
+// The treadmill must never stop: every bot tier has to die (no immortal
+// line), and better play has to buy meaningfully more distance — stable,
+// distinct walls per tier. Greedy reads one band, lookahead plans across
+// two, superhuman tracks the validator's solved path and is limited only by
+// steering bandwidth against overdrive speed/density.
+{
+  type Tier = "greedy" | "lookahead" | "superhuman";
+  const TIER_CAP_S: Record<Tier, number> = {
+    greedy: 400,
+    lookahead: 700,
+    superhuman: 1600,
+  };
+
+  // Deep-overdrive pool pressure: the wall runs are where the speed-scaled
+  // horizon maxes out, so render-pool headroom must be measured here, not
+  // just on the 720 m-horizon conservative runs.
+  const wallPeakByKind = new Map<string, number>();
+  let wallPeakShards = 0;
+
+  const runTier = (tier: Tier, seed: string): number => {
+    const world = new SimWorld();
+    world.start(seed, false);
+    const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
+    const laneMem = { targetX: 0 };
+    const maxSteps = Math.floor(TIER_CAP_S[tier] / FIXED_DT);
+    let steps = 0;
+    while (world.status === "running" && steps < maxSteps) {
+      if (tier === "greedy") autopilot(world, input);
+      else if (tier === "lookahead") lookaheadPilot(world, input, laneMem);
+      else superhumanPilot(world, input);
+      world.update(FIXED_DT, input);
+      if (steps % 120 === 0) {
+        const byKind = new Map<string, number>();
+        for (const o of world.obstacles) {
+          if (o.active) byKind.set(o.kind, (byKind.get(o.kind) ?? 0) + 1);
+        }
+        for (const [kind, count] of byKind) {
+          wallPeakByKind.set(kind, Math.max(wallPeakByKind.get(kind) ?? 0, count));
+        }
+        wallPeakShards = Math.max(
+          wallPeakShards,
+          world.pickups.filter((p) => p.active && p.type === "shard").length,
+        );
+      }
+      steps++;
+    }
+    assert.equal(
+      world.status,
+      "dead",
+      `${tier}/${seed} must hit a wall before ${TIER_CAP_S[tier]}s of sim ` +
+      `(still alive at ${world.distance.toFixed(0)}m — the treadmill capped out)`,
+    );
+    assert.equal(world.stats.obstacleDrops, 0, `${tier}/${seed} exhausted the obstacle pool`);
+    assert.equal(world.stats.pickupDrops, 0, `${tier}/${seed} exhausted the pickup pool`);
+    return world.distance;
+  };
+
+  const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
+  // Calibrated 2026-07 (Phase 2 landing). The sim is deterministic, so these
+  // reproduce exactly until tuning constants move — the loose band catches
+  // real difficulty regressions in either direction.
+  const WALL_BASELINE: Record<Tier, number> = {
+    greedy: 1133,
+    lookahead: 2686,
+    superhuman: 18360,
+  };
+  const median = (xs: number[]): number => {
+    const s = [...xs].sort((a, b) => a - b);
+    const mid = s.length / 2;
+    return s.length % 2 ? s[Math.floor(mid)] : (s[mid - 1] + s[mid]) / 2;
+  };
+  /** Robust stability measure: spread of the seeds left after trimming the
+   *  single best and worst run (bots are noisy; the band is the wall). */
+  const trimmedSpread = (xs: number[]): number => {
+    const s = [...xs].sort((a, b) => a - b).slice(1, -1);
+    return s[s.length - 1] / s[0];
+  };
+
+  const walls: Record<Tier, number[]> = { greedy: [], lookahead: [], superhuman: [] };
+  for (const tier of ["greedy", "lookahead", "superhuman"] as Tier[]) {
+    for (const seed of seeds) walls[tier].push(runTier(tier, seed));
+    const sorted = [...walls[tier]].sort((a, b) => a - b);
+    console.log(
+      `wall ${tier.padEnd(10)} ${sorted.map((d) => d.toFixed(0).padStart(6)).join(" ")}  ` +
+      `median=${median(walls[tier]).toFixed(0)}m`,
+    );
+  }
+
+  // Walls are medians over fixed seeds — fully deterministic, so the bands
+  // are exactly reproducible; per-seed spread for the heuristic tiers is
+  // track luck, bounded loosely to catch degenerate regressions.
+  const g = median(walls.greedy);
+  const l = median(walls.lookahead);
+  const s = median(walls.superhuman);
+  assert.ok(
+    l > g * 1.5,
+    `lookahead wall (${l.toFixed(0)}m) must clear greedy (${g.toFixed(0)}m) by ≥1.5×`,
+  );
+  assert.ok(
+    s > l * 1.5,
+    `superhuman wall (${s.toFixed(0)}m) must clear lookahead (${l.toFixed(0)}m) by ≥1.5×`,
+  );
+  assert.ok(
+    s > 8000,
+    `superhuman wall (${s.toFixed(0)}m) should die in overdrive territory (>8km) — ` +
+    "otherwise Phase 2 scaling is never exercised",
+  );
+  for (const tier of ["greedy", "lookahead", "superhuman"] as Tier[]) {
+    assert.ok(
+      trimmedSpread(walls[tier]) < 4.5,
+      `${tier} wall is unstable across seeds (trimmed spread ×${trimmedSpread(walls[tier]).toFixed(2)})`,
+    );
+    const drift = median(walls[tier]) / WALL_BASELINE[tier];
+    assert.ok(
+      drift > 0.55 && drift < 1.8,
+      `${tier} wall drifted ×${drift.toFixed(2)} from its calibrated band ` +
+      `(${median(walls[tier]).toFixed(0)}m vs ${WALL_BASELINE[tier]}m)`,
+    );
+  }
+
+  const wallPools = [...wallPeakByKind.entries()]
+    .map(([kind, count]) => `${kind} ${count}/${POOL_SIZES[kind as keyof typeof POOL_SIZES]}`)
+    .join(", ");
+  console.log(`deep-overdrive render pool peaks: ${wallPools}, shards ${wallPeakShards}`);
+  for (const kind of ["box", "pillar", "crystal", "sphere", "ring"] as const) {
+    assert.ok(
+      (wallPeakByKind.get(kind) ?? 0) < POOL_SIZES[kind],
+      `${kind} render pool lacks headroom at max horizon ` +
+      `(${wallPeakByKind.get(kind)}/${POOL_SIZES[kind]})`,
+    );
+  }
+  assert.ok(
+    wallPeakShards < POOL_SIZES.shard,
+    `shard render pool lacks headroom at max horizon (${wallPeakShards})`,
+  );
+  console.log("wall calibration gate: PASS");
+}

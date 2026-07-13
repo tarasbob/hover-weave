@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
-import { TRACK } from "../core/constants";
+import { LOOKAHEAD } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import { BIOMES, biomeIndexAt } from "../track/biomes";
 import { createObstacleMaterial } from "./obstacleMaterial";
@@ -185,15 +185,16 @@ export function HorizonLandmarks() {
 
   useFrame(() => {
     const distance = world.status === "idle" ? ambient.value : world.renderDistance;
+    const view = env.viewDistance;
     for (const pool of pools) pool.count = 0;
 
     const first = Math.floor((distance - 220) / SLOT_SPACING);
-    const last = Math.ceil((distance + TRACK.GEN_HORIZON + 260) / SLOT_SPACING);
+    const last = Math.ceil((distance + view + 260) / SLOT_SPACING);
     for (let slot = first; slot <= last; slot++) {
       const s = slot * SLOT_SPACING + 520;
       const ahead = s - distance;
-      if (ahead < -260 || ahead > TRACK.GEN_HORIZON + 260) continue;
-      const grow = smoothstep(TRACK.GEN_HORIZON + 220, TRACK.MATERIALIZE_END, ahead);
+      if (ahead < -260 || ahead > view + 260) continue;
+      const grow = smoothstep(view + 220, view * LOOKAHEAD.MATERIALIZE_END_FRAC, ahead);
       if (grow <= 0.002) continue;
 
       for (const part of landmarkParts(slot, biomeIndexAt(s))) {

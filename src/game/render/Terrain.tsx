@@ -24,6 +24,7 @@ import {
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { SCROLL_PERIOD } from "./env";
+import { TERRAIN_DEPTH } from "./visualConstants";
 import type { NodeAny } from "./tsl-utils";
 
 /**
@@ -37,7 +38,7 @@ export function Terrain({ segments }: { segments: [number, number] }) {
 
   const mesh = useMemo(() => {
     const WIDTH = 860;
-    const DEPTH = 720;
+    const DEPTH = TERRAIN_DEPTH;
     const geo = new THREE.PlaneGeometry(WIDTH, DEPTH, segments[0], segments[1]);
     geo.rotateX(-Math.PI / 2);
     const mat = new THREE.MeshStandardNodeMaterial();

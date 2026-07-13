@@ -17,7 +17,7 @@ import {
   step,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
-import { POOL_SIZES, TRACK } from "../core/constants";
+import { LOOKAHEAD, POOL_SIZES } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 
 const SHARD_CAP = POOL_SIZES.shard;
@@ -98,6 +98,9 @@ export function Pickups() {
   useFrame(() => {
     const dist = world.renderDistance;
     const t = world.time;
+    const view = env.viewDistance;
+    const matStart = view * LOOKAHEAD.MATERIALIZE_START_FRAC;
+    const matEnd = view * LOOKAHEAD.MATERIALIZE_END_FRAC;
     let si = 0;
     let hi = 0;
     let nearestShield: { x: number; y: number; z: number; ahead: number } | null = null;
@@ -106,8 +109,8 @@ export function Pickups() {
       if (!p.active) continue;
       const ahead = p.s - dist;
       const z = -ahead;
-      if (z > 30 || ahead > TRACK.GEN_HORIZON) continue;
-      const grow = smoothstep(TRACK.MATERIALIZE_START, TRACK.MATERIALIZE_END, ahead);
+      if (z > 30 || ahead > view) continue;
+      const grow = smoothstep(matStart, matEnd, ahead);
 
       if (p.type === "shard" && si < SHARD_CAP) {
         const index = si;
