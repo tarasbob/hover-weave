@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { RunStats } from "../core/world";
+import { MEDAL_RANK, medalFor, trialById, type Medal } from "../track/trials";
 
 export interface UnlockProgress {
   value: number;
@@ -179,26 +180,46 @@ interface DailyRecord {
   distance: number;
 }
 
+/** Per-trial personal best (roadmap 4.1). */
+export interface TrialRecord {
+  distance: number;
+  medal: Medal | null;
+}
+
 /** Consecutive deaths to the same pattern (forensics streak note). */
 export interface DeathStreak {
   patternId: string;
   count: number;
 }
 
+export interface RunRecordResult {
+  newBestScore: boolean;
+  newBestDistance: boolean;
+  newDailyBest: boolean;
+  newSprintBest: boolean;
+  newTrialBest: boolean;
+  /** Medal earned this run (trials only; may equal the previous best). */
+  medal: Medal | null;
+  /** How many runs in a row have now ended on this pattern (1 = first). */
+  deathStreak: number;
+}
+
 interface MetaState extends MetaSnapshot {
   dailyBest: Record<string, DailyRecord>;
+  /** Best sprint per ISO-week key (roadmap 4.2). */
+  sprintBest: Record<string, DailyRecord>;
+  /** Best run per trial id (roadmap 4.1). */
+  trialBest: Record<string, TrialRecord>;
   deathStreak: DeathStreak | null;
   selectedCraft: string;
   selectedTrail: string;
   /** Ids the player has seen the "unlocked!" toast for. */
   celebrated: string[];
-  recordRun(stats: RunStats, dailyKey: string | null): {
-    newBestScore: boolean;
-    newBestDistance: boolean;
-    newDailyBest: boolean;
-    /** How many runs in a row have now ended on this pattern (1 = first). */
-    deathStreak: number;
-  };
+  /**
+   * Record a finished run. `periodKey` is the UTC day key for daily runs and
+   * the ISO week key for sprints (captured at run start), null otherwise.
+   */
+  recordRun(stats: RunStats, periodKey: string | null): RunRecordResult;
   selectCraft(id: string): void;
   selectTrail(id: string): void;
   markCelebrated(id: string): void;
@@ -219,37 +240,86 @@ export const useMeta = create<MetaState>()(
       bestShardCombo: 0,
       dailiesPlayed: 0,
       dailyBest: {},
+      sprintBest: {},
+      trialBest: {},
       deathStreak: null,
       selectedCraft: "interceptor",
       selectedTrail: "cyan",
       celebrated: ["interceptor", "cyan"],
 
-      recordRun(stats, dailyKey) {
+      recordRun(stats, periodKey) {
         const s = get();
-        const newBestScore = stats.score > s.bestScore;
-        const newBestDistance = stats.distance > s.bestDistance;
+        const mode = stats.mode;
+        // Global score/distance PBs are the endless ladder (daily shares it —
+        // same track rules). Sprint and trials keep their own tables: a 180 s
+        // score attack or a looped drill must not pollute the endless bests.
+        const countsGlobal = mode === "endless" || mode === "daily";
+        const newBestScore = countsGlobal && stats.score > s.bestScore;
+        const newBestDistance = countsGlobal && stats.distance > s.bestDistance;
+
         let newDailyBest = false;
         const dailyBest = { ...s.dailyBest };
         let dailiesPlayed = s.dailiesPlayed;
-        if (dailyKey) {
-          const prev = dailyBest[dailyKey];
+        if (mode === "daily" && periodKey) {
+          const prev = dailyBest[periodKey];
           if (!prev) dailiesPlayed += 1;
           if (!prev || stats.score > prev.score) {
-            dailyBest[dailyKey] = { score: stats.score, distance: Math.round(stats.distance) };
+            dailyBest[periodKey] = { score: stats.score, distance: Math.round(stats.distance) };
             newDailyBest = true;
           }
         }
-        const killer = stats.deathCause?.patternId ?? null;
-        const deathStreak: DeathStreak | null = killer
-          ? {
-              patternId: killer,
-              count: s.deathStreak?.patternId === killer ? s.deathStreak.count + 1 : 1,
+
+        let newSprintBest = false;
+        const sprintBest = { ...s.sprintBest };
+        if (mode === "sprint" && periodKey) {
+          const prev = sprintBest[periodKey];
+          if (!prev || stats.score > prev.score) {
+            sprintBest[periodKey] = { score: stats.score, distance: Math.round(stats.distance) };
+            newSprintBest = true;
+          }
+        }
+
+        let newTrialBest = false;
+        let medal: Medal | null = null;
+        const trialBest = { ...s.trialBest };
+        if (mode === "trial" && stats.trialId) {
+          const trial = trialById(stats.trialId);
+          if (trial) {
+            medal = medalFor(trial, stats.distance);
+            const prev = trialBest[stats.trialId];
+            if (!prev || stats.distance > prev.distance) {
+              const bestMedal =
+                prev?.medal && medal && MEDAL_RANK[prev.medal] > MEDAL_RANK[medal]
+                  ? prev.medal
+                  : (medal ?? prev?.medal ?? null);
+              trialBest[stats.trialId] = {
+                distance: Math.round(stats.distance),
+                medal: bestMedal,
+              };
+              newTrialBest = true;
             }
-          : null;
+          }
+        }
+
+        // Pattern death streaks track learning on the open track; a trial
+        // looping one pattern would trivially inflate them, so it neither
+        // feeds nor resets the streak (nor does a survived sprint finish).
+        const killer = stats.deathCause?.patternId ?? null;
+        const deathStreak: DeathStreak | null =
+          mode === "trial"
+            ? s.deathStreak
+            : killer
+              ? {
+                  patternId: killer,
+                  count: s.deathStreak?.patternId === killer ? s.deathStreak.count + 1 : 1,
+                }
+              : null;
         set({
           deathStreak,
-          bestScore: Math.max(s.bestScore, stats.score),
-          bestDistance: Math.max(s.bestDistance, stats.distance),
+          bestScore: countsGlobal ? Math.max(s.bestScore, stats.score) : s.bestScore,
+          bestDistance: countsGlobal
+            ? Math.max(s.bestDistance, stats.distance)
+            : s.bestDistance,
           totalRuns: s.totalRuns + 1,
           totalDistance: s.totalDistance + stats.distance,
           totalShards: s.totalShards + stats.shards,
@@ -260,12 +330,17 @@ export const useMeta = create<MetaState>()(
           bestShardCombo: Math.max(s.bestShardCombo, stats.bestShardCombo),
           dailiesPlayed,
           dailyBest,
+          sprintBest,
+          trialBest,
         });
         return {
           newBestScore,
           newBestDistance,
           newDailyBest,
-          deathStreak: deathStreak?.count ?? 0,
+          newSprintBest,
+          newTrialBest,
+          medal,
+          deathStreak: mode === "trial" ? 0 : (deathStreak?.count ?? 0),
         };
       },
 
@@ -276,7 +351,7 @@ export const useMeta = create<MetaState>()(
     }),
     {
       name: "cubefield:meta",
-      version: 3,
+      version: 4,
       migrate: (persisted) => {
         const state = persisted as Partial<MetaState>;
         return {
@@ -285,6 +360,9 @@ export const useMeta = create<MetaState>()(
           bestFlowChain: state.bestFlowChain ?? 0,
           bestShardCombo: state.bestShardCombo ?? 0,
           deathStreak: state.deathStreak ?? null,
+          // v4: per-mode ladders (roadmap 4.1 / 4.2).
+          sprintBest: state.sprintBest ?? {},
+          trialBest: state.trialBest ?? {},
         } as MetaState;
       },
     },

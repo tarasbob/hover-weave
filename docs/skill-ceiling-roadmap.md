@@ -100,8 +100,8 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 4.1 | **Trials mode** — single pattern (or authored 45 s course) at escalating speed until death; Bronze/Silver/Gold/Author medals; per-trial PBs. Doubles as the practice room. | todo | `PatternDef.build` + validator make this nearly free |
-| 4.2 | **Sprint mode** — fixed 180 s on a weekly seed, pure score attack. | todo | |
+| 4.1 | **Trials mode** — single pattern (or authored 45 s course) at escalating speed until death; Bronze/Silver/Gold/Author medals; per-trial PBs. Doubles as the practice room. | done | 10-trial roster (`src/game/track/trials.ts`), every skill tag covered. Generator loops the forced pattern on trial-owned curves: difficulty ramps pattern-floor → 1 over 1.4 km, speed climbs linearly without bound (+26 m/s per km — the wall is guaranteed), a synthetic pressure channel shrinks seams / heats mutators long before the endless 8 km overdrive. Fixed seed per trial ⇒ comparable PBs + a true spatial PB ghost (the practice room). Medals on distance, calibrated per-trial against the greedy/lookahead bot walls (`scripts/trialcal.ts`, drift-gated in simtest). `meta.trialBest`, TRIALS overlay, death-screen medal ladder + "next medal was n m further", live medal callouts, and a **DRILL** button on endless deaths whose killer pattern has a trial |
+| 4.2 | **Sprint mode** — fixed 180 s on a weekly seed, pure score attack. | done | ISO-week shared seed (`weeklySeed`, UTC). The sim finishes on the exact step that crosses 180 s of *sim* time (pause can't stretch it) — status `finished`, `finish` event, score/distance frozen at the line; the crossing step is recorded, so replays and ghosts reproduce the finish bit-exactly (gated in simtest via the superhuman pilot). `meta.sprintBest` per week, same-seed spatial ghost, HUD countdown (red pulse in the last 10 s), "TRANSMISSION COMPLETE" results screen (no kill-cam — nothing killed you) |
 | 4.3 | **Heat modifiers** — opt-in burdens (Scarce Shields, No Magnet, Dense Field, Fast Movers, Narrow Gaps, Tin Hull), multiplicative score stack. | todo | Pre-run config; leaderboard stratification |
 | 4.4 | **Pilot Rating** — Elo-ish number from daily percentiles (offline fallback: vs. own history + autopilot baselines). | todo | |
 | 4.5 | **Skill-shaped quests** — rotating challenges ("3 threads in one run", "S-grade a chunk while boosting") layered on the daily seed. | todo | Never time-shaped chores |
@@ -150,6 +150,11 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 | 2026-07-13 | "Race your ghost from the last 500 m" (3.2's post-death idea) folded into the PB ghost + shortfall messaging. | A mid-track spawn would need synthetic sim state (energy/flow/speed at that point) that no real run produced — it breaks the "recording = truth" invariant and the determinism story. The death screen's "n m short" + racing the full ghost covers the same motivational loop. |
 | 2026-07-13 | Recordings carry `REPLAY_VERSION`; the replays store drops mismatched or incomplete recordings on rehydrate and never persists truncated streams as ghosts. | Any future physics/economy retune silently invalidates old input streams — a stale ghost desyncing mid-run is worse than no ghost. |
 | 2026-07-13 | Chunk log (bounds/intensity/validator path) + recycled-obstacle envelope log are always-on sim state, pruned to craft − 380 m. | The kill-cam window reaches ~320 m behind the craft; `DESPAWN_BEHIND` is 26 m, so the field the player just died threading would otherwise already be recycled. Both logs are tiny (≤ 64 chunks / ≤ 600 envelopes) and allocation-light. |
+| 2026-07-13 | Run identity unified into `RunConfig` (`core/modes.ts`): `world.start(config)`, `stats.daily` → `stats.mode` (+`trialId`), recordings carry mode/trialId, ghost keys are `endless` / `daily:<day>` / `sprint:<week>` / `trial:<id>`. | Phase 4 modes change sim/generator behavior, so one object must describe a run everywhere (sim, recording, ghost, PB storage) or the pieces drift apart. `REPLAY_VERSION` stays 1: endless/daily sim paths are bit-identical after the refactor, so pre-4A ghosts survive via a store-level migration. Any future retune of *mode* curves (trial speed ramp, sprint duration) must bump the version — stale mode recordings would desync. |
+| 2026-07-13 | Sprint/trial PBs live in their own tables (`meta.sprintBest` / `meta.trialBest`); global `bestScore`/`bestDistance` stay endless+daily only; trials neither feed nor reset pattern death streaks. | A 180 s score attack and a looped single-pattern drill are different ladders — letting them write the endless PBs (or a trial's forced pattern inflate "3rd run ended by…" streaks) would corrupt the signals Phase 3 built. Lifetime aggregates (runs, shards, near misses…) still count every mode. |
+| 2026-07-13 | Sprint finishes at the **end** of the fixed step that crosses the limit, not the start of the next. | The crossing step is then part of the recording, so a replay/ghost executes the same final step and reproduces the finish bit-exactly — same invariant as death exactness. Sim-time (not wall-time) limit means pausing can't stretch a sprint. |
+| 2026-07-13 | Trial walls come from unbounded linear speed escalation + a trial-local pressure channel (seams/mutators), not validator tightening; medals are per-trial distances calibrated against the greedy/lookahead walls. | `STEER.RATIO` keeps validated geometry dodgeable at any speed, so speed compresses *reaction time* — the human wall — while calibration walls stay measurable. A single global medal curve was rejected: bot walls vary ×10 across patterns (`splitDecision` greedy 198 m vs `pistonCorridor` 2 689 m). Gold sits near the lookahead wall, hand-adjusted per pattern (above it where bots out-react humans on raw speed, below it where movers reward human timing). |
+| 2026-07-13 | Daily/sprint period keys are captured at run **start** and carried to persistence. | A run launched at 23:59 UTC must bank against the course it was launched on, not the day it happened to end — seed and storage key stay consistent across midnight/week boundaries. |
 
 ## Progress log
 
@@ -213,3 +218,30 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
   verified by SSR render against real death data instead). Sprint 4
   candidate: Phase 4 (modes & ladder — trials mode first; `PatternDef.build`
   + validator make it nearly free).
+- **2026-07-13** — **Phase 4 sprint A: new modes (4.1 trials + 4.2 sprint)
+  complete.** Run identity is now one `RunConfig` threaded through sim,
+  recordings, ghosts, and PB storage (see Decision Log — endless/daily ghosts
+  survived the refactor without a replay-version bump). **Trials**: ten
+  fixed-seed single-pattern courses at escalating speed (difficulty ramps to
+  1 by 1.4 km, speed climbs linearly forever, trial-local pressure shrinks
+  seams and heats mutators), Bronze/Silver/Gold/Author distance medals
+  calibrated per-trial against the bot tiers, per-trial PB + spatial ghost,
+  a TRIALS overlay, live medal callouts, a medal ladder on the death screen,
+  and a DRILL button when an endless death's killer pattern has a trial.
+  **Sprint**: 180 s of sim time on a shared ISO-week seed; surviving runs
+  end in a new `finished` state on the exact crossing step, so the finish
+  replays and ghosts bit-exactly; weekly PB table, countdown HUD,
+  "TRANSMISSION COMPLETE" results. New gates: sprint finish exactness
+  (superhuman pilot survives the horizon; re-sim `deepEqual`, ghost lockstep
+  to the same finish, score/distance frozen at the line), trial roster
+  structure, forced-pattern purity (<15% breather fallback; 0% observed),
+  per-trial wall drift bands, trial replay exactness, and 10×8 km trial
+  generation health in gentest (seams 20 m → 12 m under trial pressure).
+  All suites green (sim, gen, graphics, types, lint, production build);
+  in-app flows (trial launch → death → medal → ghost re-arm → drill,
+  sprint config, endless PB/streak intact) verified against the live dev
+  server via the console handle — full visual pass in a real browser still
+  pending as before (embedded browser throttles rAF). Bots extracted to
+  `scripts/pilots.ts`; `scripts/trialcal.ts` is the medal calibration
+  harness. Sprint 4B candidate: the ladder (4.3 heat modifiers, 4.4 pilot
+  rating, 4.5 quests, 4.6 mastery cosmetics).

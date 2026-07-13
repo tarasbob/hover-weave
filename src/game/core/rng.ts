@@ -80,6 +80,22 @@ export function dailyKey(date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+/** Seed shared by every player for a given ISO week (sprint mode). */
+export function weeklySeed(date = new Date()): string {
+  return `cubefield-sprint-${weeklyKey(date)}`;
+}
+
+/** ISO-8601 week key in UTC, e.g. "2026-W28". */
+export function weeklyKey(date = new Date()): string {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  // ISO weeks belong to the year of their Thursday.
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
+  const week = Math.ceil(((d.getTime() - yearStart) / 86400000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
 export function randomSeed(): string {
   return `run-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
 }

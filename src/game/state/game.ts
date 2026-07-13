@@ -2,10 +2,12 @@
 
 import { create } from "zustand";
 import { ENERGY } from "../core/constants";
+import type { GameMode } from "../core/modes";
 import type { DeathForensics, RunStats, SectionGrade } from "../core/world";
+import type { Medal } from "../track/trials";
 
 export type GamePhase = "boot" | "title" | "running" | "paused" | "dead";
-export type GameMode = "endless" | "daily";
+export type { GameMode };
 
 export interface HudSnapshot {
   score: number;
@@ -21,7 +23,12 @@ export interface HudSnapshot {
   speedKmh: number;
   distance: number;
   biome: string;
-  personalBestBeaten: boolean;
+  /** Quiet mode-aware target line, e.g. "PB IN 4,120" / "GOLD IN 214 m". */
+  objective: string | null;
+  /** Replaces the objective once cleared, e.g. "NEW PERSONAL BEST". */
+  objectiveHit: string | null;
+  /** Sim seconds left on a time-limited run (sprint). Null = untimed. */
+  timeLeft: number | null;
   /** Live meters ahead (+) / behind (−) the PB ghost. Null = no ghost armed. */
   ghostDelta: number | null;
 }
@@ -35,11 +42,18 @@ export interface SkillMoment {
 
 export interface RunOutcome {
   stats: RunStats;
+  /** True when the run survived a time-limited horizon (sprint finish). */
+  finished: boolean;
   newBestScore: boolean;
   newBestDistance: boolean;
   newDailyBest: boolean;
+  newSprintBest: boolean;
+  newTrialBest: boolean;
+  /** Medal earned this run (trials only). */
+  medal: Medal | null;
+  /** Mode-aware: vs. global PB (endless/daily) or the weekly best (sprint). */
   scoreDelta: number;
-  /** Meters short of the best distance (negative = new farthest flight). */
+  /** Meters short of the relevant best distance (negative = new farthest). */
   distanceDelta: number;
   /** Consecutive runs ended by this same pattern (1 = first time). */
   deathStreak: number;
@@ -65,18 +79,20 @@ export interface GraphicsStats {
 interface GameState {
   phase: GamePhase;
   mode: GameMode;
+  /** Active trial roster id (mode === "trial" only). */
+  trialId: string | null;
   hud: HudSnapshot;
   outcome: RunOutcome | null;
   /** Set-piece / biome callout toast. */
   callout: { text: string; sub?: string; at: number } | null;
   skillMoment: SkillMoment | null;
   sectionGrade: SectionGradeToast | null;
-  overlay: "none" | "hangar" | "settings" | "help";
+  overlay: "none" | "hangar" | "settings" | "help" | "trials";
   webgpu: boolean | null;
   fps: number;
   graphics: GraphicsStats;
   setPhase(p: GamePhase): void;
-  setMode(m: GameMode): void;
+  setMode(m: GameMode, trialId?: string | null): void;
   setHud(h: HudSnapshot): void;
   setOutcome(o: RunOutcome | null): void;
   setCallout(text: string, sub?: string): void;
@@ -92,11 +108,13 @@ interface GameState {
 export const useGame = create<GameState>((set) => ({
   phase: "boot",
   mode: "endless",
+  trialId: null,
   hud: {
     score: 0, multiplier: 1, flowTier: 0, flowFrac: 0,
     flowGrace: 1, flowChain: 0, shardCombo: 0,
     energy: ENERGY.START, boosting: false, shield: false,
-    speedKmh: 0, distance: 0, biome: "Crystal Desert", personalBestBeaten: false,
+    speedKmh: 0, distance: 0, biome: "Crystal Desert",
+    objective: null, objectiveHit: null, timeLeft: null,
     ghostDelta: null,
   },
   outcome: null,
@@ -115,7 +133,7 @@ export const useGame = create<GameState>((set) => ({
     postCpuMs: 0,
   },
   setPhase: (phase) => set({ phase }),
-  setMode: (mode) => set({ mode }),
+  setMode: (mode, trialId = null) => set({ mode, trialId }),
   setHud: (hud) => set({ hud }),
   setOutcome: (outcome) => set({ outcome }),
   setCallout: (text, sub) => set({ callout: { text, sub, at: Date.now() } }),

@@ -14,6 +14,7 @@ import {
 import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "../src/game/track/patterns";
 import { SETPIECES } from "../src/game/track/setpieces";
 import { mutatePattern } from "../src/game/track/mutators";
+import { TRIALS, trialSeed } from "../src/game/track/trials";
 import { validatePattern, corridorLanes } from "../src/game/track/validator";
 import type { BuildCtx } from "../src/game/core/types";
 
@@ -223,6 +224,64 @@ console.log("\n== deep overdrive: 1 × 60km ==");
     `overdrive must shrink runway seams (early ${earlyGap.toFixed(1)}m -> late ${lateGap.toFixed(1)}m)`,
   );
   assert.ok(lateGap >= 10, "late seams must respect the 10m floor");
+}
+
+// Trial-mode generation (roadmap 4.1): each roster trial loops its forced
+// pattern for 8km on the trial's own escalation curves. The chain must stay
+// healthy — no stalls, only the forced pattern (plus the rare validated
+// breather fallback), and seams must tighten under the trial pressure ramp.
+console.log("\n== trial-mode chained generation, 8km each ==");
+for (const trial of TRIALS) {
+  const gen = new TrackGenerator(createRng(trialSeed(trial.id)), false, trial);
+  let chunks = 0;
+  let fallbackChunks = 0;
+  let prevS1 = 0;
+  let earlyGapSum = 0;
+  let earlyGapN = 0;
+  let lateGapSum = 0;
+  let lateGapN = 0;
+  while (gen.generatedUpTo < 8000) {
+    const before = gen.generatedUpTo;
+    gen.fill(8000, {
+      chunk: (c) => {
+        chunks++;
+        assert.ok(
+          c.patternId === trial.id || c.patternId === "openField",
+          `trial ${trial.id} emitted a foreign chunk: ${c.patternId}`,
+        );
+        if (c.patternId !== trial.id) fallbackChunks++;
+        const gap = c.s0 - prevS1;
+        if (prevS1 > 0) {
+          assert.ok(gap >= 10 - 1e-9, `trial seam collapsed (${gap.toFixed(1)}m)`);
+          if (c.s0 < 1200) {
+            earlyGapSum += gap;
+            earlyGapN++;
+          } else if (c.s0 > 4500) {
+            lateGapSum += gap;
+            lateGapN++;
+          }
+        }
+        prevS1 = c.s1;
+      },
+    });
+    assert.ok(gen.generatedUpTo > before, `trial ${trial.id} generator stalled`);
+  }
+  const fallbackRate = fallbackChunks / chunks;
+  const earlyGap = earlyGapSum / Math.max(1, earlyGapN);
+  const lateGap = lateGapSum / Math.max(1, lateGapN);
+  console.log(
+    `${trial.id.padEnd(18)} chunks=${String(chunks).padStart(3)} ` +
+    `fallbacks=${(fallbackRate * 100).toFixed(1)}% ` +
+    `seam ${earlyGap.toFixed(1)}m -> ${lateGap.toFixed(1)}m`,
+  );
+  assert.ok(
+    fallbackRate < 0.1,
+    `trial ${trial.id} fallback rate ${(fallbackRate * 100).toFixed(1)}% is too high`,
+  );
+  assert.ok(
+    lateGap < earlyGap,
+    `trial pressure must shrink seams (${earlyGap.toFixed(1)}m -> ${lateGap.toFixed(1)}m)`,
+  );
 }
 
 console.log("generator assertions: PASS");

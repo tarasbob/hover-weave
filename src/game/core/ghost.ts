@@ -1,7 +1,7 @@
 import { FIXED_DT, MAX_STEPS_PER_FRAME } from "./constants";
 import type { InputState } from "./input";
 import { clamp01, lerp } from "./mathUtils";
-import { ReplayCursor, type RunRecording } from "./replay";
+import { recordingConfig, ReplayCursor, type RunRecording } from "./replay";
 import { SimWorld } from "./world";
 
 export interface GhostPose {
@@ -12,10 +12,10 @@ export interface GhostPose {
 
 /**
  * Drives a spectral SimWorld through a saved recording in lockstep with the
- * live run's sim clock (roadmap 3.2). Daily ghosts share the live seed — a
- * true spatial ghost on identical geometry. Endless ghosts re-fly their own
- * recorded track, so they render as a pace ghost (may pass through the live
- * run's obstacles by design).
+ * live run's sim clock (roadmap 3.2). Daily, sprint, and trial ghosts share
+ * the live seed — true spatial ghosts on identical geometry. Endless ghosts
+ * re-fly their own recorded track, so they render as a pace ghost (may pass
+ * through the live run's obstacles by design).
  */
 export class GhostDriver {
   world: SimWorld | null = null;
@@ -37,7 +37,7 @@ export class GhostDriver {
         this.world = new SimWorld();
         this.world.recordInputs = false;
       }
-      this.world.start(this.recording.seed, this.recording.daily);
+      this.world.start(recordingConfig(this.recording));
     } else if (this.world) {
       this.world.status = "idle";
       this.world.clearField();

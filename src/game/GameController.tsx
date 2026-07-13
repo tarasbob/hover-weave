@@ -12,7 +12,9 @@ import { GhostDriver } from "./core/ghost";
 import { InputManager } from "./core/input";
 import { EnvState } from "./render/env";
 import { AudioEngine } from "./audio/engine";
-import { dailyKey, dailySeed, randomSeed } from "./core/rng";
+import type { RunConfig } from "./core/modes";
+import { dailyKey, dailySeed, randomSeed, weeklyKey, weeklySeed } from "./core/rng";
+import { trialSeed } from "./track/trials";
 import { useGame, type GameMode } from "./state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "./state/meta";
 import { useReplays } from "./state/replays";
@@ -26,7 +28,8 @@ export interface GameBundle {
   audio: AudioEngine;
   /** Ambient scroll distance used on the title screen. */
   ambient: { value: number };
-  startRun(mode: GameMode): void;
+  startRun(mode: GameMode, trialId?: string): void;
+  /** Re-run the last config (defaults to endless before any run). */
   restart(): void;
   togglePause(): void;
   backToTitle(): void;
@@ -49,24 +52,46 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const audio = new AudioEngine();
     const ambient = { value: 0 };
 
-    const startRun = (mode: GameMode) => {
-      const daily = mode === "daily";
-      const seed = daily ? dailySeed() : randomSeed();
-      useGame.getState().setMode(mode);
+    // The active run's identity, captured at launch: restart replays the
+    // exact config; the period key keeps a run that crosses UTC midnight (or
+    // an ISO week boundary) attached to the seed it was launched with.
+    const active: { config: RunConfig; periodKey: string | null } = {
+      config: { mode: "endless", seed: "" },
+      periodKey: null,
+    };
+
+    const startRun = (mode: GameMode, trialId?: string) => {
+      const config: RunConfig =
+        mode === "daily"
+          ? { mode, seed: dailySeed() }
+          : mode === "sprint"
+            ? { mode, seed: weeklySeed() }
+            : mode === "trial"
+              ? { mode, seed: trialSeed(trialId ?? ""), trialId }
+              : { mode, seed: randomSeed() };
+      // Dev probe: `?start=25000` spawns deep into an endless run (overdrive
+      // speeds/density) for pop-in and pacing checks. Never in production.
+      if (
+        mode === "endless" &&
+        process.env.NODE_ENV === "development" &&
+        typeof location !== "undefined"
+      ) {
+        const skipTo = Math.max(0, Number(new URLSearchParams(location.search).get("start")) || 0);
+        if (skipTo > 0) config.skipTo = skipTo;
+      }
+      active.config = config;
+      active.periodKey = mode === "daily" ? dailyKey() : mode === "sprint" ? weeklyKey() : null;
+
+      useGame.getState().setMode(mode, config.trialId ?? null);
       useGame.getState().setOutcome(null);
       useGame.getState().clearRunFeedback();
-      // Dev probe: `?start=25000` spawns deep into the run (overdrive
-      // speeds/density) for pop-in and pacing checks. Never in production.
-      let skipTo = 0;
-      if (process.env.NODE_ENV === "development" && typeof location !== "undefined") {
-        skipTo = Math.max(0, Number(new URLSearchParams(location.search).get("start")) || 0);
-      }
-      world.start(seed, daily, skipTo);
-      // Race your PB ghost: daily = same seed (true spatial ghost), endless =
-      // your best run's pace on its own track. Skipped runs race nothing.
+      world.start(config);
+      // Race your PB ghost: daily/sprint/trial share the seed (true spatial
+      // ghosts), endless re-flies its own recorded track (pace ghost).
+      // Skipped runs race nothing.
       ghost.arm(
-        useSettings.getState().showGhost && skipTo === 0
-          ? useReplays.getState().ghostFor(mode, dailyKey())
+        useSettings.getState().showGhost && !config.skipTo
+          ? useReplays.getState().ghostFor(mode, active.periodKey, config.trialId ?? null)
           : null,
       );
       useGame.getState().setPhase("running");
@@ -74,7 +99,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
     };
 
     const restart = () => {
-      startRun(useGame.getState().mode);
+      const { config } = active;
+      if (!config.seed) startRun("endless");
+      else startRun(config.mode, config.trialId);
     };
 
     const togglePause = () => {
@@ -112,40 +139,70 @@ export function GameProvider({ children }: { children: ReactNode }) {
   // Wire world events -> stores + audio (render/FX layers subscribe separately).
   useEffect(() => {
     const { world, audio, env } = bundle;
+
+    /** Shared run-end path: a crash and a survived sprint finish differ only
+     *  in FX and forensics — recording, PBs, and unlocks flow identically. */
+    const endRun = (finished: boolean) => {
+      const g = useGame.getState();
+      const meta = useMeta.getState();
+      const before = metaSnapshot(meta);
+      const stats = world.stats;
+      const periodKey =
+        stats.mode === "daily" ? dailyKey() : stats.mode === "sprint" ? weeklyKey() : null;
+      // Mode-aware "how close was I": sprint runs race the week's best score,
+      // trials race their own distance table, endless/daily the global PBs.
+      const prevSprint = periodKey ? meta.sprintBest[periodKey] : undefined;
+      const prevTrial = stats.trialId ? meta.trialBest[stats.trialId] : undefined;
+      const res = meta.recordRun(stats, periodKey);
+      const after = metaSnapshot(useMeta.getState());
+      // Persist the run's input recording — tomorrow's ghost (roadmap 3.1/3.2).
+      const recording = world.getRecording();
+      if (recording) useReplays.getState().recordRun(recording, periodKey);
+      const unlocked: { kind: "craft" | "trail"; id: string; name: string }[] = [];
+      for (const c of CRAFTS) {
+        if (!c.unlock.check(before) && c.unlock.check(after)) {
+          unlocked.push({ kind: "craft", id: c.id, name: c.name });
+        }
+      }
+      for (const t of TRAILS) {
+        if (!t.unlock.check(before) && t.unlock.check(after)) {
+          unlocked.push({ kind: "trail", id: t.id, name: t.name });
+        }
+      }
+      const scoreDelta =
+        stats.mode === "sprint"
+          ? stats.score - (prevSprint?.score ?? 0)
+          : stats.mode === "trial"
+            ? 0
+            : stats.score - before.bestScore;
+      const distanceDelta =
+        stats.mode === "sprint"
+          ? 0
+          : stats.mode === "trial"
+            ? (prevTrial?.distance ?? 0) - stats.distance
+            : before.bestDistance - stats.distance;
+      g.setOutcome({
+        stats: { ...stats },
+        finished,
+        ...res,
+        scoreDelta,
+        distanceDelta,
+        forensics: world.buildForensics(),
+        unlocked,
+      });
+      g.setPhase("dead");
+    };
+
     const offs: (() => void)[] = [
       world.events.on("death", () => {
         env.triggerImpact(1);
         audio.death();
-        const g = useGame.getState();
-        const meta = useMeta.getState();
-        const before = metaSnapshot(meta);
-        const stats = world.stats;
-        const daily = world.daily ? dailyKey() : null;
-        const res = meta.recordRun(stats, daily);
-        const after = metaSnapshot(useMeta.getState());
-        // Persist the run's input recording — tomorrow's ghost (roadmap 3.1/3.2).
-        const recording = world.getRecording();
-        if (recording) useReplays.getState().recordRun(recording, daily);
-        const unlocked: { kind: "craft" | "trail"; id: string; name: string }[] = [];
-        for (const c of CRAFTS) {
-          if (!c.unlock.check(before) && c.unlock.check(after)) {
-            unlocked.push({ kind: "craft", id: c.id, name: c.name });
-          }
-        }
-        for (const t of TRAILS) {
-          if (!t.unlock.check(before) && t.unlock.check(after)) {
-            unlocked.push({ kind: "trail", id: t.id, name: t.name });
-          }
-        }
-        g.setOutcome({
-          stats: { ...stats },
-          ...res,
-          scoreDelta: stats.score - before.bestScore,
-          distanceDelta: before.bestDistance - stats.distance,
-          forensics: world.buildForensics(),
-          unlocked,
-        });
-        g.setPhase("dead");
+        endRun(false);
+      }),
+      world.events.on("finish", () => {
+        env.triggerFlow(1.2);
+        audio.finish();
+        endRun(true);
       }),
       world.events.on("nearMiss", (e) => {
         env.triggerNearMiss(e.precision, e.x - world.x);

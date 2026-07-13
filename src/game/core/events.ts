@@ -1,5 +1,6 @@
 /** Minimal typed event emitter used to decouple sim -> audio/fx/ui. */
 
+import type { RunConfig } from "./modes";
 import type { MotionType, ObstacleKind, PrecisionGrade } from "./types";
 
 export type GameEvents = {
@@ -41,6 +42,8 @@ export type GameEvents = {
     obstacleKind: ObstacleKind;
     motion: MotionType;
   };
+  /** A time-limited run (sprint) reached its horizon alive (roadmap 4.2). */
+  finish: { score: number; distance: number };
   boostStart: undefined;
   boostEnd: undefined;
   flowTier: { tier: number; prev: number };
@@ -54,7 +57,7 @@ export type GameEvents = {
   biome: { index: number; name: string };
   lightning: { intensity: number };
   setpiece: { name: string };
-  runStart: { seed: string; daily: boolean };
+  runStart: { config: RunConfig };
   slabFall: { x: number; s: number };
 };
 

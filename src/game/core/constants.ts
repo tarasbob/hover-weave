@@ -238,8 +238,16 @@ export const RUN = {
   /** Sim timescale during the death slow-mo. */
   DEATH_SLOWMO: 0.22,
   DEATH_SLOWMO_DURATION: 1.15,
+  /** Seconds a finished (not crashed) run glides before the world freezes. */
+  FINISH_GLIDE_DURATION: 1.4,
   /** Invulnerability seconds after a shield absorbs a hit. */
   SHIELD_IFRAMES: 1.1,
+} as const;
+
+/** Sprint mode (roadmap 4.2): fixed-length score attack on a weekly seed. */
+export const SPRINT_MODE = {
+  /** Run length in sim seconds (pause does not consume it). */
+  DURATION: 180,
 } as const;
 
 /** Fixed timestep for the simulation (seconds). */

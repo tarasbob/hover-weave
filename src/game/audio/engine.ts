@@ -417,6 +417,19 @@ export class AudioEngine {
     });
   }
 
+  /** Sprint horizon crossed alive: a rising resolution, not a crash. */
+  finish(): void {
+    this.oneShot(() => {
+      const now = Tone.now();
+      this.chime.triggerAttackRelease("D5", "8n", now, 0.7);
+      this.chime.triggerAttackRelease("A5", "8n", now + 0.09, 0.8);
+      this.chime.triggerAttackRelease("D6", "4n", now + 0.18, 0.9);
+      this.musicFilter.frequency.cancelScheduledValues(now);
+      this.musicFilter.frequency.rampTo(900, 1.2);
+      this.musicBus.gain.rampTo(this.musicVol * 0.7, 1.2);
+    });
+  }
+
   thunderClap(intensity: number): void {
     this.oneShot(() => {
       this.thunderFilter.frequency.value = 150 + intensity * 220;

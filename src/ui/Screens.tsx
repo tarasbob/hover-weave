@@ -6,9 +6,18 @@ import { useGameBundle } from "@/game/GameController";
 import { useGame } from "@/game/state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "@/game/state/meta";
 import { resolveTier, useSettings, type QualityPreset } from "@/game/state/settings";
-import { dailyKey } from "@/game/core/rng";
-import { FLOW } from "@/game/core/constants";
+import { dailyKey, weeklyKey } from "@/game/core/rng";
+import { FLOW, SPRINT_MODE } from "@/game/core/constants";
 import { GRADE_MIN_INTENSITY, type SectionResult } from "@/game/core/world";
+import {
+  MEDAL_ORDER,
+  TRIALS,
+  medalFor,
+  nextMedalFor,
+  trialById,
+  type Medal,
+  type TrialDef,
+} from "@/game/track/trials";
 import { DeathForensicsPanel } from "@/ui/DeathForensics";
 import { GRADE_COLORS } from "@/ui/Hud";
 
@@ -64,6 +73,7 @@ export function Screens() {
       </AnimatePresence>
       <AnimatePresence>
         {overlay === "hangar" && <HangarOverlay key="hangar" />}
+        {overlay === "trials" && <TrialsOverlay key="trials" />}
         {overlay === "settings" && <SettingsOverlay key="settings" />}
         {overlay === "help" && <HelpOverlay key="help" />}
       </AnimatePresence>
@@ -146,6 +156,8 @@ function TitleScreen() {
   const meta = useMeta();
   const today = dailyKey();
   const dailyRecord = meta.dailyBest[today];
+  const week = weeklyKey();
+  const sprintRecord = meta.sprintBest[week];
 
   return (
     <Screen dim={false}>
@@ -167,13 +179,26 @@ function TitleScreen() {
           <button className={`${btnPrimary} text-lg`} onClick={() => bundle.startRun("endless")}>
             LAUNCH
           </button>
-          <button className={btnGhost} onClick={() => bundle.startRun("daily")}>
-            DAILY COURSE
-            <span className="ml-2 text-[10px] text-cyan-200/70 tracking-widest">
-              {dailyRecord ? `BEST ${dailyRecord.score.toLocaleString()}` : today}
-            </span>
-          </button>
+          <div className="flex flex-wrap justify-center gap-2">
+            <button className={btnGhost} onClick={() => bundle.startRun("daily")}>
+              DAILY COURSE
+              <span className="ml-2 text-[10px] text-cyan-200/70 tracking-widest">
+                {dailyRecord ? `BEST ${dailyRecord.score.toLocaleString()}` : today}
+              </span>
+            </button>
+            <button className={btnGhost} onClick={() => bundle.startRun("sprint")}>
+              SPRINT
+              <span className="ml-2 text-[10px] text-fuchsia-200/70 tracking-widest">
+                {sprintRecord
+                  ? `BEST ${sprintRecord.score.toLocaleString()}`
+                  : `${SPRINT_MODE.DURATION}s · ${week}`}
+              </span>
+            </button>
+          </div>
           <div className="mt-1 flex flex-wrap justify-center gap-2">
+            <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("trials")}>
+              TRIALS
+            </button>
             <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("hangar")}>
               HANGAR
             </button>
@@ -261,6 +286,22 @@ function GameOverScreen() {
       worst === null || section.composite < worst.composite ? section : worst,
     null,
   );
+  const trial = mode === "trial" && s.trialId ? trialById(s.trialId) : undefined;
+  // Practice-room shortcut: the pattern that just killed an open-track run
+  // may exist as a trial — offer to drill it (roadmap 4.1).
+  const drillTrial =
+    mode !== "trial" && s.deathCause ? trialById(s.deathCause.patternId) : undefined;
+  const bestBadge =
+    mode === "daily" && outcome.newDailyBest
+      ? "NEW DAILY BEST"
+      : mode === "sprint" && outcome.newSprintBest
+        ? "NEW WEEKLY BEST"
+        : mode === "trial" && outcome.newTrialBest
+          ? "NEW TRIAL BEST"
+          : outcome.newBestScore
+            ? "NEW PERSONAL BEST"
+            : null;
+  const scoreDeltaLabel = mode === "sprint" ? "WEEK BEST" : "PB";
 
   return (
     <Screen>
@@ -274,20 +315,34 @@ function GameOverScreen() {
         aria-labelledby="game-over-title"
       >
         <div className="text-center">
-          <div id="game-over-title" className="font-display text-2xl font-black tracking-[0.3em] text-rose-300">
-            SIGNAL LOST
+          <div
+            id="game-over-title"
+            className={`font-display text-2xl font-black tracking-[0.3em] ${
+              outcome.finished ? "text-emerald-300" : "text-rose-300"
+            }`}
+          >
+            {outcome.finished ? "TRANSMISSION COMPLETE" : "SIGNAL LOST"}
           </div>
-          {(outcome.newBestScore || (mode === "daily" && outcome.newDailyBest)) && (
+          {mode === "trial" && trial && (
+            <div className="mt-1 text-[11px] tracking-[0.3em] text-white/50">
+              TRIAL · {trial.name.toUpperCase()}
+            </div>
+          )}
+          {bestBadge && (
             <motion.div
               initial={{ scale: 0.8, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ delay: 0.3, type: "spring", stiffness: 240 }}
               className="mt-2 inline-block rounded-full bg-gradient-to-r from-amber-300/25 to-fuchsia-400/25 px-4 py-1 font-display text-sm font-bold tracking-[0.2em] text-amber-200"
             >
-              {mode === "daily" && outcome.newDailyBest ? "NEW DAILY BEST" : "NEW PERSONAL BEST"}
+              {bestBadge}
             </motion.div>
           )}
         </div>
+
+        {trial && (
+          <TrialResult trial={trial} distance={s.distance} medal={outcome.medal} />
+        )}
 
         <div className="mt-6 grid grid-cols-2 gap-3 text-center">
           <Stat label="SCORE" value={s.score.toLocaleString()} big />
@@ -305,9 +360,11 @@ function GameOverScreen() {
         <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
           <div className="text-[10px] tracking-[0.24em] text-white/40">RUN READOUT</div>
           <div className="mt-1 text-sm text-white/75">
-            {s.deathCause
-              ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
-              : "SIGNAL TERMINATED"}
+            {outcome.finished
+              ? "FULL TRANSMISSION · CROSSED THE HORIZON INTACT"
+              : s.deathCause
+                ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
+                : "SIGNAL TERMINATED"}
           </div>
           {outcome.deathStreak >= 2 && s.deathCause && (
             <div className="mt-1 text-[11px] font-semibold tracking-[0.14em] text-rose-300/90">
@@ -332,14 +389,26 @@ function GameOverScreen() {
               )}
             </div>
           )}
-          <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
-            {outcome.scoreDelta > 0
-              ? `PB +${outcome.scoreDelta.toLocaleString()}`
-              : outcome.scoreDelta === 0
-                ? "MATCHED PERSONAL BEST"
-              : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of PB`}
-          </div>
-          {outcome.newBestDistance ? (
+          {mode !== "trial" && (
+            <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
+              {outcome.scoreDelta > 0
+                ? `${scoreDeltaLabel} +${outcome.scoreDelta.toLocaleString()}`
+                : outcome.scoreDelta === 0
+                  ? `MATCHED ${scoreDeltaLabel === "PB" ? "PERSONAL BEST" : scoreDeltaLabel}`
+                : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of ${scoreDeltaLabel}`}
+            </div>
+          )}
+          {mode === "trial" ? (
+            outcome.newTrialBest ? (
+              <div className="mt-0.5 text-xs font-semibold text-amber-200">
+                DEEPEST RUN ON THIS TRIAL
+              </div>
+            ) : outcome.distanceDelta > 0 ? (
+              <div className="mt-0.5 text-xs text-white/50">
+                {Math.ceil(outcome.distanceDelta).toLocaleString()} m short of your trial best
+              </div>
+            ) : null
+          ) : outcome.newBestDistance ? (
             <div className="mt-0.5 text-xs font-semibold text-amber-200">
               FARTHEST FLIGHT YET
             </div>
@@ -362,10 +431,19 @@ function GameOverScreen() {
           </div>
         )}
 
-        <div className="mt-7 flex justify-center gap-3">
+        <div className="mt-7 flex flex-wrap justify-center gap-3">
           <button autoFocus className={btnPrimary} onClick={() => bundle.restart()}>
             RETRY
           </button>
+          {drillTrial && (
+            <button
+              className={btnGhost}
+              onClick={() => bundle.startRun("trial", drillTrial.id)}
+              title={`Practice ${drillTrial.name} as a trial`}
+            >
+              DRILL · {drillTrial.name.toUpperCase()}
+            </button>
+          )}
           <button className={btnGhost} onClick={() => bundle.backToTitle()}>
             MENU
           </button>
@@ -373,6 +451,150 @@ function GameOverScreen() {
         <div className="mt-3 text-center text-xs text-white/40">R / ENTER for instant restart</div>
       </motion.div>
     </Screen>
+  );
+}
+
+const MEDAL_STYLES: Record<Medal, { chip: string; label: string }> = {
+  bronze: { chip: "border-orange-300/50 bg-orange-400/15 text-orange-200", label: "BRONZE" },
+  silver: { chip: "border-slate-200/50 bg-slate-200/15 text-slate-100", label: "SILVER" },
+  gold: { chip: "border-amber-300/60 bg-amber-300/20 text-amber-200", label: "GOLD" },
+  author: { chip: "border-fuchsia-300/60 bg-fuchsia-400/20 text-fuchsia-200", label: "AUTHOR" },
+};
+
+/** Medal ladder for one trial: earned rungs lit, the next target called out. */
+function MedalLadder({
+  trial,
+  distance,
+  compact = false,
+}: {
+  trial: TrialDef;
+  distance: number;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`flex flex-wrap items-center ${compact ? "gap-1" : "justify-center gap-1.5"}`}>
+      {MEDAL_ORDER.map((medal) => {
+        const earned = distance >= trial.medals[medal];
+        const style = MEDAL_STYLES[medal];
+        return (
+          <span
+            key={medal}
+            title={`${style.label} at ${trial.medals[medal].toLocaleString()} m`}
+            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-bold tracking-[0.12em] ${
+              earned ? style.chip : "border-white/10 bg-white/[0.03] text-white/30"
+            }`}
+          >
+            {style.label}
+            <span className="font-normal tabular-nums opacity-70">
+              {compact
+                ? `${(trial.medals[medal] / 1000).toFixed(1)}k`
+                : `${trial.medals[medal].toLocaleString()} m`}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Trial run result: the medal earned (or missed) + the ladder. */
+function TrialResult({
+  trial,
+  distance,
+  medal,
+}: {
+  trial: TrialDef;
+  distance: number;
+  medal: Medal | null;
+}) {
+  const next = nextMedalFor(trial, distance);
+  return (
+    <div className="mt-5 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
+      {medal ? (
+        <div
+          className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 font-display text-base font-black tracking-[0.2em] ${MEDAL_STYLES[medal].chip}`}
+        >
+          {MEDAL_STYLES[medal].label} MEDAL
+        </div>
+      ) : (
+        <div className="font-display text-sm font-bold tracking-[0.2em] text-white/55">
+          NO MEDAL — BRONZE AT {trial.medals.bronze.toLocaleString()} m
+        </div>
+      )}
+      {next && (
+        <div className="mt-1.5 text-xs text-white/55 tabular-nums">
+          {MEDAL_STYLES[next.medal].label} was {Math.ceil(next.at - distance).toLocaleString()} m
+          further
+        </div>
+      )}
+      <div className="mt-2.5">
+        <MedalLadder trial={trial} distance={distance} />
+      </div>
+    </div>
+  );
+}
+
+/** Trial roster overlay: the practice room's front door (roadmap 4.1). */
+function TrialsOverlay() {
+  const bundle = useGameBundle();
+  const setOverlay = useGame((s) => s.setOverlay);
+  const trialBest = useMeta((s) => s.trialBest);
+
+  return (
+    <OverlayShell title="TRIALS">
+      <div className="mb-4 text-xs leading-relaxed text-white/55">
+        One pattern, looped, at ever-escalating speed — fly until it breaks you. Fixed course per
+        trial: your best run returns as a ghost. Bronze is a warm-up; Author is a statement.
+      </div>
+      <div className="flex flex-col gap-2.5">
+        {TRIALS.map((trial) => {
+          const best = trialBest[trial.id];
+          const bestMedal = best ? (medalFor(trial, best.distance) ?? best.medal) : null;
+          return (
+            <div
+              key={trial.id}
+              className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/5 p-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-display text-sm font-bold tracking-wider text-white">
+                    {trial.name}
+                  </span>
+                  {bestMedal && (
+                    <span
+                      className={`rounded-md border px-1.5 py-0.5 text-[9px] font-bold tracking-[0.12em] ${MEDAL_STYLES[bestMedal].chip}`}
+                    >
+                      {MEDAL_STYLES[bestMedal].label}
+                    </span>
+                  )}
+                  <span className="text-[9px] tracking-[0.2em] text-white/35">
+                    {trial.skills.join(" · ").toUpperCase()}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] leading-snug text-white/55">{trial.desc}</div>
+                <div className="mt-1.5">
+                  <MedalLadder trial={trial} distance={best?.distance ?? 0} compact />
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3 sm:flex-col sm:items-end sm:gap-1">
+                <div className="text-[10px] tabular-nums text-white/45">
+                  {best ? `PB ${best.distance.toLocaleString()} m` : "NOT FLOWN"}
+                </div>
+                <button
+                  className={`${btnGhost} !px-4 !py-1.5 !text-xs`}
+                  onClick={() => {
+                    setOverlay("none");
+                    bundle.startRun("trial", trial.id);
+                  }}
+                >
+                  FLY
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </OverlayShell>
   );
 }
 
@@ -721,6 +943,13 @@ function HelpOverlay() {
           <Key>R</Key> restarts instantly. <Key>ESC</Key> pauses. The{" "}
           <span className="font-bold text-fuchsia-300">Daily Course</span> is the same seed for
           everyone — one course, one leaderboard-worthy score.
+        </div>
+        <div>
+          <span className="font-bold text-emerald-200">Sprint</span> is a fixed {SPRINT_MODE.DURATION}s
+          score attack on a weekly course — survive the clock and bank everything.{" "}
+          <span className="font-bold text-amber-200">Trials</span> loop a single pattern at
+          ever-rising speed: chase Bronze, Silver, Gold, and Author medals, and race your own
+          ghost line.
         </div>
       </div>
     </OverlayShell>

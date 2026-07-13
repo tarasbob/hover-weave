@@ -1,0 +1,171 @@
+/**
+ * Trials mode (roadmap 4.1): one authored pattern looped at escalating speed
+ * until death. Each trial has a fixed seed (comparable PBs + a true spatial
+ * PB ghost — this is the practice room), distance medals, and its own curves:
+ *
+ * - difficulty ramps from the pattern's authored minimum to 1 over TRIAL.RAMP,
+ * - speed grows linearly without bound (reaction time shrinks — the wall is
+ *   guaranteed even though STEER.RATIO keeps the geometry dodgeable),
+ * - a synthetic pressure channel (the trial's own "overdrive") shrinks seams
+ *   and heats mutators far earlier than the endless 8 km threshold.
+ *
+ * Medals are calibrated against the sim-test autopilot tiers: Bronze is a
+ * warm-up, Silver ≈ the greedy bot's wall, Gold ≈ the lookahead planner's
+ * wall, Author is beyond both — see the calibration gates in simtest.ts.
+ */
+
+import { SPEED } from "../core/constants";
+import { clamp01, lerp } from "../core/mathUtils";
+import type { PatternDef, PatternSkill } from "../core/types";
+import { FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
+
+export type Medal = "bronze" | "silver" | "gold" | "author";
+export const MEDAL_ORDER: readonly Medal[] = ["bronze", "silver", "gold", "author"];
+
+export const TRIAL = {
+  /** Distance over which difficulty ramps from the pattern floor to 1. */
+  RAMP: 1400,
+  /** Speed starts near cruise and climbs linearly: +26 m/s per km. */
+  SPEED_START: 36,
+  SPEED_SLOPE: 0.026,
+  /** Synthetic overdrive: 0 → PRESSURE_MAX across PRESSURE_RAMP × MAX meters. */
+  PRESSURE_RAMP: 900,
+  PRESSURE_MAX: 4,
+} as const;
+
+/** Trial target speed at distance s (before boost/flow modifiers). */
+export function trialSpeedAt(s: number): number {
+  return Math.max(SPEED.BASE, TRIAL.SPEED_START + s * TRIAL.SPEED_SLOPE);
+}
+
+/** Trial pressure channel (drop-in for `overdriveAt` in the generator). */
+export function trialPressureAt(s: number): number {
+  return Math.min(TRIAL.PRESSURE_MAX, s / TRIAL.PRESSURE_RAMP);
+}
+
+export interface TrialDef {
+  /** Roster id (doubles as the pattern id today). */
+  id: string;
+  name: string;
+  desc: string;
+  pattern: PatternDef;
+  skills: PatternSkill[];
+  /** Distance thresholds (m), strictly increasing. */
+  medals: Record<Medal, number>;
+  difficultyAt(s: number): number;
+  speedAt(s: number): number;
+  pressureAt(s: number): number;
+}
+
+export function trialSeed(id: string): string {
+  return `cubefield-trial-${id}`;
+}
+
+const PATTERN_POOL = [...NORMAL_PATTERNS, ...FIELD_PATTERNS];
+
+function defineTrial(
+  patternId: string,
+  name: string,
+  desc: string,
+  medals: Record<Medal, number>,
+): TrialDef {
+  const pattern = PATTERN_POOL.find((p) => p.id === patternId);
+  if (!pattern) throw new Error(`Trial pattern missing from registry: ${patternId}`);
+  if (pattern.biomes) throw new Error(`Trial patterns must be biome-free: ${patternId}`);
+  const floor = pattern.minDifficulty;
+  return {
+    id: patternId,
+    name,
+    desc,
+    pattern,
+    skills: pattern.skills ?? [],
+    medals,
+    difficultyAt: (s) => lerp(floor, 1, clamp01(s / TRIAL.RAMP)),
+    speedAt: trialSpeedAt,
+    pressureAt: trialPressureAt,
+  };
+}
+
+/**
+ * Roster: every skill tag covered, ordered as a rough learning ladder.
+ *
+ * Medal distances calibrated 2026-07 on the deterministic trial seeds via
+ * `scripts/trialcal.ts` (greedy / lookahead walls per trial). Gold sits near
+ * the better bot's wall — above it for mover patterns bots cannot time
+ * (humans can), below it for the raw-speed patterns where a target-chaser
+ * out-reacts humans. Bronze ≈ a few clean pattern reps; Author is a
+ * statement (~1.5× gold, trial speed 130+ m/s). Drift alarms in simtest.
+ */
+export const TRIALS: TrialDef[] = [
+  defineTrial(
+    "slalomGates", "Slalom", "Wide gates, honest rhythm. Learn to carry speed.",
+    { bronze: 400, silver: 800, gold: 1400, author: 2200 },
+  ),
+  defineTrial(
+    "sCurveCanyon", "Canyon Weave", "Commit early — the canyon does not wait.",
+    { bronze: 700, silver: 1800, gold: 3600, author: 5400 },
+  ),
+  defineTrial(
+    "narrowGates", "Needle Row", "Tight gates. Thread them or bleed speed wide.",
+    { bronze: 400, silver: 800, gold: 1400, author: 2200 },
+  ),
+  defineTrial(
+    "combTeeth", "Comb Teeth", "Staggered teeth. Read two rows ahead.",
+    { bronze: 400, silver: 850, gold: 1500, author: 2300 },
+  ),
+  defineTrial(
+    "pendulumAlley", "Pendulums", "Swinging wrecking balls. Time the gaps, not the bobs.",
+    { bronze: 500, silver: 1200, gold: 2200, author: 3400 },
+  ),
+  defineTrial(
+    "pistonCorridor", "Crusher Lane", "Pistons slam on a beat. Find it and stay on it.",
+    { bronze: 700, silver: 2000, gold: 4000, author: 6000 },
+  ),
+  defineTrial(
+    "bladeRotors", "Rotors", "Spinning blades own the center. Steal it back.",
+    { bronze: 600, silver: 1400, gold: 2700, author: 4100 },
+  ),
+  defineTrial(
+    "precisionLadder", "The Ladder", "Each rung tighter than the last. Pure line discipline.",
+    { bronze: 400, silver: 800, gold: 1400, author: 2200 },
+  ),
+  defineTrial(
+    "chaosField", "Debris Field", "No pattern to memorize. Improvise at speed.",
+    { bronze: 450, silver: 900, gold: 1600, author: 2500 },
+  ),
+  defineTrial(
+    "splitDecision", "Split Second", "Forks at speed. Choose once, commit forever.",
+    { bronze: 400, silver: 750, gold: 1300, author: 2000 },
+  ),
+];
+
+export function trialById(id: string): TrialDef | undefined {
+  return TRIALS.find((t) => t.id === id);
+}
+
+/** Highest medal earned at this distance (null below bronze). */
+export function medalFor(trial: TrialDef, distance: number): Medal | null {
+  let earned: Medal | null = null;
+  for (const medal of MEDAL_ORDER) {
+    if (distance >= trial.medals[medal]) earned = medal;
+  }
+  return earned;
+}
+
+/** The next medal above `distance`, if any (for HUD pressure + death screen). */
+export function nextMedalFor(
+  trial: TrialDef,
+  distance: number,
+): { medal: Medal; at: number } | null {
+  for (const medal of MEDAL_ORDER) {
+    if (distance < trial.medals[medal]) return { medal, at: trial.medals[medal] };
+  }
+  return null;
+}
+
+export const MEDAL_RANK: Record<Medal, number> = {
+  bronze: 1,
+  silver: 2,
+  gold: 3,
+  author: 4,
+};

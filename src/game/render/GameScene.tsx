@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { densityFogFactor, fog, positionWorld, smoothstep } from "three/tsl";
 import { useGameBundle } from "../GameController";
+import { weeklyKey } from "../core/rng";
+import { MEDAL_RANK, medalFor, nextMedalFor, trialById } from "../track/trials";
 import { useGame } from "../state/game";
 import { useMeta } from "../state/meta";
 import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
@@ -41,6 +43,14 @@ export function GameScene() {
   const fpsEma = useRef(16.7);
   const drs = useRef({ scale: 1, cooldown: 0 });
   const perfSample = useRef({ calls: 0, triangles: 0, frames: 0, sampledFrames: 0 });
+  /** Highest medal rank celebrated this run (trial medal callouts). */
+  const medalRank = useRef(0);
+
+  useEffect(() => {
+    return world.events.on("runStart", () => {
+      medalRank.current = 0;
+    });
+  }, [world]);
 
   useEffect(() => {
     drs.current = { scale: 1, cooldown: 2 };
@@ -104,7 +114,7 @@ export function GameScene() {
     if (input.consumeRestart()) {
       if (g.overlay === "none") {
         if (g.phase === "dead") bundle.restart();
-        else if (g.phase === "title") bundle.startRun(g.mode);
+        else if (g.phase === "title") bundle.restart();
       }
     }
     if (input.consumePause()) {
@@ -149,8 +159,40 @@ export function GameScene() {
     if (hudClock.current >= HUD_INTERVAL) {
       hudClock.current = 0;
       if (g.phase === "running" || g.phase === "paused" || g.phase === "dead") {
+        // Mode-aware pressure line: global PB for endless/daily, week best
+        // for sprint, the next medal for trials (roadmap 3.5 / 4.1 / 4.2).
+        const meta = useMeta.getState();
+        const score = Math.floor(world.score);
+        let objective: string | null = null;
+        let objectiveHit: string | null = null;
+        if (world.mode === "sprint") {
+          const best = meta.sprintBest[weeklyKey()]?.score ?? 0;
+          if (score > best) objectiveHit = "NEW WEEKLY BEST";
+          else if (best > 0) objective = `WEEK BEST IN ${(best - score).toLocaleString()}`;
+        } else if (world.mode === "trial" && world.trialId) {
+          const trial = trialById(world.trialId);
+          if (trial) {
+            const earned = medalFor(trial, world.distance);
+            const rank = earned ? MEDAL_RANK[earned] : 0;
+            if (rank > medalRank.current && world.status === "running") {
+              medalRank.current = rank;
+              g.setCallout(`${earned!.toUpperCase()} MEDAL`, trial.name.toUpperCase());
+            }
+            const next = nextMedalFor(trial, world.distance);
+            if (next) {
+              const gap = Math.ceil(next.at - world.distance);
+              objective = `${next.medal.toUpperCase()} IN ${gap.toLocaleString()} m`;
+            } else {
+              objectiveHit = "AUTHOR MEDAL CLEARED";
+            }
+          }
+        } else {
+          const best = meta.bestScore;
+          if (score > best) objectiveHit = "NEW PERSONAL BEST";
+          else if (best > 0) objective = `PB IN ${(best - score).toLocaleString()}`;
+        }
         g.setHud({
-          score: Math.floor(world.score),
+          score,
           multiplier: world.flowMultiplier,
           flowTier: world.flowTier,
           flowFrac: (world.flowPoints % 5) / 5,
@@ -163,7 +205,9 @@ export function GameScene() {
           speedKmh: Math.round(world.speed * 3.6),
           distance: Math.floor(world.distance),
           biome: env.biomeLabelAt(world.distance),
-          personalBestBeaten: world.score > useMeta.getState().bestScore,
+          objective,
+          objectiveHit,
+          timeLeft: world.timeLimit > 0 ? Math.max(0, world.timeLimit - world.time) : null,
           ghostDelta: showGhost ? ghost.deltaTo(world.distance) : null,
         });
       }

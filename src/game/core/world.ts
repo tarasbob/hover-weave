@@ -8,6 +8,7 @@ import {
   MAX_STEPS_PER_FRAME,
   RUN,
   SPEED,
+  SPRINT_MODE,
   STEER,
   THREAD,
   TRACK,
@@ -15,6 +16,7 @@ import {
 import { Emitter } from "./events";
 import type { InputState } from "./input";
 import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils";
+import type { GameMode, RunConfig } from "./modes";
 import { InputRecorder, quantizeAxis, type RunRecording } from "./replay";
 import { createRng } from "./rng";
 import {
@@ -29,6 +31,7 @@ import {
 } from "./types";
 import { biomeIndexAt, BIOMES } from "../track/biomes";
 import { speedAt, TrackGenerator, type GeneratedChunk } from "../track/generator";
+import { trialById, type TrialDef } from "../track/trials";
 
 // Sized for the LOOKAHEAD.MAX horizon (~2.2× the 720 m baseline peaks).
 const OBSTACLE_CAP = 2600;
@@ -206,7 +209,10 @@ export interface RunStats {
   pickupDrops: number;
   duration: number;
   seed: string;
-  daily: boolean;
+  mode: GameMode;
+  /** Trial roster id (mode === "trial" only). */
+  trialId: string | null;
+  /** Null for a survived time-limited run (sprint finish). */
   deathCause: DeathCause | null;
   /** Per-chunk line grades in traversal order (roadmap 3.4). */
   sections: SectionResult[];
@@ -221,9 +227,16 @@ export interface RunStats {
 export class SimWorld {
   readonly events = new Emitter();
 
-  // Run identity.
+  // Run identity (roadmap Phase 4: one RunConfig describes the whole run).
   seed = "";
-  daily = false;
+  mode: GameMode = "endless";
+  trialId: string | null = null;
+  private config: RunConfig = { mode: "endless", seed: "" };
+  private trial: TrialDef | null = null;
+  /** Sim seconds after which a surviving run finishes (0 = unlimited). */
+  timeLimit = 0;
+  /** Ambient target-speed curve (trials swap in their own escalation). */
+  private speedCurve: (s: number) => number = speedAt;
   status: RunStatus = "idle";
 
   // Craft state.
@@ -337,7 +350,7 @@ export class SimWorld {
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
-      seed: "", daily: false, deathCause: null,
+      seed: "", mode: "endless", trialId: null, deathCause: null,
       sections: [], lineRating: null,
     };
   }
@@ -354,13 +367,20 @@ export class SimWorld {
 
   /**
    * Reset everything and start a new run. Instant — all pools are reused.
-   * `skipTo` (dev/testing) jumps the craft deep into the run: chunks up to
-   * the skip point are generated and discarded (same RNG stream as playing
-   * there), so the field around the craft matches a real run exactly.
+   * `config.skipTo` (dev/testing) jumps the craft deep into the run: chunks
+   * up to the skip point are generated and discarded (same RNG stream as
+   * playing there), so the field around the craft matches a real run exactly.
    */
-  start(seed: string, daily: boolean, skipTo = 0): void {
+  start(config: RunConfig): void {
+    const seed = config.seed;
+    const skipTo = config.skipTo ?? 0;
+    this.config = config;
     this.seed = seed;
-    this.daily = daily;
+    this.mode = config.mode;
+    this.trialId = config.mode === "trial" ? (config.trialId ?? null) : null;
+    this.trial = this.trialId ? (trialById(this.trialId) ?? null) : null;
+    this.timeLimit = config.mode === "sprint" ? SPRINT_MODE.DURATION : 0;
+    this.speedCurve = this.trial ? this.trial.speedAt : speedAt;
     this.status = "running";
     this.x = 0;
     this.latVel = 0;
@@ -393,7 +413,8 @@ export class SimWorld {
     this.lastBiomeIndex = 0;
     this.stats = this.emptyStats();
     this.stats.seed = seed;
-    this.stats.daily = daily;
+    this.stats.mode = this.mode;
+    this.stats.trialId = this.trialId;
     // Recording is only meaningful for real runs from the start line.
     this.recorder.reset(this.recordInputs && skipTo === 0);
     this.chunkLog.length = 0;
@@ -412,11 +433,11 @@ export class SimWorld {
     for (let i = PICKUP_CAP - 1; i >= 0; i--) this.pickupFree.push(i);
     this.debugChunks.length = 0;
 
-    this.generator = new TrackGenerator(createRng(seed), this.collectDebug);
+    this.generator = new TrackGenerator(createRng(seed), this.collectDebug, this.trial);
     if (skipTo > 0) {
       this.distance = skipTo;
       this.prevDistance = skipTo;
-      this.speed = speedAt(skipTo);
+      this.speed = this.speedCurve(skipTo);
       this.time = SPEED.LAUNCH_RAMP; // Skip the launch ramp too.
       this.lastBiomeIndex = biomeIndexAt(skipTo);
       this.generator.fill(Math.max(0, skipTo - TRACK.DESPAWN_BEHIND - 50), {
@@ -424,7 +445,7 @@ export class SimWorld {
       });
     }
     this.streamAhead();
-    this.events.emit("runStart", { seed, daily });
+    this.events.emit("runStart", { config });
     this.events.emit("biome", {
       index: this.lastBiomeIndex,
       name: BIOMES[this.lastBiomeIndex].label,
@@ -436,10 +457,13 @@ export class SimWorld {
     if (this.status === "idle") return;
 
     let scale = 1;
-    if (this.status === "dead") {
+    if (this.status === "dead" || this.status === "finished") {
       this.deathTimer += dt;
-      scale = RUN.DEATH_SLOWMO;
-      if (this.deathTimer > RUN.DEATH_SLOWMO_DURATION) return; // Freeze world.
+      // A crash gets the slow-mo beat; a survived finish glides at full speed.
+      const slowMo = this.status === "dead";
+      if (slowMo) scale = RUN.DEATH_SLOWMO;
+      const freezeAfter = slowMo ? RUN.DEATH_SLOWMO_DURATION : RUN.FINISH_GLIDE_DURATION;
+      if (this.deathTimer > freezeAfter) return; // Freeze world.
     }
 
     this.accumulator += Math.min(dt, 0.25) * scale;
@@ -500,7 +524,7 @@ export class SimWorld {
     // pre-uncap maximum tier — speed stays a boost-driven ratchet.
     const flowBonus =
       1 + Math.min(this.flowTier, FLOW.SPEED_BONUS_TIER_CAP) * FLOW.SPEED_BONUS_PER_TIER;
-    let targetSpeed = speedAt(this.distance) * launch * flowBonus;
+    let targetSpeed = this.speedCurve(this.distance) * launch * flowBonus;
 
     // Boost.
     if (alive) {
@@ -624,6 +648,13 @@ export class SimWorld {
       // 30 Hz line trace for the kill-cam (roadmap 3.3).
       this.stepCounter++;
       if (this.stepCounter % TRACE_EVERY_STEPS === 0) this.pushTrace();
+
+      // Time-limited runs finish at the end of the step that crosses the
+      // horizon — the step was recorded, so a replay/ghost re-simulates the
+      // finish bit-exactly (the epsilon absorbs fixed-step float accumulation).
+      if (this.timeLimit > 0 && this.time >= this.timeLimit - 1e-9) {
+        this.onFinish();
+      }
     }
   }
 
@@ -688,7 +719,7 @@ export class SimWorld {
       traversed,
       flowUptime,
       avgSpeed: sec.speedSum / sec.steps,
-      baseSpeed: speedAt((sec.s0 + sec.s1) / 2),
+      baseSpeed: this.speedCurve((sec.s0 + sec.s1) / 2),
     });
     this.stats.sections.push({
       patternId: sec.patternId, intensity: sec.intensity,
@@ -743,9 +774,7 @@ export class SimWorld {
 
   /** The finished run's input recording (null while recording is disabled). */
   getRecording(): RunRecording | null {
-    return this.recorder.toRecording(
-      this.seed, this.daily, this.stats.score, this.stats.distance,
-    );
+    return this.recorder.toRecording(this.config, this.stats.score, this.stats.distance);
   }
 
   /**
@@ -1247,6 +1276,24 @@ export class SimWorld {
       patternId: o.patternId,
       obstacleKind: o.kind,
       motion: o.motion,
+    });
+  }
+
+  /** A time-limited run survived to its horizon (sprint, roadmap 4.2). */
+  private onFinish(): void {
+    this.status = "finished";
+    this.deathTimer = 0;
+    this.deathX = this.x;
+    this.deathSpeed = this.speed;
+    this.pushTrace();
+    this.finalizeSection(); // The section in progress at the line still counts.
+    this.stats.lineRating = this.computeLineRating();
+    this.stats.score = Math.floor(this.score);
+    this.stats.distance = this.distance;
+    this.stats.duration = this.time;
+    this.events.emit("finish", {
+      score: this.stats.score,
+      distance: this.distance,
     });
   }
 

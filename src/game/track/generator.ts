@@ -13,6 +13,7 @@ import { biomeIndexAt } from "./biomes";
 import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
 import { SETPIECES } from "./setpieces";
 import { mutatePattern } from "./mutators";
+import type { TrialDef } from "./trials";
 import {
   openLanes,
   blockedRanges,
@@ -76,9 +77,15 @@ export interface GeneratorEmit {
  * mutations — is validated by the lane-reachability solver before being
  * accepted; corridors chain so the exit of one pattern always feeds legal
  * entries of the next.
+ *
+ * In trial mode (roadmap 4.1) the generator loops a single forced pattern
+ * and swaps the ambient difficulty/speed/pressure curves for the trial's
+ * own escalation — everything else (mutators, validation, corridor
+ * chaining, pickups) works exactly as on the endless track.
  */
 export class TrackGenerator {
   private rng: Rng;
+  private readonly trial: TrialDef | null;
   generatedUpTo = 0;
   private exitLanes: Uint8Array;
   private sinceSetpiece = 0;
@@ -98,9 +105,10 @@ export class TrackGenerator {
   rejections = 0;
   fallbacks = 0;
 
-  constructor(rng: Rng, debug = false) {
+  constructor(rng: Rng, debug = false, trial: TrialDef | null = null) {
     this.rng = rng;
     this.debug = debug;
+    this.trial = trial;
     this.exitLanes = openLanes();
     this.nextSetpieceAt = rng.range(620, 900);
     this.nextFieldAt = rng.range(240, 440);
@@ -113,11 +121,25 @@ export class TrackGenerator {
     }
   }
 
+  /** Ambient difficulty here (trials ramp on their own curve). */
+  private difficultyFor(s: number): number {
+    return this.trial ? this.trial.difficultyAt(s) : difficultyAt(s);
+  }
+
+  private speedFor(s: number): number {
+    return this.trial ? this.trial.speedAt(s) : speedAt(s);
+  }
+
+  /** Late-pressure channel: endless overdrive, or the trial's own ramp. */
+  private pressureFor(s: number): number {
+    return this.trial ? this.trial.pressureAt(s) : overdriveAt(s);
+  }
+
   private nextChunk(): GeneratedChunk {
     // Randomized obstacle-free seam between patterns: repositioning slack for
     // the craft and dilation room for the validator. Overdrive squeezes the
     // seams toward a ~10–14 m floor so late track never offers free breath.
-    const seamScale = 1 / (1 + 0.35 * overdriveAt(this.generatedUpTo));
+    const seamScale = 1 / (1 + 0.35 * this.pressureFor(this.generatedUpTo));
     const runway = this.rng.range(
       Math.max(10, 18 * seamScale),
       Math.max(14, 34 * seamScale),
@@ -126,10 +148,10 @@ export class TrackGenerator {
 
     // Per-chunk difficulty surprise (after the opening stretch) keeps the
     // same distance from playing identically across runs.
-    const baseDifficulty = difficultyAt(s0);
+    const baseDifficulty = this.difficultyFor(s0);
     const difficulty =
       s0 > 300 ? clamp01(baseDifficulty + this.rng.range(-0.08, 0.12)) : baseDifficulty;
-    const speed = speedAt(s0);
+    const speed = this.speedFor(s0);
     const biome = biomeIndexAt(s0);
 
     const corridor = widestCorridor(this.exitLanes);
@@ -162,6 +184,7 @@ export class TrackGenerator {
         tryPattern.category,
         baseCtx.entryX,
         tryCtx.difficulty,
+        this.pressureFor(s0),
       );
       const v = validatePattern(
         built.obstacles,
@@ -259,6 +282,9 @@ export class TrackGenerator {
     entryHalf: number,
     s0: number,
   ): PatternDef {
+    // Trials loop their pattern from the first chunk; the validator retry
+    // ladder (difficulty backoff -> breather) still applies per chunk.
+    if (this.trial) return this.trial.pattern;
     if (this.forceBreather) return BREATHER;
 
     const eligible = (p: PatternDef) =>

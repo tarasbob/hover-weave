@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { MODE_LABELS } from "@/game/core/modes";
+import { trialById } from "@/game/track/trials";
 import { useGame, type SectionGradeToast, type SkillMoment } from "@/game/state/game";
 import { useMeta } from "@/game/state/meta";
 import { useSettings } from "@/game/state/settings";
@@ -11,6 +13,7 @@ export function Hud() {
   const phase = useGame((s) => s.phase);
   const hud = useGame((s) => s.hud);
   const mode = useGame((s) => s.mode);
+  const trialId = useGame((s) => s.trialId);
   const callout = useGame((s) => s.callout);
   const skillMoment = useGame((s) => s.skillMoment);
   const sectionGrade = useGame((s) => s.sectionGrade);
@@ -35,14 +38,14 @@ export function Hud() {
         <div className="text-3xl font-bold tabular-nums text-white drop-shadow-[0_0_12px_rgba(90,220,255,0.55)] sm:text-4xl">
           {hud.score.toLocaleString()}
         </div>
-        {/* PB pressure: a quiet live delta that flips gold once you're ahead. */}
-        {hud.personalBestBeaten ? (
+        {/* Pressure line: a quiet mode-aware target that flips gold once cleared. */}
+        {hud.objectiveHit ? (
           <div className="mt-0.5 text-[10px] font-bold tracking-[0.22em] text-amber-200">
-            NEW PERSONAL BEST
+            {hud.objectiveHit}
           </div>
-        ) : bestScore > 0 ? (
+        ) : hud.objective ? (
           <div className="mt-0.5 text-[10px] tracking-[0.22em] text-white/35 tabular-nums">
-            PB IN {Math.max(0, bestScore - hud.score).toLocaleString()}
+            {hud.objective}
           </div>
         ) : null}
         <div className="mt-2 flex max-w-[62vw] flex-wrap items-center gap-1.5 sm:gap-2">
@@ -79,15 +82,32 @@ export function Hud() {
         </div>
       </div>
 
-      {/* Mode / biome / best */}
+      {/* Mode / timer / biome / best */}
       <div className="absolute right-3 top-3 text-right sm:right-5 sm:top-5">
         <div className="text-[11px] tracking-[0.3em] text-white/50">
-          {mode === "daily" ? "DAILY COURSE" : "ENDLESS"}
+          {mode === "trial" && trialId
+            ? `TRIAL · ${(trialById(trialId)?.name ?? trialId).toUpperCase()}`
+            : MODE_LABELS[mode]}
         </div>
+        {hud.timeLeft !== null && (
+          <div
+            className={`mt-0.5 text-xl font-bold tabular-nums ${
+              hud.timeLeft <= 10
+                ? `text-rose-300 ${reduceMotion ? "" : "animate-pulse"}`
+                : "text-white/85"
+            }`}
+            role="timer"
+            aria-label="Sprint time remaining"
+          >
+            {formatTimer(hud.timeLeft)}
+          </div>
+        )}
         <div className="text-sm text-white/80">{hud.biome}</div>
-        <div className="mt-1 text-[11px] tabular-nums text-white/40">
-          BEST {bestScore.toLocaleString()}
-        </div>
+        {mode !== "trial" && (
+          <div className="mt-1 text-[11px] tabular-nums text-white/40">
+            BEST {bestScore.toLocaleString()}
+          </div>
+        )}
         {showFps && (
           <div className="mt-1 font-mono text-[10px] tabular-nums text-emerald-300/80">
             <div>{fps} FPS · DPR {graphics.dpr.toFixed(2)} · DRS {graphics.drsScale.toFixed(2)}</div>
@@ -231,6 +251,15 @@ function SectionGradeChip({ toast }: { toast: SectionGradeToast | null }) {
 
 function formatPatternId(id: string): string {
   return id.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase();
+}
+
+/** Sprint countdown, m:ss.d — precise enough to feel the last seconds. */
+function formatTimer(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds - m * 60;
+  const whole = Math.floor(s);
+  const tenth = Math.floor((s - whole) * 10);
+  return `${m}:${String(whole).padStart(2, "0")}.${tenth}`;
 }
 
 function boostHint(): string {

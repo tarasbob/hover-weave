@@ -23,12 +23,12 @@ export function mutatePattern(
   category: PatternCategory,
   entryX = 0,
   difficulty = 0,
-): MutationLog {
-  const log: MutationLog = { mirrored: false, scatterAdded: 0, jittered: false, moverBoost: 1 };
   // Late-game aggression channel: probabilities cap, magnitudes grow slowly
   // (log) — determinism is safe because od is a pure function of s0 and no
-  // rng draw becomes conditional on it.
-  const od = overdriveAt(s0);
+  // rng draw becomes conditional on it. Trials pass their own pressure ramp.
+  od: number = overdriveAt(s0),
+): MutationLog {
+  const log: MutationLog = { mirrored: false, scatterAdded: 0, jittered: false, moverBoost: 1 };
 
   // Mirror the whole pattern left<->right. Only safe when the entry corridor
   // is roughly centered — patterns author their lead-in relative to entryX,

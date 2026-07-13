@@ -10,6 +10,7 @@
 
 import { FIXED_DT } from "./constants";
 import type { InputState } from "./input";
+import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
 export const REPLAY_VERSION = 1;
@@ -46,7 +47,9 @@ export function unpackBoost(packed: number): boolean {
 export interface RunRecording {
   v: number;
   seed: string;
-  daily: boolean;
+  mode: GameMode;
+  /** Trial roster id (mode === "trial" only). */
+  trialId?: string;
   /** Total fixed steps recorded (steps taken while the run was alive). */
   steps: number;
   /** False if the stream was truncated by the size cap (not replayable). */
@@ -58,6 +61,13 @@ export interface RunRecording {
   distance: number;
   /** Epoch ms when the run ended. */
   at: number;
+}
+
+/** The RunConfig a recording replays under (recordings never carry skipTo). */
+export function recordingConfig(rec: RunRecording): RunConfig {
+  const config: RunConfig = { mode: rec.mode, seed: rec.seed };
+  if (rec.trialId !== undefined) config.trialId = rec.trialId;
+  return config;
 }
 
 /** Per-fixed-step recorder owned by the sim. */
@@ -93,12 +103,12 @@ export class InputRecorder {
     this.steps++;
   }
 
-  toRecording(seed: string, daily: boolean, score: number, distance: number): RunRecording | null {
+  toRecording(config: RunConfig, score: number, distance: number): RunRecording | null {
     if (!this.enabled || this.steps === 0) return null;
-    return {
+    const rec: RunRecording = {
       v: REPLAY_VERSION,
-      seed,
-      daily,
+      seed: config.seed,
+      mode: config.mode,
       steps: this.steps,
       complete: this.complete,
       data: [...this.data],
@@ -106,6 +116,8 @@ export class InputRecorder {
       distance,
       at: Date.now(),
     };
+    if (config.mode === "trial" && config.trialId !== undefined) rec.trialId = config.trialId;
+    return rec;
   }
 }
 
@@ -140,7 +152,7 @@ export class ReplayCursor {
 /**
  * Re-simulate a recording on the given world (one fixed step per recorded
  * frame — `update(FIXED_DT)` runs exactly one step). Reproduces the original
- * run bit-exactly: same stats, same events, same death.
+ * run bit-exactly: same stats, same events, same death (or sprint finish).
  */
 export function resimulate(
   rec: RunRecording,
@@ -148,7 +160,7 @@ export function resimulate(
   onStep?: (world: SimWorld, step: number) => void,
 ): SimWorld {
   world.recordInputs = false;
-  world.start(rec.seed, rec.daily);
+  world.start(recordingConfig(rec));
   const cursor = new ReplayCursor(rec);
   const input: InputState = { axis: 0, boost: false, restart: false, pause: false };
   let step = 0;

@@ -162,4 +162,4 @@ export interface PatternDef {
   build(ctx: BuildCtx): PatternResult;
 }
 
-export type RunStatus = "idle" | "running" | "dead";
+export type RunStatus = "idle" | "running" | "dead" | "finished";
