@@ -25,6 +25,12 @@ export const metadata: Metadata = {
     siteName: "Hover Weave",
     type: "website",
   },
+  // Installed-to-home-screen iOS runs chrome-free (see app/manifest.ts).
+  appleWebApp: {
+    capable: true,
+    title: "Hover Weave",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
@@ -33,6 +39,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // Draw edge-to-edge under the notch; HUD respects safe-area insets.
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

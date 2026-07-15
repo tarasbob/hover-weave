@@ -28,8 +28,6 @@ export class InputManager {
   private pointers = new Map<number, number>();
   private pointerTarget: HTMLElement | null = null;
   private detach: (() => void) | null = null;
-  private gestureCallbacks: (() => void)[] = [];
-  private gestureFired = false;
   private gamepadRestartHeld = false;
   private gamepadPauseHeld = false;
 
@@ -37,7 +35,6 @@ export class InputManager {
     this.dispose();
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
-      this.fireGesture();
       const inUi = e.target instanceof Element && e.target.closest("[data-ui]");
       const globalShortcut = e.code === "KeyR" || e.code === "Escape" || e.code === "KeyP";
       if (inUi && !globalShortcut) return;
@@ -56,7 +53,6 @@ export class InputManager {
 
     this.pointerTarget = target;
     const onPointerDown = (e: PointerEvent) => {
-      this.fireGesture();
       // Fingers on UI never enter the map, so lifting them can't cancel or
       // boost the fingers that are actually steering.
       if (e.target instanceof Element && e.target.closest("[data-ui]")) return;
@@ -93,25 +89,6 @@ export class InputManager {
     this.detach = null;
     this.pointers.clear();
     this.pointerTarget = null;
-  }
-
-  /** Register a one-shot callback for the first user gesture (audio unlock). */
-  onFirstGesture(cb: () => void): () => void {
-    if (this.gestureFired) {
-      cb();
-      return () => undefined;
-    }
-    this.gestureCallbacks.push(cb);
-    return () => {
-      this.gestureCallbacks = this.gestureCallbacks.filter((candidate) => candidate !== cb);
-    };
-  }
-
-  private fireGesture(): void {
-    if (this.gestureFired) return;
-    this.gestureFired = true;
-    for (const cb of this.gestureCallbacks) cb();
-    this.gestureCallbacks = [];
   }
 
   /**

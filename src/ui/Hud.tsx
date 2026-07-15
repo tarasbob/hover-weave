@@ -30,7 +30,7 @@ export function Hud() {
   return (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
       <div
-        className="pointer-events-none fixed inset-0 z-10 font-display"
+        className="safe-frame pointer-events-none fixed z-10 font-display"
         data-reduce-motion={reduceMotion}
       >
       {/* Score block */}

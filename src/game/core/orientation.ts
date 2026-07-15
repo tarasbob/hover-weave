@@ -23,10 +23,18 @@ export function lockLandscape(): void {
       // Unsupported — the OrientationGate overlay enforces instead.
     }
   };
-  const root = document.documentElement;
+  const doc = document as Document & { webkitFullscreenElement?: Element | null };
+  const root = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => void;
+  };
+  const inFullscreen = Boolean(document.fullscreenElement ?? doc.webkitFullscreenElement);
   try {
-    if (!document.fullscreenElement && root.requestFullscreen) {
+    if (!inFullscreen && root.requestFullscreen) {
       root.requestFullscreen({ navigationUI: "hide" }).then(lock, lock);
+    } else if (!inFullscreen && root.webkitRequestFullscreen) {
+      // Older iOS exposes only the prefixed, void-returning variant.
+      root.webkitRequestFullscreen();
+      lock();
     } else {
       lock();
     }

@@ -372,6 +372,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }),
       world.events.on("boostEnd", () => {
         env.triggerBoost(0.45);
+        audio.boostEnd();
         evaluateQuests();
       }),
       world.events.on("flowTier", (e) => {
@@ -399,16 +400,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
     return () => offs.forEach((off) => off());
   }, [bundle]);
 
-  // Input lifecycle + audio unlock on first gesture.
+  // Input lifecycle + audio unlock. The engine owns its unlock listeners:
+  // iOS only grants user activation on touchend/pointerup/mousedown/keydown,
+  // so the input manager's pointerdown path can't resume the context there.
   useEffect(() => {
     const { input, audio } = bundle;
     input.attach(document.body);
-    const offGesture = input.onFirstGesture(() => {
-      const s = useSettings.getState();
-      void audio.init().then(() => {
-        audio.setVolumes(s.musicVolume, s.sfxVolume);
-      });
-    });
+    const offUnlock = audio.attachUnlock(document);
     // Auto-pause when the tab is hidden — dying while throttled is unfair.
     const onVisibility = () => {
       if (document.visibilityState === "hidden" && useGame.getState().phase === "running") {
@@ -423,7 +421,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       document.removeEventListener("click", onUiClick);
-      offGesture();
+      offUnlock();
       input.dispose();
     };
   }, [bundle]);
