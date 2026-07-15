@@ -24,9 +24,9 @@ export class InputManager {
   readonly state: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
 
   private keys = new Set<string>();
-  private pointerActive = false;
-  private pointerAxis = 0;
-  private pointerCount = 0;
+  /** Active game pointers (fingers on the field), id -> last clientX. */
+  private pointers = new Map<number, number>();
+  private pointerTarget: HTMLElement | null = null;
   private detach: (() => void) | null = null;
   private gestureCallbacks: (() => void)[] = [];
   private gestureFired = false;
@@ -51,25 +51,22 @@ export class InputManager {
     const onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.code);
     const onBlur = () => {
       this.keys.clear();
-      this.pointerActive = false;
+      this.pointers.clear();
     };
 
+    this.pointerTarget = target;
     const onPointerDown = (e: PointerEvent) => {
       this.fireGesture();
+      // Fingers on UI never enter the map, so lifting them can't cancel or
+      // boost the fingers that are actually steering.
       if (e.target instanceof Element && e.target.closest("[data-ui]")) return;
-      this.pointerCount++;
-      this.pointerActive = true;
-      if (this.pointerCount === 1) this.updatePointer(e, target);
+      this.pointers.set(e.pointerId, e.clientX);
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (this.pointerActive && e.isPrimary) this.updatePointer(e, target);
+      if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, e.clientX);
     };
     const onPointerUp = (e: PointerEvent) => {
-      this.pointerCount = Math.max(0, this.pointerCount - 1);
-      if (e.isPrimary || this.pointerCount === 0) {
-        this.pointerActive = this.pointerCount > 0;
-        if (!this.pointerActive) this.pointerAxis = 0;
-      }
+      this.pointers.delete(e.pointerId);
     };
 
     window.addEventListener("keydown", onKeyDown, { passive: false });
@@ -94,6 +91,8 @@ export class InputManager {
   dispose(): void {
     this.detach?.();
     this.detach = null;
+    this.pointers.clear();
+    this.pointerTarget = null;
   }
 
   /** Register a one-shot callback for the first user gesture (audio unlock). */
@@ -115,12 +114,21 @@ export class InputManager {
     this.gestureCallbacks = [];
   }
 
-  private updatePointer(e: PointerEvent, target: HTMLElement): void {
-    const rect = target.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    // Hold zones, not an analog stick: left half steers left, right half
-    // steers right. Crossing the center flips the direction.
-    this.pointerAxis = e.clientX < cx ? -1 : 1;
+  /**
+   * Hold zones, not an analog stick: each finger is a left or right button
+   * by screen half, and opposite halves cancel exactly like holding both
+   * arrow keys. Crossing the center flips that finger's direction.
+   */
+  private pointerAxis(): number {
+    const rect = this.pointerTarget?.getBoundingClientRect();
+    const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    let left = false;
+    let right = false;
+    for (const x of this.pointers.values()) {
+      if (x < cx) left = true;
+      else right = true;
+    }
+    return (right ? 1 : 0) - (left ? 1 : 0);
   }
 
   /** Poll gamepad + merge sources. Call once per rendered frame. */
@@ -139,11 +147,12 @@ export class InputManager {
     // Dash is inert unless the Phase Dash lab flag is on (the sim masks it).
     let dash = this.keys.has("KeyS") || this.keys.has("ArrowDown");
 
-    if (this.pointerActive) {
-      axis = this.pointerAxis;
-      // Touch: a second finger anywhere ignites the boost, a third dashes.
-      if (this.pointerCount >= 2) boost = true;
-      if (this.pointerCount >= 3) dash = true;
+    if (this.pointers.size > 0) {
+      axis = this.pointerAxis();
+      // Touch: a second finger ignites the boost, a third dashes. Both
+      // halves held = boost straight ahead (the zones cancel above).
+      if (this.pointers.size >= 2) boost = true;
+      if (this.pointers.size >= 3) dash = true;
     }
 
     if (typeof navigator !== "undefined" && navigator.getGamepads) {

@@ -1211,8 +1211,10 @@ function HelpOverlay() {
         <div>
           <span className="font-bold text-cyan-200">Shards are fuel.</span> Collect them quickly to
           build a combo, then hold <Key>SHIFT</Key> or <Key>SPACE</Key> to spend that energy on a
-          boost. Larger risk-route shards do not magnetize, but pay 60% extra. Boosting is fast,
-          but steering authority drops — respect it.
+          boost. On touch, a second finger boosts — hold both halves of the screen to boost
+          straight ahead, or two fingers on one half to boost through a turn. Larger risk-route
+          shards do not magnetize, but pay 60% extra. Boosting is fast, but steering authority
+          drops — respect it.
         </div>
         <div>
           <span className="font-bold text-amber-200">Shields</span> are rare. One hit is forgiven;

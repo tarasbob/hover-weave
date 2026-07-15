@@ -5,6 +5,7 @@ import { getGPUTier } from "detect-gpu";
 import { GameProvider } from "./GameController";
 import { GameCanvas } from "./render/GameCanvas";
 import { Hud } from "@/ui/Hud";
+import { OrientationGate } from "@/ui/OrientationGate";
 import { Screens } from "@/ui/Screens";
 import { useGame } from "./state/game";
 import { useSettings, type QualityTier } from "./state/settings";
@@ -42,6 +43,7 @@ export default function GameRoot() {
         {phase !== "boot" && <GameCanvas />}
         <Hud />
         <Screens />
+        <OrientationGate />
       </div>
     </GameProvider>
   );

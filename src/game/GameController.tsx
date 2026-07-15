@@ -10,6 +10,7 @@ import {
 import { SimWorld } from "./core/world";
 import { GhostDriver } from "./core/ghost";
 import { InputManager } from "./core/input";
+import { lockLandscape } from "./core/orientation";
 import { EnvState } from "./render/env";
 import { AudioEngine } from "./audio/engine";
 import type { RunConfig } from "./core/modes";
@@ -62,6 +63,9 @@ export function GameProvider({ children }: { children: ReactNode }) {
     };
 
     const startRun = (mode: GameMode, trialId?: string) => {
+      // Called from a tap/click, so the fullscreen + orientation-lock
+      // gesture requirement is satisfied here (Android; no-op elsewhere).
+      lockLandscape();
       const config: RunConfig =
         mode === "daily"
           ? { mode, seed: dailySeed() }
