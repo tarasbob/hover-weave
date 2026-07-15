@@ -73,9 +73,17 @@ export function CameraRig() {
     s.boostKick = damp(s.boostKick, 0, 7.5, dt);
     s.flowKick = damp(s.flowKick, 0, 3.6, dt);
 
+    // Curve anticipation: look (and lean) into the winding course ahead so
+    // bends read as bends instead of a sideways-sliding field.
+    const dist = idle ? 0 : world.renderDistance;
+    const bendScale = reduceMotion ? 0.4 : 1;
+    const bend = idle
+      ? 0
+      : (world.courseOffsetAt(dist + 78) - world.courseOffsetAt(dist + 6)) * bendScale;
+
     s.x = damp(s.x, craftX * 0.92, 7.5, dt);
     const whipScale = reduceMotion ? 0.18 : 1;
-    s.lookX = damp(s.lookX, craftX * 0.55 + s.nearWhip * whipScale, 6, dt);
+    s.lookX = damp(s.lookX, craftX * 0.55 + s.nearWhip * whipScale + bend * 0.5, 6, dt);
 
     const speedK = world.speedNorm;
     const motionScale = reduceMotion ? 0.25 : 1;
@@ -116,9 +124,9 @@ export function CameraRig() {
     target.set(s.lookX + shX * 0.4, 1.7 + shY * 0.3, -13);
     camera.lookAt(target);
 
-    // Bank roll on top of lookAt.
+    // Bank roll on top of lookAt (plus a light lean into upcoming bends).
     const bank = idle ? 0 : world.renderBank;
-    s.roll = damp(s.roll, bank * 0.34, 8, dt);
+    s.roll = damp(s.roll, bank * 0.34 - bend * 0.0045, 8, dt);
     camera.rotation.z += s.roll + shRoll;
 
     // FOV: speed + boost kick, slight tunnel on death.

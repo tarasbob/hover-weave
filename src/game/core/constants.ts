@@ -112,6 +112,85 @@ export const CRAFT = {
   Y_MAX: 2.05,
 } as const;
 
+/**
+ * The winding track (seeded course centerline). Patterns are still built and
+ * validated in a straight local frame; the offset is applied when chunks
+ * spawn into the world, and the craft clamp follows offset ± X_LIMIT. The
+ * drift itself demands steering, so its worst-case slope must stay well
+ * under the craft's physical slope (~0.5) minus the validator's planning
+ * slope (0.25 early, 0.375 when difficulty ≥ 0.64) — hence the late taper.
+ */
+export const COURSE = {
+  /** Hard bound on |offset| (amplitude budget + margin, for tests/render). */
+  MAX_OFFSET: 17.5,
+  /** Distance (m) over which the wander ramps in from a straight launch. */
+  RAMP_IN: 900,
+  /** Worst-case wave slope at full amplitude (sum over octaves). */
+  SLOPE_EARLY: 0.062,
+  /** Amplitude multiplier once the difficulty taper has fully applied. */
+  LATE_SCALE: 0.35,
+  /** Difficulty band across which the late taper blends in. */
+  TAPER_D0: 0.5,
+  TAPER_D1: 0.68,
+} as const;
+
+/** Shatterable glass: boost is the key. */
+export const GLASS = {
+  /** Boost charge (0..1) required for a contact to shatter instead of kill. */
+  SMASH_CHARGE: 0.45,
+  SCORE: 90,
+  FLOW: 1,
+  ENERGY: 6,
+} as const;
+
+/** Elastic bumpers: a boing instead of a death. */
+export const BUMPER = {
+  /** Minimum lateral fling speed (m/s). */
+  MIN_FLING: 13,
+  /** Fling speed as a fraction of forward speed. */
+  FLING_K: 0.34,
+  /** Seconds before the same bumper can fling again (also the squash time). */
+  COOLDOWN: 0.3,
+  /** Forward speed retained through the impact. */
+  SPEED_KEEP: 0.96,
+  SCORE: 25,
+  FLOW: 0.5,
+} as const;
+
+/** Pulse beams (Blink motion): readable charge telegraph before firing. */
+export const BEAM = {
+  /** Fraction of the cycle before ON during which the charge glow builds. */
+  CHARGE_FRAC: 0.28,
+} as const;
+
+/** Serpent segments: fixed lateral wobble around the spine anchor. */
+export const SERPENT = {
+  WOBBLE: 1.4,
+} as const;
+
+/**
+ * Drama director: rare seeded global events. Distances in meters of track.
+ * Meteors only land ≥ METEOR_PATH_CLEAR away from the validator's solved
+ * safe line, so the proven corridor survives every barrage.
+ */
+export const EVENTS = {
+  /** No events before this distance (let the opening teach itself). */
+  START: 1200,
+  GAP_MIN: 900,
+  GAP_MAX: 1600,
+  METEOR_LENGTH: 320,
+  RUSH_LENGTH: 260,
+  METEOR_SPACING_MIN: 26,
+  METEOR_SPACING_MAX: 42,
+  /** Meteors keep this lateral clearance (m) from the solved safe path. */
+  METEOR_PATH_CLEAR: 5,
+  /** Impact point lands this far ahead of the craft (m). */
+  METEOR_LEAD_MIN: 170,
+  METEOR_LEAD_MAX: 300,
+  /** Rush shards start this far ahead of the craft (m). */
+  RUSH_LEAD: 90,
+} as const;
+
 export const FLOW = {
   /** Lateral clearance (m) under which a pass counts as a near miss. */
   NEAR_MISS_CLEARANCE: 1.3,
@@ -320,9 +399,12 @@ export const POOL_SIZES = {
   box: 1100,
   pillar: 560,
   crystal: 440,
-  sphere: 170,
+  sphere: 260,
   ring: 84,
-  shard: 280,
+  glass: 140,
+  bumper: 130,
+  beam: 90,
+  shard: 340,
   shield: 18,
   decor: 380,
 } as const;

@@ -60,7 +60,8 @@ export function mutatePattern(
     log.jittered = true;
     const odScale = 1 + Math.min(1, od * 0.22);
     for (const o of result.obstacles) {
-      if (o.hx > 6 || o.motion) continue;
+      // Glass panes seal authored lane edges — jitter would open cheats.
+      if (o.hx > 6 || o.motion || o.kind === "glass") continue;
       const jitter = (0.8 + difficulty * 0.8) * odScale;
       o.x += rng.range(-jitter, jitter);
       o.s += rng.range(-1.8 - difficulty, 1.8 + difficulty) * odScale;
@@ -79,6 +80,7 @@ export function mutatePattern(
         case Motion.SweepX:
         case Motion.RotateYaw:
         case Motion.Piston:
+        case Motion.Blink:
           o.m0 = (o.m0 ?? 0) * log.moverBoost;
           break;
         case Motion.OrbitXZ:
@@ -87,6 +89,7 @@ export function mutatePattern(
         case Motion.Pendulum:
           o.m2 = (o.m2 ?? 0) * log.moverBoost;
           break;
+        // Serpent choreography stays authored — its readability IS the test.
       }
     }
   }
@@ -165,6 +168,11 @@ export function resonatePattern(result: PatternResult, bpm: number = RESONANCE.B
         o.m0 = snapAngular(o.m0 ?? 0);
         break;
       case Motion.Piston:
+        o.m0 = snapCycles(o.m0 ?? 0);
+        o.m1 = Math.round((o.m1 ?? 0) * 4) / 4;
+        break;
+      case Motion.Blink:
+        // Beam duty (m2) is geometry-equivalent for the validator: untouched.
         o.m0 = snapCycles(o.m0 ?? 0);
         o.m1 = Math.round((o.m1 ?? 0) * 4) / 4;
         break;

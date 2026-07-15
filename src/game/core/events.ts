@@ -1,7 +1,7 @@
 /** Minimal typed event emitter used to decouple sim -> audio/fx/ui. */
 
 import type { RunConfig } from "./modes";
-import type { MotionType, ObstacleKind, PrecisionGrade } from "./types";
+import type { MotionType, ObstacleKind, PrecisionGrade, RunEventKind } from "./types";
 
 export type GameEvents = {
   nearMiss: {
@@ -65,6 +65,22 @@ export type GameEvents = {
   setpiece: { name: string };
   runStart: { config: RunConfig };
   slabFall: { x: number; s: number };
+  /** A glass pane smashed through while boosting. */
+  shatter: {
+    x: number;
+    y: number;
+    s: number;
+    hx: number;
+    hy: number;
+    scoreAward: number;
+    energyAward: number;
+  };
+  /** A bumper flung the craft sideways (dir = ±1). */
+  bounce: { x: number; s: number; dir: number; scoreAward: number };
+  /** A pulse beam near ahead of the craft switched ON. */
+  beamFire: { x: number; s: number };
+  /** A global run event began (meteor barrage, golden rush, ...). */
+  runEvent: { kind: RunEventKind; name: string };
 };
 
 type Handler<T> = (payload: T) => void;

@@ -7,8 +7,8 @@ import {
   type PatternResult,
   type PickupSpec,
 } from "../core/types";
-import { box, funnelTo, gateRow, leadInDist } from "./patterns";
-import { pathSlopeAt } from "./validator";
+import { box, funnelTo, gateRow, leadInDist, shardLine } from "./patterns";
+import { PATH_SLOPE, pathSlopeAt } from "./validator";
 
 const XP = TRACK.X_PATTERN;
 
@@ -330,6 +330,80 @@ const apexGauntlet: PatternDef = {
   },
 };
 
+/**
+ * THE LEVIATHAN: a segmented serpent swims an S-curve through the corridor.
+ * Dip waves travel along its body — grounded segments are lethal crossing
+ * bars, everything else arcs overhead as spectacle. The flanks stay proven
+ * safe (worst-case envelopes block only the spine band); the spine itself is
+ * a shard-lit risk route for anyone brave enough to weave the coils.
+ */
+const leviathan: PatternDef = {
+  id: "leviathan",
+  category: "setpiece",
+  intensity: 5,
+  skills: ["reaction", "navigation"],
+  weight: 0.95,
+  minDifficulty: 0.32,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const lead = leadInDist(ctx, 0, 20);
+    const bodyStart = s0 + lead + 26;
+    const segments = 26;
+    const du = rng.range(8.5, 10);
+    const bodyLen = (segments - 1) * du;
+    const waves = rng.range(0.7, 0.85);
+    // Spine slope stays inside the authoring budget even with the wobble.
+    const ampMax = (PATH_SLOPE * 0.8 * 0.8 * bodyLen) / (2 * Math.PI * waves);
+    const amp = Math.min(8, ampMax);
+    const cx0 = rng.range(-4, 4);
+    const phase0 = rng.range(0, Math.PI * 2);
+    const waveRate = rng.range(0.75, 1) * lerp(1, 1.3, d);
+    const wavePhaseSpan = rng.range(2.6, 3.4) * Math.PI;
+    let tailX = cx0;
+    for (let i = 0; i < segments; i++) {
+      const u = i / (segments - 1);
+      const s = bodyStart + i * du;
+      const x =
+        cx0 + Math.sin(phase0 + u * Math.PI * 2 * waves) * amp - Math.sin(phase0) * amp * (1 - u * 0.2);
+      tailX = x;
+      const head = i === 0;
+      const r = head ? 2.5 : lerp(1.75, 0.95, u);
+      const spineY = 7.6 + Math.sin(u * Math.PI) * 1.4;
+      obstacles.push({
+        kind: "sphere",
+        x, s, y: spineY,
+        hx: r, hy: r, hs: r,
+        role: head ? "warn" : i % 3 === 0 ? "accent" : "primary",
+        glow: head ? 2.6 : 1.7,
+        motion: Motion.Serpent,
+        m0: waveRate,
+        m1: u * wavePhaseSpan,
+        // Deepest dip parks the belly in the craft band.
+        m2: spineY - lerp(1.3, 1.45, u),
+      });
+      // Spine loot: weaving the coils is the paid line.
+      if (i > 1 && i % 3 === 0) {
+        pickups.push({ type: "shard", s: s - du * 0.5, x, y: 1.3, magnet: false });
+      }
+    }
+    // A calm shard line on the emptier flank for the unconvinced.
+    const flank = cx0 >= 0 ? -1 : 1;
+    pickups.push(...shardLine(bodyStart + 24, flank * (Math.abs(cx0) + amp + 9), 4, 9));
+    const length = bodyStart + bodyLen + 34 - s0;
+    return {
+      length,
+      exitX: tailX,
+      exitHalf: XP - 8,
+      obstacles,
+      pickups,
+      announce: "LEVIATHAN",
+    };
+  },
+};
+
 export const SETPIECES: PatternDef[] = [
   monolithKeyhole,
   colossalArch,
@@ -338,4 +412,5 @@ export const SETPIECES: PatternDef[] = [
   breathingRings,
   turbineField,
   apexGauntlet,
+  leviathan,
 ];

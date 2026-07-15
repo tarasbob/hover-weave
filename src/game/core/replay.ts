@@ -15,7 +15,11 @@ import type { InputState } from "./input";
 import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
-export const REPLAY_VERSION = 1;
+/**
+ * v2: the winding course, glass/bumper/beam obstacles, the Leviathan, and
+ * run events changed sim behavior — v1 recordings no longer re-simulate.
+ */
+export const REPLAY_VERSION = 2;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;

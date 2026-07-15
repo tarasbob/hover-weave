@@ -1,15 +1,19 @@
 import {
+  BUMPER,
   CRAFT,
   DANGER,
   DASH,
   ENERGY,
+  EVENTS,
   FIXED_DT,
   FLOW,
+  GLASS,
   lookaheadFor,
   MAX_STEPS_PER_FRAME,
   onBeatAt,
   RESONANCE,
   RUN,
+  SERPENT,
   SPEED,
   SPRINT_MODE,
   STEER,
@@ -24,7 +28,7 @@ import type { InputState } from "./input";
 import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils";
 import type { GameMode, RunConfig } from "./modes";
 import { InputRecorder, quantizeAxis, type RunRecording } from "./replay";
-import { createRng } from "./rng";
+import { createRng, type Rng } from "./rng";
 import {
   Motion,
   type MotionType,
@@ -33,9 +37,11 @@ import {
   type ObstacleSpec,
   type Pickup,
   type PrecisionGrade,
+  type RunEventKind,
   type RunStatus,
 } from "./types";
 import { biomeIndexAt, BIOMES } from "../track/biomes";
+import { Course } from "../track/course";
 import { speedAt, TrackGenerator, type GeneratedChunk } from "../track/generator";
 import { trialById, type TrialDef } from "../track/trials";
 
@@ -210,6 +216,12 @@ export interface RunStats {
   dashes: number;
   /** Perfects confirmed on the beat grid (lab 5.4 only; 0 otherwise). */
   resonantPasses: number;
+  /** Glass panes smashed through while boosting. */
+  glassSmashed: number;
+  /** Bumper flings survived. */
+  bounces: number;
+  /** Global run events weathered (meteor barrages, golden rushes). */
+  runEvents: number;
   shards: number;
   bestShardCombo: number;
   bestFlowChain: number;
@@ -258,6 +270,8 @@ export class SimWorld {
   /** Resolved lab prototype flags (all off when the stack is empty). */
   labFx: LabEffects = NO_LAB;
   status: RunStatus = "idle";
+  /** Seeded winding-track centerline (flat for trials). */
+  course: Course = new Course(null);
 
   // Craft state.
   x = 0;
@@ -326,6 +340,12 @@ export class SimWorld {
     events: number;
   } | null = null;
 
+  // Drama director (seeded, distance-triggered global events).
+  private eventRng: Rng = createRng("idle");
+  private nextEventAt = Infinity;
+  activeEvent: { kind: RunEventKind; endAt: number } | null = null;
+  private meteorNextAt = 0;
+
   // Death.
   deathTimer = 0;
   deathX = 0;
@@ -376,6 +396,7 @@ export class SimWorld {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
       closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
       dashes: 0, resonantPasses: 0,
+      glassSmashed: 0, bounces: 0, runEvents: 0,
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
@@ -420,6 +441,15 @@ export class SimWorld {
     this.speedCurve = this.trial ? this.trial.speedAt : speedAt;
     this.heatFx = resolveHeat(heat);
     this.labFx = resolveLab(lab);
+    // Trials are fixed skill tests — they stay dead straight. Everything
+    // else rides the seeded winding course.
+    this.course = new Course(this.trial ? null : seed);
+    this.eventRng = createRng(`${seed}|events`);
+    this.activeEvent = null;
+    this.meteorNextAt = 0;
+    this.nextEventAt = this.trial
+      ? Infinity
+      : Math.max(skipTo, EVENTS.START) + this.eventRng.range(0, EVENTS.GAP_MAX - EVENTS.GAP_MIN);
     this.status = "running";
     this.x = 0;
     this.latVel = 0;
@@ -667,12 +697,20 @@ export class SimWorld {
         this.latVel = clamp(this.latVel, -maxLat, maxLat);
         this.x += this.latVel * dt;
       }
-      if (this.x < -TRACK.X_LIMIT) {
-        this.x = -TRACK.X_LIMIT;
-        this.latVel = Math.max(0, this.latVel) * 0.4;
-      } else if (this.x > TRACK.X_LIMIT) {
-        this.x = TRACK.X_LIMIT;
-        this.latVel = Math.min(0, this.latVel) * 0.4;
+      // The clamp follows the winding centerline: the corridor itself drifts,
+      // so even an empty stretch asks for a gentle steer. Damping acts on the
+      // WALL-RELATIVE velocity — a wall that chases the craft must not eat
+      // its escape speed on every contact frame (flat course: wallVel = 0,
+      // bit-identical to the classic clamp).
+      const courseX = this.course.offsetAt(this.distance);
+      const wallVel =
+        (courseX - this.course.offsetAt(this.distance - this.speed * dt)) / dt;
+      if (this.x < courseX - TRACK.X_LIMIT) {
+        this.x = courseX - TRACK.X_LIMIT;
+        this.latVel = wallVel + Math.max(0, this.latVel - wallVel) * 0.4;
+      } else if (this.x > courseX + TRACK.X_LIMIT) {
+        this.x = courseX + TRACK.X_LIMIT;
+        this.latVel = wallVel + Math.min(0, this.latVel - wallVel) * 0.4;
       }
     } else {
       this.latVel *= Math.exp(-4 * dt);
@@ -686,6 +724,9 @@ export class SimWorld {
 
     // --- Streaming -----------------------------------------------------
     this.streamAhead();
+
+    // --- Drama director (after streaming: events read the solved paths) --
+    if (alive) this.updateEvents();
 
     // --- Section tracking (before obstacle events, so passes confirmed
     // this step attribute to the chunk the craft is currently inside) -----
@@ -876,25 +917,35 @@ export class SimWorld {
    * Snapshot everything the kill-cam needs (roadmap 3.3): your traced line,
    * the validator's solved path, and obstacle envelopes around the impact.
    * Call right after death — pools still hold the killing geometry.
+   *
+   * Everything is straightened into course-local coordinates (winding
+   * offset subtracted), so the top-down map's ±X_LIMIT frame stays truthful.
    */
   buildForensics(behind = 320, ahead = 50): DeathForensics | null {
     if (this.status !== "dead") return null;
     const deathS = this.distance;
     const s0 = deathS - behind;
     const s1 = deathS + ahead;
+    const local = (s: number, x: number) => x - this.course.offsetAt(s);
 
-    const trace = this.getTrace().filter((t) => t.s >= s0);
+    const trace = this.getTrace()
+      .filter((t) => t.s >= s0)
+      .map((t) => ({ ...t, x: local(t.s, t.x) }));
 
     const path: [number, number][][] = [];
     for (const c of this.chunkLog) {
       if (c.s1 < s0 || c.s0 > s1) continue;
-      const seg = c.path.filter(([s]) => s >= s0 && s <= s1);
+      const seg = c.path
+        .filter(([s]) => s >= s0 && s <= s1)
+        .map(([s, x]) => [s, local(s, x)] as [number, number]);
       if (seg.length >= 2) path.push(seg);
     }
 
     let obstacles: ForensicsObstacle[] = [];
     for (const rec of this.recentObstacles) {
-      if (rec.s >= s0 && rec.s <= s1) obstacles.push(rec);
+      if (rec.s >= s0 && rec.s <= s1) {
+        obstacles.push({ ...rec, x: local(rec.s, rec.x) });
+      }
     }
     for (const o of this.obstacles) {
       if (!o.active || !o.collidable || o.kind === "decor") continue;
@@ -902,7 +953,7 @@ export class SimWorld {
       const vHalf = o.kind === "ring" ? o.hx : o.hy;
       if (o.cy - vHalf > CRAFT.Y_MAX || o.cy + vHalf < CRAFT.Y_MIN) continue;
       obstacles.push({
-        kind: o.kind, s: o.cs, x: o.cx,
+        kind: o.kind, s: o.cs, x: local(o.cs, o.cx),
         hx: o.hx, hs: o.hs, yaw: o.cyaw, inner: o.inner,
       });
     }
@@ -914,7 +965,7 @@ export class SimWorld {
 
     return {
       deathS,
-      deathX: this.deathX,
+      deathX: local(deathS, this.deathX),
       deathSpeed: this.deathSpeed,
       s0,
       s1,
@@ -932,6 +983,11 @@ export class SimWorld {
     return lookaheadFor(this.speed);
   }
 
+  /** Winding-course centerline offset at track distance s (0 for trials). */
+  courseOffsetAt(s: number): number {
+    return this.course.offsetAt(s);
+  }
+
   private streamAhead(): void {
     const gen = this.generator;
     if (!gen) return;
@@ -940,39 +996,149 @@ export class SimWorld {
     });
   }
 
+  // --- Drama director --------------------------------------------------------
+
+  /**
+   * Rare seeded global events. Rolls are distance-triggered off a dedicated
+   * rng stream, so replays and twin worlds stay bit-exact.
+   */
+  private updateEvents(): void {
+    if (this.nextEventAt === Infinity) return;
+    const d = this.distance;
+    const ev = this.activeEvent;
+    if (ev) {
+      if (ev.kind === "meteor" && d >= this.meteorNextAt) {
+        this.meteorNextAt =
+          d + this.eventRng.range(EVENTS.METEOR_SPACING_MIN, EVENTS.METEOR_SPACING_MAX);
+        this.spawnEventMeteor();
+      }
+      if (d > ev.endAt) {
+        this.activeEvent = null;
+        this.nextEventAt = d + this.eventRng.range(EVENTS.GAP_MIN, EVENTS.GAP_MAX);
+      }
+      return;
+    }
+    if (d < this.nextEventAt) return;
+    const kind: RunEventKind = this.eventRng.chance(0.55) ? "meteor" : "rush";
+    if (kind === "rush") {
+      // A rush with nothing to lay down (no solved paths ahead) is skipped —
+      // re-roll a little later instead of announcing an empty event.
+      if (!this.spawnRush()) {
+        this.nextEventAt = d + this.eventRng.range(200, 400);
+        return;
+      }
+      this.activeEvent = { kind, endAt: d + EVENTS.RUSH_LENGTH };
+    } else {
+      this.activeEvent = { kind, endAt: d + EVENTS.METEOR_LENGTH };
+      this.meteorNextAt = d;
+    }
+    this.stats.runEvents++;
+    this.events.emit("runEvent", {
+      kind,
+      name: kind === "meteor" ? "METEOR BARRAGE" : "GOLDEN RUSH",
+    });
+  }
+
+  /** X of the validator's solved safe line at s (world frame), if known. */
+  private safePathXAt(s: number): number | null {
+    for (const c of this.chunkLog) {
+      if (s < c.s0 || s > c.s1 || c.path.length === 0) continue;
+      let best: number | null = null;
+      let bestD = Infinity;
+      for (const [ps, px] of c.path) {
+        const dd = Math.abs(ps - s);
+        if (dd < bestD) {
+          bestD = dd;
+          best = px;
+        }
+      }
+      return bestD <= 6 ? best : null;
+    }
+    return null;
+  }
+
+  /**
+   * One telegraphed meteor: lands ahead as a permanent rock, never within
+   * METEOR_PATH_CLEAR of the solved safe line. No proven line => no rock.
+   */
+  private spawnEventMeteor(): void {
+    const s = this.distance + this.eventRng.range(EVENTS.METEOR_LEAD_MIN, EVENTS.METEOR_LEAD_MAX);
+    const safeX = this.safePathXAt(s);
+    const off = this.course.offsetAt(s);
+    // The rng draws below run unconditionally so the stream stays aligned
+    // whether or not a legal spot exists.
+    const lane = this.eventRng.range(-(TRACK.X_LIMIT - 3), TRACK.X_LIMIT - 3);
+    const w = this.eventRng.range(1.3, 2.2);
+    const hy = this.eventRng.range(2, 3.2);
+    const yaw = this.eventRng.range(0, Math.PI);
+    const drop = this.eventRng.range(0, 8);
+    const restY = this.eventRng.range(1.4, 2);
+    if (safeX === null) return;
+    const x = off + lane;
+    if (Math.abs(x - safeX) < EVENTS.METEOR_PATH_CLEAR + w) return;
+    // spawnObstacle re-applies the course offset: hand it local-frame specs.
+    const lx = x - off;
+    const trigger = s - (this.speed * 1.45 + 34);
+    this.spawnObstacle(
+      {
+        kind: "crystal", x: lx, s, y: 34 + drop,
+        hx: w, hy, hs: w, yaw,
+        role: "warn", glow: 1.6,
+        motion: Motion.FallY, m0: trigger, m1: restY,
+      },
+      "meteorBarrage",
+    );
+    this.spawnObstacle(
+      {
+        kind: "box", x: lx, s, y: 0.06,
+        hx: w + 0.5, hy: 0.06, hs: w + 0.5,
+        role: "warn", glow: 2.2,
+        collidable: false, noValidate: true,
+      },
+      "meteorBarrage",
+    );
+  }
+
+  /** Golden rush: a shard river laid along the solved safe line ahead. */
+  private spawnRush(): boolean {
+    const d0 = this.distance + EVENTS.RUSH_LEAD;
+    const d1 = d0 + EVENTS.RUSH_LENGTH;
+    let laid = 0;
+    for (const c of this.chunkLog) {
+      if (c.s1 < d0 || c.s0 > d1) continue;
+      for (let i = 0; i < c.path.length; i += 2) {
+        const [s, x] = c.path[i];
+        if (s < d0 || s > d1) continue;
+        this.spawnPickupWorld("shard", s, x, 1.3, true);
+        laid++;
+      }
+    }
+    return laid >= 8;
+  }
+
   private spawnChunk(chunk: GeneratedChunk): void {
     for (const spec of chunk.obstacles) this.spawnObstacle(spec, chunk.patternId);
     for (const p of chunk.pickups) {
       // Tin Hull also silences pattern-authored shields (the generator's own
       // path shields are already suppressed at placement).
       if (p.type === "shield" && !this.heatFx.shields) continue;
-      const idx = this.pickupFree.pop();
-      if (idx === undefined) {
-        this.stats.pickupDrops++;
-        continue;
-      }
-      const pk = this.pickups[idx];
-      pk.active = true;
-      pk.type = p.type;
-      pk.s = p.s;
-      pk.x = p.x;
-      pk.y = p.y;
-      pk.seeking = false;
-      pk.magnetic = p.magnet ?? true;
-      pk.spawnTime = this.time;
+      this.spawnPickupWorld(p.type, p.s, p.x + this.course.offsetAt(p.s), p.y, p.magnet ?? true);
     }
     if (chunk.announce) {
       this.events.emit("setpiece", { name: chunk.announce });
     }
     // Always-on lightweight chunk record: section grading needs the bounds
     // and intensity, the kill-cam needs the validator's solved path — keep
-    // enough behind the craft to cover the forensics window.
+    // enough behind the craft to cover the forensics window. Paths are
+    // authored in the straight local frame; store them in world frame.
     this.chunkLog.push({
       s0: chunk.s0,
       s1: chunk.s1,
       patternId: chunk.patternId,
       intensity: chunk.intensity,
-      path: chunk.path,
+      path: this.course.flat
+        ? chunk.path
+        : chunk.path.map(([s, x]) => [s, x + this.course.offsetAt(s)] as [number, number]),
     });
     while (
       this.chunkLog.length > 64 ||
@@ -995,24 +1161,51 @@ export class SimWorld {
     }
   }
 
+  private spawnPickupWorld(
+    type: Pickup["type"],
+    s: number,
+    x: number,
+    y: number,
+    magnetic: boolean,
+  ): void {
+    const idx = this.pickupFree.pop();
+    if (idx === undefined) {
+      this.stats.pickupDrops++;
+      return;
+    }
+    const pk = this.pickups[idx];
+    pk.active = true;
+    pk.type = type;
+    pk.s = s;
+    pk.x = x;
+    pk.y = y;
+    pk.seeking = false;
+    pk.magnetic = magnetic;
+    pk.spawnTime = this.time;
+  }
+
   private spawnObstacle(spec: ObstacleSpec, patternId: string): void {
     const idx = this.obstacleFree.pop();
     if (idx === undefined) {
       this.stats.obstacleDrops++;
       return;
     }
+    // Patterns author in the straight local frame; the winding course lands
+    // here, at spawn time (validation already happened in the local frame).
+    const courseX = this.course.offsetAt(spec.s);
     const o = this.obstacles[idx];
     o.active = true;
     o.kind = spec.kind;
     o.s = spec.s;
-    o.x = spec.x;
+    o.x = spec.x + courseX;
     o.y = spec.y;
     o.hx = spec.hx;
     o.hy = spec.hy;
     o.hs = spec.hs;
     o.yaw = spec.yaw ?? 0;
     o.motion = spec.motion ?? Motion.None;
-    o.m0 = spec.m0 ?? 0;
+    // CloseIn's m0 is an absolute lateral target — shift it with the course.
+    o.m0 = (spec.m0 ?? 0) + (o.motion === Motion.CloseIn ? courseX : 0);
     o.m1 = spec.m1 ?? 0;
     o.m2 = spec.m2 ?? 0;
     o.role = spec.role ?? "primary";
@@ -1113,9 +1306,29 @@ export class SimWorld {
           o.cx = o.x + o.m2 * pulse;
           break;
         }
+        case Motion.Blink: {
+          const raw = t * o.m0 + o.m1;
+          const phase = raw - Math.floor(raw);
+          // Fire moment: the phase wrapped into the ON window this step.
+          if (phase < o.state && alive) {
+            const ahead = o.cs - craftS;
+            if (ahead > -6 && ahead < 70) this.events.emit("beamFire", { x: o.cx, s: o.cs });
+          }
+          o.state = phase;
+          break;
+        }
+        case Motion.Serpent: {
+          const dip = 0.5 + 0.5 * Math.sin(t * o.m0 + o.m1);
+          o.cy = o.y - o.m2 * dip;
+          o.cx = o.x + Math.sin(t * o.m0 * 0.63 + o.m1 * 1.7) * SERPENT.WOBBLE;
+          break;
+        }
       }
 
       if (!alive || !o.collidable) continue;
+      // Pulse beams only exist while their duty window is ON: no collision
+      // and no clearance credit while phased out (passes still confirm).
+      const beamOff = o.kind === "beam" && o.motion === Motion.Blink && o.state >= o.m2;
 
       // Broad phase along track.
       const stepLen = this.speed * dt;
@@ -1145,7 +1358,7 @@ export class SimWorld {
 
       const withinS = Math.abs(dS) < sExtent + stepLen + CRAFT.RADIUS + 1.5;
 
-      if (withinS) {
+      if (withinS && !beamOff) {
         // Vertical overlap (movers use current cy).
         const yOverlap = o.cy - o.hy < CRAFT.Y_MAX && o.cy + o.hy > CRAFT.Y_MIN;
         if (yOverlap) {
@@ -1173,6 +1386,18 @@ export class SimWorld {
             const rr = CRAFT.RADIUS;
             if (distSq < rr * rr) hit = true;
             clearance = Math.max(0, Math.sqrt(distSq) - rr);
+          }
+
+          if (hit && o.kind === "bumper") {
+            // Elastic: a boing, never a death. Per-obstacle cooldown rides
+            // in `state` so an overlapping frame can't machine-gun flings.
+            if (this.time >= o.state) this.onBounce(o);
+            continue;
+          }
+          if (hit && o.kind === "glass" && this.boostCharge >= GLASS.SMASH_CHARGE) {
+            // Boost is the key: plow through, shower of shards, keep flying.
+            this.onShatter(o);
+            continue;
           }
 
           // Kill-cam trace: tightest hull clearance this sample window.
@@ -1359,6 +1584,47 @@ export class SimWorld {
       count: this.stats.threads,
     });
     if (this.labFx.surge) this.openSurge();
+  }
+
+  /** Boost-smashed glass: the pane dies, the craft doesn't. */
+  private onShatter(o: Obstacle): void {
+    o.active = false;
+    this.obstacleFree.push(o.id);
+    this.flowPoints += GLASS.FLOW * this.speedFlowFactor;
+    this.flowTimer = 0;
+    const energyAward = this.grantEnergy(GLASS.ENERGY);
+    const scoreAward = Math.round(
+      GLASS.SCORE * this.flowMultiplier * this.speedRewardFactor * this.heatFx.scoreMult,
+    );
+    this.score += scoreAward;
+    this.stats.glassSmashed++;
+    if (this.section) this.section.events++;
+    this.events.emit("shatter", {
+      x: o.cx,
+      y: o.cy,
+      s: o.cs,
+      hx: o.hx,
+      hy: o.hy,
+      scoreAward,
+      energyAward,
+    });
+  }
+
+  /** Bumper contact: fling sideways, eject from the overlap, pay a little. */
+  private onBounce(o: Obstacle): void {
+    const dir = this.x === o.cx ? (this.latVel >= 0 ? 1 : -1) : this.x > o.cx ? 1 : -1;
+    this.latVel =
+      dir * Math.max(BUMPER.MIN_FLING, Math.abs(this.latVel) * 0.4 + this.speed * BUMPER.FLING_K);
+    this.x = o.cx + dir * (o.hx + CRAFT.RADIUS + 0.05);
+    this.speed *= BUMPER.SPEED_KEEP;
+    o.state = this.time + BUMPER.COOLDOWN;
+    o.nearMissed = true; // Consumed: a bounce never doubles as a graze.
+    this.flowPoints += BUMPER.FLOW * this.speedFlowFactor;
+    this.flowTimer = 0;
+    const scoreAward = Math.round(BUMPER.SCORE * this.flowMultiplier * this.heatFx.scoreMult);
+    this.score += scoreAward;
+    this.stats.bounces++;
+    this.events.emit("bounce", { x: o.cx, s: o.cs, dir, scoreAward });
   }
 
   private onHit(o: Obstacle): void {

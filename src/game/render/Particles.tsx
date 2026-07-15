@@ -220,6 +220,47 @@ export function Particles({ max }: { max: number }) {
           });
         }
       }),
+      world.events.on("shatter", (e) => {
+        // Glass breach: a wall of glinting shards blown forward and outward.
+        c.copy(env.uAccent.value);
+        const count = Math.max(10, Math.round(34 * burstScale));
+        for (let i = 0; i < count; i++) {
+          const white = rng.range(0.4, 1);
+          sys.spawn({
+            x: e.x + rng.range(-e.hx, e.hx) * 0.8,
+            y: Math.max(0.3, e.y + rng.range(-e.hy, e.hy) * 0.8),
+            s: e.s + rng.range(-0.5, 0.5),
+            vx: rng.range(-8, 8),
+            vy: rng.range(1, 11),
+            vs: rng.range(4, 16),
+            grav: -16, drag: 1.1, life: rng.range(0.35, 0.85),
+            size0: rng.range(0.07, 0.2), size1: 0.01,
+            r: (c.r + (1 - c.r) * white) * 2.2 * brightness,
+            g: (c.g + (1 - c.g) * white) * 2.2 * brightness,
+            b: (c.b + (1 - c.b) * white) * 2.2 * brightness,
+          });
+        }
+      }),
+      world.events.on("bounce", (e) => {
+        // Bumper boing: a springy arc of sparks flung with the craft.
+        c.copy(env.uWarn.value);
+        const count = Math.max(6, Math.round(14 * burstScale));
+        for (let i = 0; i < count; i++) {
+          sys.spawn({
+            x: e.x + e.dir * rng.range(0.4, 1.4),
+            y: CRAFT.HOVER_HEIGHT + rng.range(-0.3, 0.5),
+            s: e.s + rng.range(-0.6, 0.6),
+            vx: e.dir * rng.range(5, 14),
+            vy: rng.range(2, 8),
+            vs: rng.range(-3, 3),
+            grav: -12, drag: 1.5, life: rng.range(0.3, 0.6),
+            size0: rng.range(0.09, 0.22), size1: 0.02,
+            r: c.r * 2.3 * brightness,
+            g: c.g * 2.3 * brightness,
+            b: c.b * 2.3 * brightness,
+          });
+        }
+      }),
       world.events.on("lightning", ({ intensity }) => {
         c.copy(env.uWarn.value);
         const count = Math.max(4, Math.round(14 * burstScale * intensity));

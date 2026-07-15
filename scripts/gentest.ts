@@ -3,11 +3,12 @@
  * pressure across deterministic seeds.
  */
 import assert from "node:assert/strict";
-import { overdriveAt, RESONANCE, SPEED } from "../src/game/core/constants";
+import { COURSE, overdriveAt, RESONANCE, SPEED } from "../src/game/core/constants";
 import { HEATS, normalizeHeat, resolveHeat } from "../src/game/core/heat";
 import { normalizeLab, resolveLab, type LabEffects } from "../src/game/core/lab";
 import { createRng } from "../src/game/core/rng";
 import { Motion } from "../src/game/core/types";
+import { Course } from "../src/game/track/course";
 import {
   TrackGenerator,
   difficultyAt,
@@ -174,8 +175,45 @@ const fallbackRate = totalFallbacks / totalChunks;
 assert.ok(fallbackRate < 0.03, `fallback rate ${(fallbackRate * 100).toFixed(1)}% is too high`);
 assert.ok(totalRejections / totalChunks < 0.5, "generator retries are under excessive pressure");
 assert.ok(latePeakSeen, "late generation never produced an intensity-5 peak");
-for (const id of ["precisionLadder", "pulseWeave", "rotorRhythm", "splitDecision", "apexGauntlet"]) {
+for (const id of [
+  "precisionLadder", "pulseWeave", "rotorRhythm", "splitDecision", "apexGauntlet",
+  "canyonRun", "glassRush", "pinballAlley", "photonGate", "leviathan",
+]) {
   assert.ok((counts.get(id) ?? 0) > 0, `${id} never appeared across fixed generation seeds`);
+}
+
+// --- Winding course: the corridor drift must live inside the steering
+// headroom above the validator's plan (see COURSE constants) -----------------
+console.log("\n== winding course: slope + amplitude budget ==");
+{
+  let worstEarly = 0;
+  let worstLate = 0;
+  let worstAbs = 0;
+  const PROBE_DS = 2;
+  for (let i = 0; i < 6; i++) {
+    const course = new Course(`course-${i}`);
+    assert.ok(Math.abs(course.offsetAt(0)) < 1e-9, "course must launch centered");
+    let prev = course.offsetAt(0);
+    for (let s = PROBE_DS; s <= 40000; s += PROBE_DS) {
+      const v = course.offsetAt(s);
+      const slope = Math.abs(v - prev) / PROBE_DS;
+      prev = v;
+      worstAbs = Math.max(worstAbs, Math.abs(v));
+      if (s < 2600) worstEarly = Math.max(worstEarly, slope);
+      else worstLate = Math.max(worstLate, slope);
+    }
+  }
+  const flat = new Course(null);
+  assert.equal(flat.offsetAt(1234), 0, "trial courses must be dead straight");
+  console.log(
+    `offset ≤ ${worstAbs.toFixed(1)}m, slope early ≤ ${worstEarly.toFixed(3)}, ` +
+    `late ≤ ${worstLate.toFixed(3)}`,
+  );
+  assert.ok(worstAbs <= COURSE.MAX_OFFSET, `course amplitude exceeds budget (${worstAbs.toFixed(1)}m)`);
+  // Early: validator plans 0.25 vs ~0.5 physical — 0.09 of drift is safe.
+  assert.ok(worstEarly < 0.09, `early course slope too steep (${worstEarly.toFixed(3)})`);
+  // Late: validator plans 0.375 — drift must taper well under the headroom.
+  assert.ok(worstLate < 0.045, `late course slope too steep (${worstLate.toFixed(3)})`);
 }
 
 // Deep-overdrive chained generation (60km): validation must stay healthy
@@ -334,6 +372,12 @@ console.log("\n== rhythm resonance: timing-only re-quantization, 2 × 10km ==");
             movers++;
             assert.ok(cyclesOnGrid(ob.m0 ?? 0), `piston rate off grid (${ob.m0})`);
             assert.equal(ob.m2, oa.m2, "piston throw must be untouched");
+            if (ob.m0 !== oa.m0) retimed++;
+            break;
+          case Motion.Blink:
+            movers++;
+            assert.ok(cyclesOnGrid(ob.m0 ?? 0), `beam rate off grid (${ob.m0})`);
+            assert.equal(ob.m2, oa.m2, "beam duty must be untouched");
             if (ob.m0 !== oa.m0) retimed++;
             break;
           case Motion.RotateYaw:

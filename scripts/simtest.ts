@@ -61,14 +61,16 @@ const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
 
 // --- Conservative-bot survival + pool pressure + first-2km economy gate ----
 
-// Pre-Phase-1 baselines (conservative bot, no boost). The risk-economy
-// rebalance must keep the novice-proxy line within ±10% on average.
+// Conservative-bot baselines (no boost), recalibrated 2026-07 when the
+// winding course + new obstacle kit (glass/bumper/beam, leviathan, events)
+// reshaped generation. Future economy work must keep the novice-proxy line
+// within ±10% on average against THESE numbers.
 const BASELINE_800: Record<string, number> = {
-  "test-0": 3615, "test-1": 3041, "test-2": 3473, "test-3": 3375,
-  "test-4": 3571, "test-5": 3227, "test-6": 2627, "test-7": 3232,
+  "test-0": 2518, "test-1": 3403, "test-2": 2002, "test-3": 2147,
+  "test-4": 2530, "test-5": 1746, "test-6": 1962, "test-7": 3150,
 };
 const BASELINE_2KM: Record<string, number> = {
-  "test-3": 4706, "test-5": 4890, "test-6": 4041,
+  "test-0": 6096, "test-1": 5759, "test-4": 3995, "test-6": 3441,
 };
 
 let totalDeaths = 0;
@@ -157,7 +159,7 @@ assert.ok(minDist > 450, `opening is too punishing for the conservative bot (${m
 assert.ok(avgDist > 900, `average survival collapsed to ${avgDist.toFixed(0)}m`);
 assert.ok(avgDist < 9000, `challenge curve is too gentle (${avgDist.toFixed(0)}m average)`);
 assert.ok(peakActive < 500, `active obstacle pressure is unexpectedly high (${peakActive})`);
-for (const kind of ["box", "pillar", "crystal", "sphere", "ring"] as const) {
+for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam"] as const) {
   assert.ok(
     (peakByKind.get(kind) ?? 0) < POOL_SIZES[kind],
     `${kind} render pool lacks headroom (${peakByKind.get(kind)}/${POOL_SIZES[kind]})`,
@@ -929,15 +931,16 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Calibrated 2026-07 (Phase 2 landing; superhuman recalibrated at Phase 3
-  // when input quantization landed — the sim consumes a 1/127-step axis now,
-  // which nudged the chaotic rollout searcher into a new equilibrium). The
-  // sim is deterministic, so these reproduce exactly until tuning constants
-  // move — the loose band catches real difficulty regressions either way.
+  // Calibrated 2026-07 (winding course + obstacle kit landing: the course,
+  // glass/bumper/beam, the Leviathan, and run events reshaped generation;
+  // the superhuman searcher gained exact-step rollouts + an escape shape at
+  // the same time). The sim is deterministic, so these reproduce exactly
+  // until tuning constants move — the loose band catches real difficulty
+  // regressions either way.
   const WALL_BASELINE: Record<Tier, number> = {
-    greedy: 1133,
-    lookahead: 2686,
-    superhuman: 31547,
+    greedy: 1644,
+    lookahead: 3147,
+    superhuman: 43367,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);
@@ -997,7 +1000,7 @@ console.log("edge-case assertions: PASS");
     .map(([kind, count]) => `${kind} ${count}/${POOL_SIZES[kind as keyof typeof POOL_SIZES]}`)
     .join(", ");
   console.log(`deep-overdrive render pool peaks: ${wallPools}, shards ${wallPeakShards}`);
-  for (const kind of ["box", "pillar", "crystal", "sphere", "ring"] as const) {
+  for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam"] as const) {
     assert.ok(
       (wallPeakByKind.get(kind) ?? 0) < POOL_SIZES[kind],
       `${kind} render pool lacks headroom at max horizon ` +
@@ -1292,8 +1295,9 @@ console.log("edge-case assertions: PASS");
     assert.equal(tin.status, "dead", "Tin Hull contact must be fatal");
   }
 
-  // Generation-side heat: measured over the same three seeds' first 10 km
-  // (shield drips are rare events — a single seed is too noisy to gate).
+  // Generation-side heat: measured over five seeds' first 20 km (shield
+  // drips are rare events, and the winding-course pattern mix carries long
+  // wall ribbons that dilute the scatter signal — a small survey is noise).
   {
     const survey = (heat: HeatId[]) => {
       let obstacles = 0;
@@ -1302,7 +1306,7 @@ console.log("edge-case assertions: PASS");
       let movers = 0;
       let gapSum = 0;
       let gaps = 0;
-      for (let seedIdx = 0; seedIdx < 3; seedIdx++) {
+      for (let seedIdx = 0; seedIdx < 5; seedIdx++) {
         const gen = new TrackGenerator(
           createRng(`heat-gen-${seedIdx}`),
           false,
@@ -1310,8 +1314,8 @@ console.log("edge-case assertions: PASS");
           resolveHeat(normalizeHeat(heat)),
         );
         let prevS1 = 0;
-        while (gen.generatedUpTo < 10000) {
-          gen.fill(10000, {
+        while (gen.generatedUpTo < 20000) {
+          gen.fill(20000, {
             chunk: (c) => {
               obstacles += c.obstacles.length;
               for (const o of c.obstacles) {
@@ -1341,13 +1345,16 @@ console.log("edge-case assertions: PASS");
     const scarce = survey(["scarceShields"]);
     const dense = survey(["denseField"]);
     const fast = survey(["fastMovers"]);
-    assert.ok(plain.shields >= 8, `plain track must drip shields (${plain.shields})`);
+    assert.ok(plain.shields >= 15, `plain track must drip shields (${plain.shields})`);
     assert.ok(
       scarce.shields < plain.shields * 0.55,
       `Scarce Shields must thin the drip (${scarce.shields} vs ${plain.shields})`,
     );
+    // Long wall-ribbon patterns don't scale with the scatter heat, so the
+    // relative gain is smaller than pre-course — the seam shrink below is
+    // the stronger Dense Field signal.
     assert.ok(
-      dense.obstacles > plain.obstacles * 1.05,
+      dense.obstacles > plain.obstacles * 1.02,
       `Dense Field must add geometry (${dense.obstacles} vs ${plain.obstacles})`,
     );
     assert.ok(

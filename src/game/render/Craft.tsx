@@ -300,10 +300,14 @@ export function Craft() {
       group.scale.setScalar(1 - t * 0.18);
       group.visible = world.deathTimer < 1.08;
     } else {
+      // Nose into the winding course tangent so bends read on the craft too.
+      const courseYaw = idle
+        ? 0
+        : -((world.courseOffsetAt(dist + 9) - world.courseOffsetAt(dist - 3)) / 12) * 0.7;
       group.position.set(x, y, 0);
       group.rotation.set(
         0.02 - world.speedNorm * 0.04 - world.boostCharge * 0.09,
-        -world.latVel * 0.006,
+        -world.latVel * 0.006 + courseYaw,
         bank,
       );
       group.scale.setScalar(1);

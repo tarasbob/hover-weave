@@ -29,6 +29,13 @@ export interface PilotOpts {
   boost?: boolean;
 }
 
+/** Worst-case resting height (mirrors the validator's vertical logic). */
+function pilotRestY(o: SimWorld["obstacles"][number]): number {
+  if (o.motion === Motion.FallY) return o.m1;
+  if (o.motion === Motion.Serpent) return o.y - o.m2;
+  return o.cy;
+}
+
 /** Lateral gaps between worst-case obstacle envelopes inside an s-band. */
 export function scanGaps(
   world: SimWorld,
@@ -40,20 +47,22 @@ export function scanGaps(
     if (!o.active || !o.collidable) continue;
     const sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx + 2;
     if (o.cs + sExt < bandStart || o.cs - sExt > bandEnd) continue;
-    const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
+    const restY = pilotRestY(o);
     const vHalf = o.kind === "ring" ? o.hx : o.hy;
     if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
     for (const r of blockedRanges(specOf(o))) blocked.push(r);
   }
   blocked.sort((a, b) => a[0] - b[0]);
 
+  // The playable band follows the winding course clamp.
+  const off = world.courseOffsetAt((bandStart + bandEnd) / 2);
   const gaps: [number, number][] = [];
-  let cursor = -TRACK.X_LIMIT;
+  let cursor = off - TRACK.X_LIMIT;
   for (const [b0, b1] of blocked) {
     if (b0 > cursor + 2) gaps.push([cursor, b0]);
     cursor = Math.max(cursor, b1);
   }
-  if (cursor < TRACK.X_LIMIT - 2) gaps.push([cursor, TRACK.X_LIMIT]);
+  if (cursor < off + TRACK.X_LIMIT - 2) gaps.push([cursor, off + TRACK.X_LIMIT]);
   return gaps;
 }
 
@@ -104,8 +113,11 @@ export function lookaheadPilot(
   const speed = Math.max(world.speed, 20);
   const DS = 4;
   const LANE = 0.5;
-  const LANES = Math.round((TRACK.X_LIMIT * 2) / LANE) + 1;
-  const laneX = (l: number) => -TRACK.X_LIMIT + l * LANE;
+  // Frame widened by the course amplitude so a drifting corridor still fits.
+  const FRAME_HALF = TRACK.X_LIMIT + 18;
+  const LANES = Math.round((FRAME_HALF * 2) / LANE) + 1;
+  const frame0 = world.courseOffsetAt(craftS) - FRAME_HALF;
+  const laneX = (l: number) => frame0 + l * LANE;
   // Plan ~2.4 s ahead (greedy reads ~1.35 s and cannot see dead-ends).
   const horizon = 10 + speed * 2.4;
   const slices = Math.min(80, Math.ceil(horizon / DS));
@@ -117,25 +129,36 @@ export function lookaheadPilot(
     if (!o.active || !o.collidable) continue;
     const sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx + 2;
     if (o.cs + sExt < band0 || o.cs - sExt > band0 + slices * DS) continue;
-    const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
+    const restY = pilotRestY(o);
     const vHalf = o.kind === "ring" ? o.hx : o.hy;
     if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
     const k0 = Math.max(0, Math.floor((o.cs - sExt - band0) / DS));
     const k1 = Math.min(slices - 1, Math.floor((o.cs + sExt - band0) / DS));
     if (k1 < k0) continue;
     for (const [x0, x1] of blockedRanges(specOf(o))) {
-      const l0 = Math.max(0, Math.floor((x0 + TRACK.X_LIMIT) / LANE));
-      const l1 = Math.min(LANES - 1, Math.ceil((x1 + TRACK.X_LIMIT) / LANE));
+      const l0 = Math.max(0, Math.floor((x0 - frame0) / LANE));
+      const l1 = Math.min(LANES - 1, Math.ceil((x1 - frame0) / LANE));
       for (let k = k0; k <= k1; k++) {
         const row = blocked[k];
         for (let l = l0; l <= l1; l++) row[l] = 1;
       }
     }
   }
+  // Rasterize the course clamp itself: lanes outside offset ± X_LIMIT at each
+  // slice are unreachable in the sim.
+  for (let k = 0; k < slices; k++) {
+    const off = world.courseOffsetAt(band0 + k * DS);
+    const lo = Math.floor((off - TRACK.X_LIMIT - frame0) / LANE);
+    const hi = Math.ceil((off + TRACK.X_LIMIT - frame0) / LANE);
+    const row = blocked[k];
+    for (let l = 0; l < LANES; l++) {
+      if (l < lo || l > hi) row[l] = 1;
+    }
+  }
 
   // Forward reachability from the craft (sustainable lateral slope ~0.4).
   const reachLanes = Math.max(1, Math.round((DS * 0.4) / LANE));
-  const cl = Math.round((world.x + TRACK.X_LIMIT) / LANE);
+  const cl = Math.round((world.x - frame0) / LANE);
   const fwd: Uint8Array[] = [];
   const start = new Uint8Array(LANES);
   for (let l = Math.max(0, cl - 2); l <= Math.min(LANES - 1, cl + 2); l++) {
@@ -241,7 +264,9 @@ interface Envelope {
   x1: number;
 }
 
-const ROLL_DT = 1 / 60;
+// The sim's exact fixed step: rollout dynamics must integrate identically,
+// or the accumulated lateral error dwarfs the razor margins the search shaves.
+const ROLL_DT = 1 / 120;
 // Candidates pre-quantized so rollout dynamics match what the sim executes
 // (the world consumes a 1/127-step axis since input recording landed).
 const ROLL_PHASE1 = [-1, -0.55, -0.22, 0, 0.22, 0.55, 1].map(quantizeAxis);
@@ -261,11 +286,13 @@ function gatherEnvelopes(world: SimWorld, out: Envelope[], sEnd: number): void {
       sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
     }
     if (o.s + sExt < s0 || o.s - sExt > sEnd) continue;
-    const restY = o.motion === Motion.FallY ? o.m1 : o.cy;
+    const restY = pilotRestY(o);
     const vHalf = o.kind === "ring" ? o.hx : o.hy;
     if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
     // Tight slack: the search shaves far closer than the validator plans.
-    for (const [x0, x1] of blockedRanges(specOf(o), 0.06)) {
+    // (0.06 pre-course; the winding drift adds real model error over the
+    // rollout horizon, so the margin carries a little more.)
+    for (const [x0, x1] of blockedRanges(specOf(o), 0.12)) {
       out.push({ s0: o.s - sExt - 1, s1: o.s + sExt + 1, x0, x1 });
     }
   }
@@ -282,26 +309,32 @@ function rollout(
   a1: number,
   a2: number,
   steps: number,
+  offsetAt: (s: number) => number,
+  switchFrac = 0.5,
 ): { survived: number; clearance: number } {
   let s = sStart;
   let x = xStart;
   let v = vStart;
   const maxLat = Math.max(10, speed) * STEER.RATIO;
   let clearance = Infinity;
+  const switchAt = steps * switchFrac;
   for (let i = 0; i < steps; i++) {
-    const axis = i < steps / 2 ? a1 : a2;
+    const axis = i < switchAt ? a1 : a2;
     v += axis * Math.max(10, speed) * STEER.ACCEL_K * ROLL_DT;
     const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
     v *= Math.exp(-drag * ROLL_DT);
     if (v > maxLat) v = maxLat;
     else if (v < -maxLat) v = -maxLat;
     x += v * ROLL_DT;
-    if (x < -TRACK.X_LIMIT) {
-      x = -TRACK.X_LIMIT;
-      v = Math.max(0, v) * 0.4;
-    } else if (x > TRACK.X_LIMIT) {
-      x = TRACK.X_LIMIT;
-      v = Math.min(0, v) * 0.4;
+    // Mirror the sim's course clamp exactly (wall-relative damping).
+    const off = offsetAt(s);
+    const wallVel = (off - offsetAt(s - speed * ROLL_DT)) / ROLL_DT;
+    if (x < off - TRACK.X_LIMIT) {
+      x = off - TRACK.X_LIMIT;
+      v = wallVel + Math.max(0, v - wallVel) * 0.4;
+    } else if (x > off + TRACK.X_LIMIT) {
+      x = off + TRACK.X_LIMIT;
+      v = wallVel + Math.min(0, v - wallVel) * 0.4;
     }
     s += speed * ROLL_DT;
     for (const e of envs) {
@@ -324,29 +357,43 @@ function rollout(
  * is precisely the overdrive wall Phase 2 is supposed to build.
  */
 export function superhumanPilot(world: SimWorld, input: InputState): void {
+  // Decide at 60 Hz (hold the axis on odd sim steps): exact-step rollouts at
+  // a deeper horizon doubled the search cost — this claws the budget back.
+  if (Math.round(world.time / (1 / 120)) % 2 === 1) return;
   const speed = Math.max(world.speed, 10);
-  const horizonS = 1.9;
+  // 2.4 s: the winding course + denser pattern pool punish the old 1.9 s
+  // commitment window (the TAS could get walled after a forced retreat).
+  const horizonS = 2.4;
   const steps = Math.round(horizonS / ROLL_DT);
   gatherEnvelopes(world, envScratch, world.distance + speed * horizonS + 12);
+  const offsetAt = (s: number) => world.courseOffsetAt(s);
 
   let bestAxis = 0;
+  let bestScore = -Infinity;
   let bestSurvived = -1;
-  let bestClearance = -1;
-  for (const a1 of ROLL_PHASE1) {
-    for (const a2 of ROLL_PHASE2) {
-      const r = rollout(
-        envScratch, world.distance, world.x, world.latVel, speed, a1, a2, steps,
-      );
-      const better =
-        r.survived > bestSurvived ||
-        (r.survived === bestSurvived && r.clearance > bestClearance);
-      if (better) {
-        bestSurvived = r.survived;
-        bestClearance = r.clearance;
-        bestAxis = a1;
+  const search = (switchFrac: number) => {
+    for (const a1 of ROLL_PHASE1) {
+      for (const a2 of ROLL_PHASE2) {
+        const r = rollout(
+          envScratch, world.distance, world.x, world.latVel, speed, a1, a2, steps, offsetAt,
+          switchFrac,
+        );
+        // Clearance is worth a few virtual steps: prefer lines with real
+        // margin over razor shaves when both survive the horizon.
+        const score = r.survived + Math.min(r.clearance, 2.5) * 4;
+        if (score > bestScore) {
+          bestScore = score;
+          bestSurvived = r.survived;
+          bestAxis = a1;
+        }
       }
     }
-  }
+  };
+  // Classic half-split first; if nothing fully survives, widen the search
+  // with an early-jink shape — the winding course + denser pattern pool
+  // produce funnel entries the single-shape search could not thread.
+  search(0.5);
+  if (bestSurvived < steps) search(0.25);
   input.axis = bestAxis;
   input.boost = false;
 }

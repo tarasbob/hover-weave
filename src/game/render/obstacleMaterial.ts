@@ -35,13 +35,36 @@ export function createObstacleMaterial(
   attr: THREE.InstancedBufferAttribute,
   opts: {
     emissiveBase?: number;
-    profile?: "metal" | "crystal" | "ring";
+    profile?: "metal" | "crystal" | "ring" | "glass" | "bumper" | "beam";
   } = {},
 ): THREE.MeshStandardNodeMaterial {
   const profile = opts.profile ?? "metal";
   const mat = new THREE.MeshStandardNodeMaterial();
-  mat.metalness = profile === "crystal" ? 0.42 : profile === "ring" ? 0.82 : 0.72;
-  mat.roughness = profile === "crystal" ? 0.14 : profile === "ring" ? 0.22 : 0.3;
+  mat.metalness =
+    profile === "crystal" ? 0.42
+    : profile === "ring" ? 0.82
+    : profile === "glass" ? 0.08
+    : profile === "bumper" ? 0.12
+    : profile === "beam" ? 0.3
+    : 0.72;
+  mat.roughness =
+    profile === "crystal" ? 0.14
+    : profile === "ring" ? 0.22
+    : profile === "glass" ? 0.06
+    : profile === "bumper" ? 0.52
+    : profile === "beam" ? 0.18
+    : 0.3;
+  if (profile === "glass") {
+    // See-through panes: the field behind must stay readable at speed.
+    mat.transparent = true;
+    mat.opacity = 0.42;
+    mat.depthWrite = false;
+  }
+  if (profile === "beam") {
+    mat.transparent = true;
+    mat.opacity = 0.88;
+    mat.depthWrite = false;
+  }
 
   const data = instancedBufferAttribute<"vec2">(attr, "vec2");
   const role = data.x;
@@ -78,6 +101,18 @@ export function createObstacleMaterial(
     } else if (profile === "ring") {
       profileColor = mix(paletteColor, env.uPrimary, 0.22);
       profileEnergy = sin(env.uTime.mul(5.5).add(seed.mul(20))).mul(0.16).add(1.18);
+    } else if (profile === "glass") {
+      // Cold, edge-lit panes with a slow internal shimmer.
+      profileColor = mix(paletteColor, env.uAccent, 0.55);
+      profileEnergy = sin(env.uTime.mul(1.6).add(seed.mul(12))).mul(0.12).add(1.25);
+    } else if (profile === "bumper") {
+      // Rubbery breathing pulse — reads as "springy", not "lethal".
+      profileColor = mix(paletteColor, env.uAccent, 0.3);
+      profileEnergy = sin(env.uTime.mul(3.2).add(seed.mul(17))).mul(0.28).add(1.2);
+    } else if (profile === "beam") {
+      // Hot core: per-instance glow (CPU-driven phase) does the talking.
+      profileColor = mix(paletteColor, env.uWarn, 0.35);
+      profileEnergy = sin(env.uTime.mul(11).add(seed.mul(23))).mul(0.2).add(1.6);
     }
 
     const intensity = fresnel

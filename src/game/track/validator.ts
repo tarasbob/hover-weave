@@ -1,4 +1,4 @@
-import { CRAFT, overdriveAt, STEER, TRACK } from "../core/constants";
+import { CRAFT, overdriveAt, SERPENT, STEER, TRACK } from "../core/constants";
 import { clamp } from "../core/mathUtils";
 import { Motion, type ObstacleSpec } from "../core/types";
 
@@ -70,10 +70,12 @@ export function blockedRanges(
   if (o.collidable === false || o.noValidate) return [];
 
   // Vertical: does it intersect the craft band? FallY uses its resting y,
-  // pendulums the bottom of their swing, rings their full disc.
+  // pendulums the bottom of their swing, serpents their deepest dip, rings
+  // their full disc.
   let restY = o.y;
   if (o.motion === Motion.FallY) restY = o.m1 ?? o.y;
   if (o.motion === Motion.Pendulum) restY = o.y - (o.m0 ?? 0);
+  if (o.motion === Motion.Serpent) restY = o.y - (o.m2 ?? 0);
   const vHalf = o.kind === "ring" ? o.hx : o.hy;
   if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) return [];
 
@@ -130,6 +132,11 @@ export function blockedRanges(
       const amp = Math.abs(o.m2 ?? 0);
       x0 -= amp;
       x1 += amp;
+      break;
+    }
+    case Motion.Serpent: {
+      x0 -= SERPENT.WOBBLE;
+      x1 += SERPENT.WOBBLE;
       break;
     }
   }

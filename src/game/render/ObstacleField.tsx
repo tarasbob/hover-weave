@@ -4,7 +4,7 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
-import { LOOKAHEAD, POOL_SIZES } from "../core/constants";
+import { BEAM, BUMPER, LOOKAHEAD, POOL_SIZES } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import type { Obstacle, ObstacleKind } from "../core/types";
 import { createObstacleMaterial } from "./obstacleMaterial";
@@ -18,6 +18,7 @@ const SETPIECE_IDS = new Set([
   "breathingRings",
   "turbineField",
   "apexGauntlet",
+  "leviathan",
 ]);
 
 interface KindPool {
@@ -43,13 +44,26 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
   const nearFlash = useRef({ x: 0, s: 0, value: 0 });
 
   const pools = useMemo(() => {
+    const profileFor = (kind: ObstacleKind) =>
+      kind === "crystal" ? "crystal"
+      : kind === "ring" ? "ring"
+      : kind === "glass" ? "glass"
+      : kind === "bumper" ? "bumper"
+      : kind === "beam" ? "beam"
+      : "metal";
+    const emissiveFor = (kind: ObstacleKind) =>
+      kind === "ring" ? 0.5
+      : kind === "beam" ? 0.9
+      : kind === "glass" ? 0.3
+      : kind === "bumper" ? 0.28
+      : 0.05;
     const make = (kind: ObstacleKind, geo: THREE.BufferGeometry, capacity: number, castShadow: boolean): KindPool => {
       const attr = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
       attr.setUsage(THREE.DynamicDrawUsage);
       geo.setAttribute("aData", attr);
       const mat = createObstacleMaterial(env, attr, {
-        emissiveBase: kind === "ring" ? 0.5 : 0.05,
-        profile: kind === "crystal" ? "crystal" : kind === "ring" ? "ring" : "metal",
+        emissiveBase: emissiveFor(kind),
+        profile: profileFor(kind),
       });
       const mesh = new THREE.InstancedMesh(geo, mat, capacity);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -65,6 +79,9 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
     const crystal = new THREE.OctahedronGeometry(1.25, 0);
     const sphere = new THREE.IcosahedronGeometry(1, 2);
     const ring = new THREE.TorusGeometry(1, 0.22, 12, 48);
+    const glass = new THREE.BoxGeometry(2, 2, 2);
+    const bumper = new THREE.SphereGeometry(1, 18, 12);
+    const beam = new THREE.BoxGeometry(2, 2, 2);
 
     return [
       make("box", box, POOL_SIZES.box, true),
@@ -72,6 +89,9 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
       make("crystal", crystal, POOL_SIZES.crystal, true),
       make("sphere", sphere, POOL_SIZES.sphere, true),
       make("ring", ring, POOL_SIZES.ring, false),
+      make("glass", glass, POOL_SIZES.glass, false),
+      make("bumper", bumper, POOL_SIZES.bumper, true),
+      make("beam", beam, POOL_SIZES.beam, false),
     ] as KindPool[];
   }, [env, shadows]);
   const poolByKind = useMemo(
@@ -111,7 +131,7 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
       if (!o.active) continue;
       const pool = poolByKind.get(o.kind) ?? pools[0];
       if (pool.count >= pool.capacity) continue;
-      writeInstance(pool, pool.count++, o, dist, nearFlash.current, matStart, matEnd);
+      writeInstance(pool, pool.count++, o, dist, nearFlash.current, matStart, matEnd, world.time);
     }
 
     for (const p of pools) {
@@ -138,6 +158,7 @@ function writeInstance(
   nearFlash: { x: number; s: number; value: number },
   matStart: number,
   matEnd: number,
+  time: number,
 ): void {
   const ahead = o.cs - dist;
   const z = -ahead;
@@ -146,6 +167,7 @@ function writeInstance(
   // Materialize deep inside the fog: scale up across the far band so nothing
   // ever pops into view.
   const grow = smoothstep(matStart, matEnd, ahead);
+  let glowScale = 1;
 
   switch (o.kind) {
     case "pillar":
@@ -166,6 +188,29 @@ function writeInstance(
       _e.set(0, 0, 0);
       break;
     }
+    case "bumper": {
+      // Squash-and-stretch rides the sim's bounce cooldown in `state`.
+      const k = Math.max(0, Math.min(1, (o.state - time) / BUMPER.COOLDOWN));
+      _s.set(o.hx * (1 + 0.35 * k), o.hy * (1 - 0.4 * k), o.hs * (1 + 0.35 * k));
+      _e.set(0, 0, 0);
+      if (k > 0) glowScale = 1 + k * 1.6;
+      break;
+    }
+    case "beam": {
+      // Phase choreography: ghost trace while off, building charge before
+      // the shot, full blaze while solid. `state` is the live Blink phase.
+      const phase = o.state;
+      const duty = o.m2;
+      const on = phase < duty;
+      const charge = !on && phase > 1 - BEAM.CHARGE_FRAC
+        ? (phase - (1 - BEAM.CHARGE_FRAC)) / BEAM.CHARGE_FRAC
+        : 0;
+      const thickness = on ? 1 : 0.1 + charge * 0.3;
+      _s.set(o.hx, o.hy * thickness, o.hs * (on ? 1 : 0.6));
+      _e.set(0, o.cyaw, 0);
+      glowScale = on ? 2.4 : 0.3 + charge * charge * 1.6;
+      break;
+    }
     default:
       _s.set(o.hx, o.hy, o.hs);
       _e.set(0, o.cyaw, 0);
@@ -181,5 +226,5 @@ function writeInstance(
     Math.abs(o.cx - nearFlash.x) < Math.max(4, o.hx + 2);
   const setpieceGlow = SETPIECE_IDS.has(o.patternId) ? 1.3 : 1;
   const reactiveGlow = isNearFlash ? nearFlash.value * 2.1 : 0;
-  pool.attr.setXY(i, ROLE_INDEX[o.role] ?? 0, o.glow * setpieceGlow + reactiveGlow);
+  pool.attr.setXY(i, ROLE_INDEX[o.role] ?? 0, o.glow * glowScale * setpieceGlow + reactiveGlow);
 }

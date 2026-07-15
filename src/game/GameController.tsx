@@ -314,6 +314,37 @@ export function GameProvider({ children }: { children: ReactNode }) {
         if (e.risk) quest.counters.riskShards++;
         evaluateQuests();
       }),
+      world.events.on("shatter", (e) => {
+        env.triggerBoost(0.6);
+        env.triggerNearMiss(0.8, 0);
+        audio.shatter();
+        useGame.getState().setSkillMoment(
+          "GLASS BREACH",
+          `+${e.scoreAward.toLocaleString()} · +${e.energyAward.toFixed(1)} ENERGY`,
+          "thread",
+        );
+        evaluateQuests();
+      }),
+      world.events.on("bounce", (e) => {
+        env.triggerImpact(0.28);
+        audio.bounce(e.dir);
+        useGame.getState().setSkillMoment(
+          "KINETIC BOUNCE",
+          `+${e.scoreAward.toLocaleString()} · FLUNG ${e.dir > 0 ? "RIGHT" : "LEFT"}`,
+          "shard",
+        );
+      }),
+      world.events.on("beamFire", (e) => {
+        audio.zap(Math.sign(e.x - world.x));
+      }),
+      world.events.on("runEvent", (e) => {
+        env.triggerTransition();
+        audio.eventAlert(e.kind);
+        useGame.getState().setCallout(
+          e.name,
+          e.kind === "meteor" ? "INCOMING — WATCH THE MARKERS" : "RIDE THE SHARD RIVER",
+        );
+      }),
       world.events.on("shieldPickup", () => {
         env.triggerShield(1);
         audio.shieldPickup();

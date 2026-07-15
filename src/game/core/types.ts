@@ -3,7 +3,19 @@
  * `s` = distance along the track (meters). Render world z = -(s - craftDistance).
  */
 
-export type ObstacleKind = "box" | "pillar" | "crystal" | "sphere" | "ring" | "decor";
+export type ObstacleKind =
+  | "box"
+  | "pillar"
+  | "crystal"
+  | "sphere"
+  | "ring"
+  | "decor"
+  /** Shatterable pane: lethal unless hit while boost charge is high. */
+  | "glass"
+  /** Elastic puck: contact flings the craft sideways instead of killing. */
+  | "bumper"
+  /** Energy beam: collidable only during the ON phase of its Blink cycle. */
+  | "beam";
 export type PrecisionGrade = "close" | "razor" | "perfect";
 
 export const Motion = {
@@ -22,8 +34,22 @@ export const Motion = {
   CloseIn: 6,
   /** Crusher slam: x = baseX + sign(m2) * pulse(t * m0 + m1) * |m2|. */
   Piston: 7,
+  /**
+   * On/off duty cycle (beams): phase = frac(t * m0 + m1), solid while
+   * phase < m2. The live phase is written to `state` for the renderer.
+   */
+  Blink: 8,
+  /**
+   * Serpent segment: spine anchor (x, y), wave rate m0 (rad/s), phase m1,
+   * vertical dip amplitude m2 — cy = y - m2 * (0.5 + 0.5 sin(m0 t + m1)),
+   * plus a small fixed lateral wobble around x.
+   */
+  Serpent: 9,
 } as const;
 export type MotionType = (typeof Motion)[keyof typeof Motion];
+
+/** Randomized mid-run global events (roadmap: drama director). */
+export type RunEventKind = "meteor" | "rush";
 
 export type ColorRole = "primary" | "accent" | "warn" | "dim";
 
@@ -92,7 +118,11 @@ export interface Obstacle {
   cy: number;
   cs: number;
   cyaw: number;
-  /** Motion scratch (FallY: fall progress / velocity). */
+  /**
+   * Motion scratch. FallY: fall velocity. Blink: live phase (0..1) — the
+   * renderer reads it for the charge/fire telegraph. Bumper: sim time until
+   * which re-bounces are ignored (and the renderer's squash timer).
+   */
   state: number;
   landed: boolean;
   nearMissed: boolean;

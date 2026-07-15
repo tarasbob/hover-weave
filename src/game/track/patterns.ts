@@ -1107,10 +1107,10 @@ const splitDecision: PatternDef = {
   category: "normal",
   intensity: 5,
   skills: ["commitment", "navigation", "precision"],
-  weight: 0.75,
+  weight: 1,
   minDifficulty: 0.66,
   maxDifficulty: 1,
-  maxEntryHalf: 16,
+  maxEntryHalf: 22,
   build(ctx): PatternResult {
     const { rng, s0, difficulty: d } = ctx;
     const obstacles: ObstacleSpec[] = [];
@@ -1148,6 +1148,259 @@ const splitDecision: PatternDef = {
   },
 };
 
+/**
+ * The winding canyon: graze-able wall ribbons meander and breathe — wide
+ * mouth, a mid-run squeeze, then a bloom back open. Sparse interior spires
+ * keep the line honest through the pinch.
+ */
+const canyonRun: PatternDef = {
+  id: "canyonRun",
+  category: "normal",
+  intensity: 3,
+  skills: ["navigation", "commitment"],
+  weight: 1.15,
+  minDifficulty: 0.12,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const startX = clamp(ctx.entryX * 0.6, -8, 8);
+    const wideHalf = lerp(15, 12.5, d);
+    const pinch = lerp(12, 9, d) + rng.range(-0.5, 0.5);
+    const canyonStart = funnelTo(ctx, obstacles, startX, wideHalf, rng.range(3.5, 5));
+    const innerLen = rng.range(170, 240);
+    const segLen = 8;
+    const waves = rng.range(0.8, 1.3);
+    // Center meander budgeted to ~60% of the authoring slope: the breathing
+    // walls consume the rest.
+    const ampMax = (SLOPE * 0.6 * innerLen) / (2 * Math.PI * waves);
+    const amp = Math.min(lerp(9, 14, d), ampMax);
+    const phase = rng.range(0, Math.PI * 2);
+    let cx = startX;
+    let sinceSpire = 0;
+    for (let s = 0; s < innerLen; s += segLen) {
+      const t = s / innerLen;
+      cx = startX + Math.sin(phase + t * Math.PI * 2 * waves) * amp - Math.sin(phase) * amp * (1 - t * 0.2);
+      const breath = Math.pow(Math.sin(t * Math.PI), 1.3);
+      const half = lerp(wideHalf, pinch, breath);
+      const hy = rng.range(3.5, 6);
+      const accent = s % (segLen * 4) < segLen;
+      const lw = cx - half;
+      const rw = cx + half;
+      const wallExtra = { role: accent ? ("accent" as const) : ("dim" as const), glow: accent ? 1.4 : 1 };
+      if (lw > -XP) obstacles.push(box((-XP + lw) / 2, canyonStart + s, (lw + XP) / 2, hy, segLen / 2 + 0.4, wallExtra));
+      if (rw < XP) obstacles.push(box((rw + XP) / 2, canyonStart + s, (XP - rw) / 2, hy, segLen / 2 + 0.4, wallExtra));
+      sinceSpire += segLen;
+      if (sinceSpire > 26 && t > 0.1 && t < 0.9 && rng.chance(0.55)) {
+        sinceSpire = 0;
+        const w = rng.range(0.8, 1.3);
+        obstacles.push(
+          box(cx + rng.sign() * rng.range(2.5, half - 2.8), canyonStart + s + segLen * 0.5, w, rng.range(3, 6), w, {
+            kind: rng.chance(0.5) ? "crystal" : "pillar",
+            yaw: rng.range(0, Math.PI),
+            role: "primary",
+          }),
+        );
+      }
+      if (s % 22 < segLen) pickups.push({ type: "shard", s: canyonStart + s, x: cx, y: 1.3 });
+      // Squeeze-peak wall hugs pay: a risk shard pressed against the ribbon.
+      if (breath > 0.9 && s % 16 < segLen) {
+        pickups.push({ type: "shard", s: canyonStart + s, x: cx + rng.sign() * (half - 1.6), y: 1.3, magnet: false });
+      }
+    }
+    const length = canyonStart + innerLen - s0 + 14;
+    return { length, exitX: cx, exitHalf: wideHalf - 1, obstacles, pickups };
+  },
+};
+
+/**
+ * Boost-as-a-key: a divider splits the corridor into a safe weave lane and a
+ * glass lane sealed by panes. Smashing through (boost held) pays shards and
+ * smash bonuses; divider gaps let a dry tank bail back to the safe side.
+ */
+const glassRush: PatternDef = {
+  id: "glassRush",
+  category: "normal",
+  intensity: 3,
+  skills: ["commitment", "navigation"],
+  weight: 1.5,
+  minDifficulty: 0.18,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const side = rng.sign(); // Glass lane side.
+    const divX = side * 4.5;
+    const wallInner = 13.5;
+    const laneX = side * ((4.5 + 0.6 + wallInner) / 2); // Glass lane center.
+    // The funnel feeds the SAFE side only — the glass lane is a deliberate
+    // turn-in, never something the guaranteed line gets pushed into.
+    const corridorStart = funnelTo(ctx, obstacles, -side * 6.5, 8.5, 4);
+    const innerLen = rng.range(120, 170);
+
+    // Outer wall sealing the glass lane's far side.
+    for (let s = 0; s < innerLen; s += 12) {
+      obstacles.push(
+        box(side * (wallInner + 6), corridorStart + s, 6, rng.range(3.5, 5), 6.5, { role: "dim" }),
+      );
+    }
+    // Divider with bail-out gaps for a dry tank.
+    const divStart = corridorStart + 14;
+    for (let s = 0; s < innerLen - 26; s += 13) {
+      obstacles.push(
+        box(divX, divStart + s, 0.6, 3.4, 4.5, {
+          role: s === 0 ? "warn" : "dim",
+          glow: s === 0 ? 1.7 : 1,
+        }),
+      );
+    }
+    // Glass panes seal the loot lane; the validator treats them as solid, so
+    // the guaranteed line always lives on the open side.
+    const panes = rng.int(3, 4 + Math.round(d));
+    const paneGap = (innerLen - 40) / panes;
+    for (let i = 0; i < panes; i++) {
+      const ps = divStart + 16 + i * paneGap + rng.range(-3, 3);
+      obstacles.push({
+        kind: "glass",
+        x: laneX, s: ps, y: 1.6,
+        hx: (wallInner - 4.5 - 0.6) / 2 + 0.3,
+        hy: 1.6, hs: 0.32,
+        role: "accent", glow: 1.5,
+      });
+      pickups.push(...shardLine(ps + 4, laneX, 3, 3.4, false));
+    }
+    // The open side stays honest: a sparse weave across its width.
+    const weaveLo = side > 0 ? -XP + 4 : divX + 3.4;
+    const weaveHi = side > 0 ? divX - 3.4 : XP - 4;
+    for (let s = 24; s < innerLen - 12; s += rng.range(22, 32)) {
+      const w = rng.range(0.9, 1.4);
+      obstacles.push(
+        box(rng.range(weaveLo, weaveHi), corridorStart + s, w, rng.range(3, 5.5), w, {
+          kind: rng.chance(0.5) ? "pillar" : "box",
+          role: "primary",
+        }),
+      );
+    }
+    const length = corridorStart + innerLen - s0 + 16;
+    return { length, exitX: -side * 5, exitHalf: 13, obstacles, pickups };
+  },
+};
+
+/** A pinball alley: elastic pucks that fling instead of kill, laced with real hazards. */
+const pinballAlley: PatternDef = {
+  id: "pinballAlley",
+  category: "normal",
+  intensity: 2,
+  skills: ["reaction", "navigation"],
+  weight: 1,
+  minDifficulty: 0.08,
+  maxDifficulty: 0.92,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const length = rng.range(150, 230);
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const rowStep = lerp(26, 18, d);
+    for (let s = 18; s < length - 10; s += rowStep * rng.range(0.85, 1.3)) {
+      const count = rng.int(1, 2);
+      for (let i = 0; i < count; i++) {
+        const x = rng.range(-XP + 6, XP - 6);
+        const r = rng.range(1.1, 1.6);
+        obstacles.push({
+          kind: "bumper",
+          x, s: s0 + s + rng.range(-2, 2), y: 1.1,
+          hx: r, hy: 1.15, hs: r,
+          role: "accent", glow: 1.8,
+        });
+        // Loot rides just past the puck: bank a deliberate bounce (or thread
+        // beside it) to collect.
+        if (rng.chance(0.5)) {
+          pickups.push({ type: "shard", s: s0 + s + 7, x: x + rng.sign() * 2.4, y: 1.3, magnet: false });
+        }
+      }
+      // Real hazards keep the alley lethal between the toys.
+      if (rng.chance(lerp(0.35, 0.7, d))) {
+        const w = rng.range(0.9, 1.6);
+        obstacles.push(
+          box(rng.range(-XP + 4, XP - 4), s0 + s + rowStep * 0.5, w, rng.range(2.5, 6), w, {
+            kind: rng.chance(0.4) ? "crystal" : "box",
+            yaw: rng.range(-0.5, 0.5),
+            role: "primary",
+          }),
+        );
+      }
+    }
+    return { length, exitX: 0, exitHalf: XP - 5, obstacles, pickups };
+  },
+};
+
+/**
+ * Pulse-beam gates: every row pairs a plain gap with a beamed gap full of
+ * loot. The safe gap wanders gently (validator-proven); the beamed gap is a
+ * rhythm read — dive through while the beam breathes out.
+ */
+const photonGate: PatternDef = {
+  id: "photonGate",
+  category: "normal",
+  intensity: 3,
+  skills: ["rhythm", "commitment"],
+  weight: 1.2,
+  minDifficulty: 0.22,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { rng, s0, difficulty: d } = ctx;
+    const rows = rng.int(4, 6);
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const gapHalf = lerp(4.4, 3.4, d);
+    const laneOff = 6.5;
+    let gx = clamp(ctx.entryX * 0.5 + rng.range(-2, 2), -4, 4);
+    let side = rng.sign();
+    let openX = gx - side * laneOff;
+    let s = s0 + leadInDist(ctx, openX, gapHalf);
+    for (let r = 0; r < rows; r++) {
+      const beamX = gx + side * laneOff;
+      obstacles.push(
+        ...multiGapRow(
+          s,
+          [{ x: openX, half: gapHalf }, { x: beamX, half: gapHalf }],
+          rng.range(3.2, 4.6),
+          1.1,
+          { role: "primary" },
+        ),
+      );
+      obstacles.push({
+        kind: "beam",
+        x: beamX, s, y: 1.2,
+        hx: gapHalf - 0.1, hy: 1.0, hs: 0.3,
+        role: "warn", glow: 1.6,
+        motion: Motion.Blink,
+        m0: rng.range(0.4, 0.62) * lerp(1, 1.3, d),
+        m1: rng.range(0, 1),
+        m2: lerp(0.52, 0.62, d),
+      });
+      pickups.push(...shardLine(s - 3, beamX, 3, 3, false));
+      if (r === rows - 1) break;
+      // The pair drifts gently; the beam occasionally swaps sides. Row gaps
+      // are sized against the OPEN lane's true shift (a side swap moves it by
+      // two lane offsets), so the guaranteed line always has room to cross.
+      const ng = clamp(gx + rng.range(-3.5, 3.5), -4, 4);
+      const nextSide = rng.chance(0.7) ? -side : side;
+      const nextOpenX = ng - nextSide * laneOff;
+      s += Math.max(
+        lerp(38, 30, d) * rng.range(0.95, 1.25),
+        rowRun(nextOpenX - openX, gapHalf, gapHalf) + 10,
+      );
+      gx = ng;
+      side = nextSide;
+      openX = nextOpenX;
+    }
+    return { length: s - s0 + 16, exitX: openX, exitHalf: gapHalf + 1, obstacles, pickups };
+  },
+};
+
 export const NORMAL_PATTERNS: PatternDef[] = [
   slalomGates,
   narrowGates,
@@ -1168,6 +1421,10 @@ export const NORMAL_PATTERNS: PatternDef[] = [
   pulseWeave,
   rotorRhythm,
   splitDecision,
+  canyonRun,
+  glassRush,
+  pinballAlley,
+  photonGate,
 ];
 
 /** Long free-navigation scatter sections. */

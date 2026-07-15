@@ -3,7 +3,7 @@
 import * as Tone from "tone";
 import { RESONANCE } from "../core/constants";
 import type { SimWorld } from "../core/world";
-import type { PrecisionGrade } from "../core/types";
+import type { PrecisionGrade, RunEventKind } from "../core/types";
 import { clamp01, damp } from "../core/mathUtils";
 
 /**
@@ -467,5 +467,50 @@ export class AudioEngine {
 
   uiClick(): void {
     this.oneShot(() => this.pluck.triggerAttackRelease("A5", "32n", undefined, 0.4));
+  }
+
+  /** Boost-smashed glass: a bright crystalline burst over a noise crunch. */
+  shatter(): void {
+    this.oneShot(() => {
+      const now = Tone.now();
+      this.crashNoise.triggerAttackRelease("16n", now, 0.45);
+      this.chime.triggerAttackRelease(["E6", "B6"], "32n", now, 0.55);
+      this.chime.triggerAttackRelease("E7", "32n", now + 0.04, 0.4);
+    });
+  }
+
+  /** Bumper fling: a rubbery low boing panned with the launch direction. */
+  bounce(dir: number): void {
+    this.oneShot(() => {
+      this.whooshPanner.pan.rampTo(Math.max(-1, Math.min(1, dir)) * 0.7, 0.02);
+      this.impact.triggerAttackRelease("E2", "16n", undefined, 0.5);
+      this.whooshFilter.frequency.value = 700;
+      this.whoosh.triggerAttackRelease("16n", undefined, 0.5);
+    });
+  }
+
+  /** A pulse beam ahead just fired: a short panned electric zap. */
+  zap(side: number): void {
+    this.oneShot(() => {
+      this.whooshPanner.pan.rampTo(Math.max(-1, Math.min(1, side)) * 0.6, 0.015);
+      this.whooshFilter.frequency.value = 3400;
+      this.whoosh.triggerAttackRelease("32n", undefined, 0.32);
+    });
+  }
+
+  /** Drama director stinger: meteors rumble, rushes ring. */
+  eventAlert(kind: RunEventKind): void {
+    this.oneShot(() => {
+      const now = Tone.now();
+      if (kind === "meteor") {
+        this.thunderFilter.frequency.value = 220;
+        this.thunder.triggerAttackRelease("1n", now, 0.7);
+        this.chime.triggerAttackRelease(["D4", "Ab4"], "8n", now, 0.55);
+      } else {
+        this.chime.triggerAttackRelease("A5", "16n", now, 0.6);
+        this.chime.triggerAttackRelease("D6", "16n", now + 0.08, 0.7);
+        this.chime.triggerAttackRelease("F6", "8n", now + 0.16, 0.8);
+      }
+    });
   }
 }

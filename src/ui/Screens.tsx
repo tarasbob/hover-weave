@@ -398,6 +398,8 @@ function GameOverScreen() {
           <Stat label="BOOST TIME" value={`${s.boostTime.toFixed(1)}s`} />
           {s.dashes > 0 && <Stat label="DASHES" value={String(s.dashes)} />}
           {s.resonantPasses > 0 && <Stat label="RESONANT" value={String(s.resonantPasses)} />}
+          {s.glassSmashed > 0 && <Stat label="GLASS" value={String(s.glassSmashed)} />}
+          {s.bounces > 0 && <Stat label="BOUNCES" value={String(s.bounces)} />}
         </div>
 
         <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
@@ -1215,6 +1217,18 @@ function HelpOverlay() {
         <div>
           <span className="font-bold text-amber-200">Shields</span> are rare. One hit is forgiven;
           the second is not, and a shield break costs Flow.
+        </div>
+        <div>
+          <span className="font-bold text-cyan-200">The track winds.</span> The corridor drifts and
+          breathes — read the bends early. Not everything lethal is solid, either:{" "}
+          <span className="font-bold text-cyan-200">glass panes</span> shatter if you hit them
+          boosting (loot lanes hide behind them),{" "}
+          <span className="font-bold text-amber-200">bumpers</span> fling you sideways instead of
+          killing you, and <span className="font-bold text-rose-300">pulse beams</span> breathe on
+          a rhythm — dive through while they charge. When the sky calls a{" "}
+          <span className="font-bold text-rose-300">METEOR BARRAGE</span>, watch the glowing ground
+          markers; when it calls a <span className="font-bold text-amber-200">GOLDEN RUSH</span>,
+          ride the shard river.
         </div>
         <div>
           <Key>R</Key> restarts instantly. <Key>ESC</Key> pauses. The{" "}
