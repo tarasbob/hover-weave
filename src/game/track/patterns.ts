@@ -7,6 +7,7 @@ import {
   type PatternDef,
   type PatternResult,
   type PickupSpec,
+  type RouteChoiceSpec,
 } from "../core/types";
 import { PATH_SLOPE, pathSlopeAt } from "./validator";
 
@@ -1149,6 +1150,111 @@ const splitDecision: PatternDef = {
 };
 
 /**
+ * A three-decision route lattice. Each row offers a wide refuel lane, a
+ * narrow flow lane, and a beat-gated tempo lane; their positions rotate so
+ * the useful choice depends on current resources and desired next position.
+ */
+const routeLattice: PatternDef = {
+  id: "routeLattice",
+  category: "normal",
+  intensity: 5,
+  skills: ["navigation", "commitment", "precision", "rhythm"],
+  weight: 0.78,
+  minDifficulty: 0.58,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const { s0, difficulty: d } = ctx;
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const routes: RouteChoiceSpec[] = [];
+    const laneXs = [-11, 0, 11];
+    const energyHalf = lerp(5.4, 4.7, d);
+    const flowHalf = lerp(3.05, 2.5, d);
+    const tempoHalf = lerp(4.5, 3.8, d);
+    // Enough lead-in for every lane of a fully open chained entry to reach
+    // at least one branch under the conservative early validator slope.
+    let s = s0 + 90;
+
+    for (let row = 0; row < 3; row++) {
+      const energyX = laneXs[row % 3];
+      const flowX = laneXs[(row + 1) % 3];
+      const tempoX = laneXs[(row + 2) % 3];
+      obstacles.push(
+        ...multiGapRow(
+          s,
+          [
+            { x: energyX, half: energyHalf },
+            { x: flowX, half: flowHalf },
+            { x: tempoX, half: tempoHalf },
+          ],
+          5,
+          1.25,
+          { role: "primary", glow: 1.25 },
+        ),
+      );
+      // The tempo branch is never required by the worst-case validator: its
+      // blinking beam is an expert shortcut that opens on the shared beat.
+      obstacles.push({
+        kind: "beam",
+        x: tempoX,
+        s,
+        y: 1.2,
+        hx: tempoHalf - 0.18,
+        hy: 1,
+        hs: 0.28,
+        role: "warn",
+        glow: 1.75,
+        motion: Motion.Blink,
+        m0: lerp(0.48, 0.62, d),
+        m1: row * 0.25,
+        m2: lerp(0.48, 0.58, d),
+      });
+      pickups.push(...shardLine(s - 9, energyX, 6, 3.2, true));
+      pickups.push(...shardLine(s + 3, tempoX, 3, 3.1, false));
+      const decisionId = `lattice-${row}`;
+      routes.push(
+        {
+          decisionId,
+          routeId: "energy",
+          label: "Refuel line",
+          reward: "energy",
+          s,
+          x: energyX,
+          half: energyHalf,
+        },
+        {
+          decisionId,
+          routeId: "flow",
+          label: "Needle line",
+          reward: "flow",
+          s,
+          x: flowX,
+          half: flowHalf,
+        },
+        {
+          decisionId,
+          routeId: "tempo",
+          label: "Tempo line",
+          reward: "tempo",
+          s,
+          x: tempoX,
+          half: tempoHalf,
+        },
+      );
+      s += 96;
+    }
+    return {
+      length: s - s0 - 58,
+      exitX: 0,
+      exitHalf: 15,
+      obstacles,
+      pickups,
+      routes,
+    };
+  },
+};
+
+/**
  * The winding canyon: graze-able wall ribbons meander and breathe — wide
  * mouth, a mid-run squeeze, then a bloom back open. Sparse interior spires
  * keep the line honest through the pinch.
@@ -1401,6 +1507,52 @@ const photonGate: PatternDef = {
   },
 };
 
+/**
+ * Fixed-seed compound course used by the practice ladder. It composes four
+ * existing grammars into one validated phrase, so exits and resources carry
+ * forward instead of resetting after each isolated drill.
+ */
+const weaverCircuit: PatternDef = {
+  id: "weaverCircuit",
+  category: "normal",
+  intensity: 5,
+  skills: ["precision", "rhythm", "reaction", "commitment", "navigation"],
+  weight: 0,
+  minDifficulty: 0.25,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    const sequence = [slalomGates, photonGate, routeLattice, narrowGates];
+    const obstacles: ObstacleSpec[] = [];
+    const pickups: PickupSpec[] = [];
+    const routes: RouteChoiceSpec[] = [];
+    let cursor = ctx.s0;
+    let entryX = ctx.entryX;
+    let entryHalf = ctx.entryHalf;
+    for (const pattern of sequence) {
+      const part = pattern.build({
+        ...ctx,
+        s0: cursor,
+        entryX,
+        entryHalf,
+      });
+      obstacles.push(...part.obstacles);
+      pickups.push(...part.pickups);
+      routes.push(...(part.routes ?? []));
+      cursor += part.length + 20;
+      entryX = part.exitX;
+      entryHalf = part.exitHalf;
+    }
+    return {
+      length: cursor - ctx.s0,
+      exitX: entryX,
+      exitHalf: entryHalf,
+      obstacles,
+      pickups,
+      routes,
+    };
+  },
+};
+
 export const NORMAL_PATTERNS: PatternDef[] = [
   slalomGates,
   narrowGates,
@@ -1421,6 +1573,7 @@ export const NORMAL_PATTERNS: PatternDef[] = [
   pulseWeave,
   rotorRhythm,
   splitDecision,
+  routeLattice,
   canyonRun,
   glassRush,
   pinballAlley,
@@ -1433,5 +1586,7 @@ export const FIELD_PATTERNS: PatternDef[] = [
   chaosField,
   asteroidDrift,
 ];
+
+export const CIRCUIT_PATTERNS: PatternDef[] = [weaverCircuit];
 
 export const BREATHER = openField;

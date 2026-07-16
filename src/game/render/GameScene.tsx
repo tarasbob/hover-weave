@@ -54,7 +54,6 @@ export function GameScene() {
   const quality = QUALITY_CONFIGS[tier];
   const sensitivity = useSettings((s) => s.sensitivity);
   const showGhost = useSettings((s) => s.showGhost);
-  const reduceMotion = useSettings((s) => s.reduceMotion);
 
   const hudClock = useRef(0);
   const fpsEma = useRef(16.7);
@@ -159,7 +158,9 @@ export function GameScene() {
     if ((g.phase === "running" || g.phase === "dead") && !throttled) {
       // Time kiss: dip the wall-clock rate briefly after a perfect/thread.
       let kissScale = 1;
-      if (kiss.current > 0 && world.status === "running" && !reduceMotion) {
+      // Accessibility presentation settings never change ranked reaction
+      // time: every pilot receives the same gameplay-relevant kiss.
+      if (kiss.current > 0 && world.status === "running") {
         const release = Math.min(1, kiss.current / KISS.RELEASE);
         kissScale = 1 - (1 - KISS.FLOOR) * release;
       }
@@ -199,6 +200,26 @@ export function GameScene() {
         // Mode-aware pressure line: global PB for endless/daily, week best
         // for sprint, the next medal for trials (roadmap 3.5 / 4.1 / 4.2).
         const meta = useMeta.getState();
+        // First flight teaches itself inside a real endless run. Demonstrated
+        // actions advance immediately via world events; distance fallbacks
+        // prevent one missed lesson from trapping the sequence.
+        if (g.phase === "running" && g.lesson) {
+          if (
+            g.lesson === "steer" &&
+            (Math.abs(world.x - world.courseOffsetAt(world.distance)) > 2.5 ||
+              world.distance >= 100)
+          ) {
+            g.setLesson("graze");
+          } else if (g.lesson === "graze" && world.distance >= 300) {
+            g.setLesson("boost");
+          } else if (g.lesson === "boost" && world.distance >= 480) {
+            g.setLesson("rhythm");
+          } else if (g.lesson === "rhythm" && world.distance >= 600) {
+            meta.completeOnboarding();
+            g.setLesson(null);
+            g.setCallout("FLIGHT SYSTEMS ONLINE", "THE OPEN TRACK IS YOURS");
+          }
+        }
         const score = Math.floor(world.score);
         let objective: string | null = null;
         let objectiveHit: string | null = null;

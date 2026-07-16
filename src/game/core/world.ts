@@ -37,11 +37,14 @@ import {
   type ObstacleKind,
   type ObstacleSpec,
   type Pickup,
+  type PatternSkill,
   type PrecisionGrade,
+  type RouteChoiceSpec,
+  type RouteReward,
   type RunEventKind,
   type RunStatus,
 } from "./types";
-import { biomeIndexAt, BIOMES } from "../track/biomes";
+import { biomeIndexAt, BIOMES, MYTHIC_ZONES } from "../track/biomes";
 import { Course } from "../track/course";
 import { speedAt, TrackGenerator, type GeneratedChunk } from "../track/generator";
 import { trialById, type TrialDef } from "../track/trials";
@@ -142,6 +145,7 @@ export interface ChunkRecord {
   s1: number;
   patternId: string;
   intensity: number;
+  skills: PatternSkill[];
   /** Validator's solved safe line through the chunk, as [s, x] pairs. */
   path: [number, number][];
 }
@@ -205,6 +209,19 @@ export function precisionRewardAt(clearance: number): PrecisionReward {
   };
 }
 
+/** Continuous steering authority at a given residual thrust charge. */
+export function steeringAuthorityAt(boostCharge: number): number {
+  return lerp(1, STEER.BOOST_AUTHORITY, clamp01(boostCharge));
+}
+
+export interface RouteChoiceResult {
+  decisionId: string;
+  routeId: string;
+  label: string;
+  reward: RouteReward;
+  s: number;
+}
+
 export interface RunStats {
   score: number;
   distance: number;
@@ -217,6 +234,10 @@ export interface RunStats {
   dashes: number;
   /** Carve pumps + wall-kisses landed (lab "carve" only; 0 otherwise). */
   pumps: number;
+  /** Sum of normalized pump quality, for post-run technique analysis. */
+  pumpQualitySum: number;
+  /** Seconds spent above the ordinary lateral-speed envelope. */
+  glideTime: number;
   /** Perfects confirmed on the beat grid (mainline since fun-frontier 2.1). */
   resonantPasses: number;
   /** Glass panes smashed through while boosting. */
@@ -232,6 +253,10 @@ export interface RunStats {
   maxFlowTier: number;
   boosts: number;
   boostTime: number;
+  /** Integral of the continuous thrust charge across the run. */
+  boostChargeTime: number;
+  /** Authored strategic branches selected during the run. */
+  routeChoices: RouteChoiceResult[];
   obstacleDrops: number;
   pickupDrops: number;
   duration: number;
@@ -318,6 +343,9 @@ export class SimWorld {
   dangerFactor = 1;
   /** Last confirmed tight pass, pending a thread pairing. */
   private lastPass: { at: number; side: number; award: number; clearance: number } | null = null;
+  private routeGates: (RouteChoiceSpec & { resolved: boolean })[] = [];
+  private lastForeshadowS0 = -Infinity;
+  private nextForeshadowTime = 0;
 
   stats: RunStats = this.emptyStats();
 
@@ -370,6 +398,7 @@ export class SimWorld {
   private generator: TrackGenerator | null = null;
   private accumulator = 0;
   private lastBiomeIndex = 0;
+  private nextMythicIndex = 0;
   /** Interpolation snapshot for buttery rendering. */
   prevX = 0;
   prevDistance = 0;
@@ -405,10 +434,11 @@ export class SimWorld {
     return {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
       closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
-      dashes: 0, pumps: 0, resonantPasses: 0,
+      dashes: 0, pumps: 0, pumpQualitySum: 0, glideTime: 0, resonantPasses: 0,
       glassSmashed: 0, bounces: 0, runEvents: 0,
       bestShardCombo: 0, bestFlowChain: 0,
-      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
+      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0, boostChargeTime: 0,
+      routeChoices: [],
       obstacleDrops: 0, pickupDrops: 0, duration: 0,
       seed: "", mode: "endless", trialId: null, heat: [], lab: [], deathCause: null,
       sections: [], lineRating: null,
@@ -423,6 +453,7 @@ export class SimWorld {
     this.pickupFree.length = 0;
     for (let i = OBSTACLE_CAP - 1; i >= 0; i--) this.obstacleFree.push(i);
     for (let i = PICKUP_CAP - 1; i >= 0; i--) this.pickupFree.push(i);
+    this.routeGates.length = 0;
   }
 
   /**
@@ -493,6 +524,9 @@ export class SimWorld {
     this.shardComboTimer = 0;
     this.dangerFactor = 1;
     this.lastPass = null;
+    this.routeGates.length = 0;
+    this.lastForeshadowS0 = -Infinity;
+    this.nextForeshadowTime = 0;
     this.deathTimer = 0;
     this.deathSpeed = 0;
     this.accumulator = 0;
@@ -500,6 +534,8 @@ export class SimWorld {
     this.prevDistance = 0;
     this.prevBank = 0;
     this.lastBiomeIndex = 0;
+    this.nextMythicIndex = MYTHIC_ZONES.findIndex((zone) => zone.at > skipTo);
+    if (this.nextMythicIndex < 0) this.nextMythicIndex = MYTHIC_ZONES.length;
     this.stats = this.emptyStats();
     this.stats.seed = seed;
     this.stats.mode = this.mode;
@@ -686,6 +722,17 @@ export class SimWorld {
 
     if (alive) this.distance += this.speed * dt;
     if (alive) {
+      while (
+        this.nextMythicIndex < MYTHIC_ZONES.length &&
+        this.distance >= MYTHIC_ZONES[this.nextMythicIndex].at
+      ) {
+        const zone = MYTHIC_ZONES[this.nextMythicIndex++];
+        this.events.emit("mythic", {
+          depth: zone.at,
+          name: zone.label,
+          index: this.nextMythicIndex - 1,
+        });
+      }
       const biome = biomeIndexAt(this.distance);
       if (biome !== this.lastBiomeIndex) {
         this.lastBiomeIndex = biome;
@@ -706,10 +753,13 @@ export class SimWorld {
       } else if (this.labFx.carve) {
         this.stepCarve(dt, axis, maxLat);
       } else {
-        const authority = this.boosting ? STEER.BOOST_AUTHORITY : 1;
+        // Speed and steering cost share the same continuous thrust state.
+        // Releasing boost no longer grants full authority while residual
+        // charge still supplies almost-full speed.
+        const authority = steeringAuthorityAt(this.boostCharge);
         this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
         const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
-        this.latVel *= Math.exp(-drag * dt * (this.boosting ? 0.85 : 1));
+        this.latVel *= Math.exp(-drag * dt * lerp(1, 0.85, this.boostCharge));
         this.latVel = clamp(this.latVel, -maxLat, maxLat);
         this.x += this.latVel * dt;
       }
@@ -754,6 +804,8 @@ export class SimWorld {
 
     // --- Streaming -----------------------------------------------------
     this.streamAhead();
+    if (alive) this.resolveRouteChoices();
+    if (alive) this.updateForeshadow();
 
     // --- Drama director (after streaming: events read the solved paths) --
     if (alive) this.updateEvents();
@@ -808,6 +860,8 @@ export class SimWorld {
       this.stats.distance = this.distance;
       this.stats.duration = this.time;
       this.stats.maxFlowPoints = Math.max(this.stats.maxFlowPoints, this.flowPoints);
+      this.stats.boostChargeTime += this.boostCharge * dt;
+      if (this.glide > 0) this.stats.glideTime += dt;
 
       // 30 Hz line trace for the kill-cam (roadmap 3.3).
       this.stepCounter++;
@@ -844,21 +898,30 @@ export class SimWorld {
         this.latVel * dir < 0 &&
         Math.abs(this.latVel) >= CARVE.PUMP_MIN_FRAC * maxLat
       ) {
-        // Pump: the carve rebounds — carried speed mirrors into the new
-        // direction plus a bite of maxLat (more while boosting).
-        const bonus = CARVE.PUMP_BONUS * (this.boosting ? CARVE.PUMP_BOOST_GAIN : 1);
+        // Pump quality rises continuously as the reversal approaches peak
+        // carried velocity. The environment determines when that peak is
+        // useful, so a fixed metronomic macro cannot be universally optimal.
+        const carried = Math.abs(this.latVel) / maxLat;
+        const quality = clamp01(
+          (carried - CARVE.PUMP_MIN_FRAC) /
+            (CARVE.PUMP_FULL_FRAC - CARVE.PUMP_MIN_FRAC),
+        );
+        const keep = CARVE.PUMP_KEEP * lerp(0.55, 1, quality);
+        const bonus =
+          CARVE.PUMP_BONUS * quality * (this.boostCharge > 0.5 ? CARVE.PUMP_BOOST_GAIN : 1);
         const v = Math.min(
-          Math.abs(this.latVel) * CARVE.PUMP_KEEP + maxLat * bonus,
+          Math.abs(this.latVel) * keep + maxLat * bonus,
           maxLat * CARVE.OVER_RATIO,
         );
         this.latVel = dir * v;
         this.pumpCooldown = CARVE.PUMP_COOLDOWN;
         this.stats.pumps++;
+        this.stats.pumpQualitySum += quality;
         this.events.emit("pump", {
           dir,
           x: this.x,
           wall: false,
-          strength: clamp01((v / maxLat - CARVE.PUMP_MIN_FRAC) / (CARVE.OVER_RATIO - CARVE.PUMP_MIN_FRAC)),
+          strength: quality,
         });
       }
     }
@@ -873,7 +936,8 @@ export class SimWorld {
     // Glide is pump-fueled only: steering with the slide adds nothing.
     const pushing = gliding && this.latVel * axis > 0;
     const flick = this.pressTimer < CARVE.FLICK_WINDOW ? CARVE.FLICK_BOOST : 1;
-    const authority = (this.boosting ? STEER.BOOST_AUTHORITY : 1) * (pushing ? 0 : 1);
+    const authority =
+      steeringAuthorityAt(this.boostCharge) * (pushing ? 0 : 1);
     this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * flick * authority * dt;
     if (Math.abs(this.latVel) > maxLat) {
       // Above the cap only the excess decays (slowly) — the carve rides.
@@ -882,7 +946,7 @@ export class SimWorld {
       this.latVel = s * Math.min(maxLat + excess, maxLat * CARVE.OVER_RATIO);
     } else {
       const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
-      this.latVel *= Math.exp(-drag * dt * (this.boosting ? 0.85 : 1));
+      this.latVel *= Math.exp(-drag * dt * lerp(1, 0.85, this.boostCharge));
       this.latVel = clamp(this.latVel, -maxLat, maxLat);
     }
     this.x += this.latVel * dt;
@@ -901,11 +965,13 @@ export class SimWorld {
     if (rel < -0.3 * maxLat && this.pumpCooldown <= 0) {
       this.pumpCooldown = CARVE.PUMP_COOLDOWN;
       this.stats.pumps++;
+      const quality = clamp01(-rel / maxLat);
+      this.stats.pumpQualitySum += quality;
       this.events.emit("pump", {
         dir: away,
         x: this.x,
         wall: true,
-        strength: clamp01(-rel / maxLat),
+        strength: quality,
       });
     }
   }
@@ -1245,6 +1311,14 @@ export class SimWorld {
     if (chunk.announce) {
       this.events.emit("setpiece", { name: chunk.announce });
     }
+    for (const route of chunk.routes) {
+      this.routeGates.push({
+        ...route,
+        decisionId: `${Math.round(chunk.s0)}:${route.decisionId}`,
+        x: route.x + this.course.offsetAt(route.s),
+        resolved: false,
+      });
+    }
     // Always-on lightweight chunk record: section grading needs the bounds
     // and intensity, the kill-cam needs the validator's solved path — keep
     // enough behind the craft to cover the forensics window. Paths are
@@ -1254,6 +1328,7 @@ export class SimWorld {
       s1: chunk.s1,
       patternId: chunk.patternId,
       intensity: chunk.intensity,
+      skills: chunk.skills,
       path: this.course.flat
         ? chunk.path
         : chunk.path.map(([s, x]) => [s, x + this.course.offsetAt(s)] as [number, number]),
@@ -1277,6 +1352,68 @@ export class SimWorld {
         this.debugChunks.shift();
       }
     }
+  }
+
+  /** Resolve each authored fork once the craft crosses its decision row. */
+  private resolveRouteChoices(): void {
+    const due = new Set<string>();
+    for (const route of this.routeGates) {
+      if (!route.resolved && this.distance >= route.s) due.add(route.decisionId);
+    }
+    for (const decisionId of due) {
+      const routes = this.routeGates.filter(
+        (route) => !route.resolved && route.decisionId === decisionId,
+      );
+      if (routes.length === 0) continue;
+      let selected = routes[0];
+      let best = Infinity;
+      for (const route of routes) {
+        const normalized = Math.abs(this.x - route.x) / Math.max(0.25, route.half);
+        if (normalized < best) {
+          best = normalized;
+          selected = route;
+        }
+        route.resolved = true;
+      }
+      const result: RouteChoiceResult = {
+        decisionId,
+        routeId: selected.routeId,
+        label: selected.label,
+        reward: selected.reward,
+        s: selected.s,
+      };
+      this.stats.routeChoices.push(result);
+      this.events.emit("routeChoice", result);
+    }
+    this.routeGates = this.routeGates.filter(
+      (route) => !route.resolved || route.s > this.distance - 80,
+    );
+  }
+
+  /** Emit one cross-sensory preview when a real challenge is 3–8 seconds out. */
+  private updateForeshadow(): void {
+    if (this.time < this.nextForeshadowTime) return;
+    let next: ChunkRecord | null = null;
+    for (const chunk of this.chunkLog) {
+      if (
+        chunk.intensity < GRADE_MIN_INTENSITY ||
+        chunk.s0 <= this.distance ||
+        chunk.s0 === this.lastForeshadowS0
+      ) {
+        continue;
+      }
+      const lead = (chunk.s0 - this.distance) / Math.max(1, this.speed);
+      if (lead < 3 || lead > 8) continue;
+      if (!next || chunk.s0 < next.s0) next = chunk;
+    }
+    if (!next) return;
+    this.lastForeshadowS0 = next.s0;
+    this.nextForeshadowTime = this.time + 2.5;
+    this.events.emit("patternAhead", {
+      patternId: next.patternId,
+      skills: next.skills,
+      lead: (next.s0 - this.distance) / Math.max(1, this.speed),
+    });
   }
 
   private spawnPickupWorld(

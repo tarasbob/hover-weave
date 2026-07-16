@@ -18,13 +18,17 @@ import {
   gradeSection,
   obstacleTrailingEdge,
   precisionRewardAt,
+  steeringAuthorityAt,
 } from "../src/game/core/world";
 import { GhostDriver } from "../src/game/core/ghost";
 import {
   ghostEligible,
   packInput,
+  parseFlight,
   quantizeAxis,
   resimulate,
+  selectFlightHighlight,
+  serializeFlight,
   unpackAxis,
   unpackBoost,
   unpackDash,
@@ -50,10 +54,18 @@ import { heatScoreMult, normalizeHeat, resolveHeat, NO_HEAT, type HeatId } from 
 import { normalizeLab, resolveLab, NO_LAB, type LabId } from "../src/game/core/lab";
 import type { RunConfig } from "../src/game/core/modes";
 import { questsForDay, QUESTS_PER_DAY, type QuestSample } from "../src/game/core/quests";
-import { RATING, ratingTier, runPerformance, updateRating, RATING_TIERS } from "../src/game/core/rating";
+import {
+  RATING,
+  ratingTier,
+  referencePerformance,
+  runPerformance,
+  updateRating,
+  updateRatingFromPerformance,
+  RATING_TIERS,
+} from "../src/game/core/rating";
 import { createRng } from "../src/game/core/rng";
 import { Motion, type ObstacleSpec, type PatternResult } from "../src/game/core/types";
-import { TrackGenerator } from "../src/game/track/generator";
+import { TrackGenerator, type GeneratedChunk } from "../src/game/track/generator";
 import { resonatePattern } from "../src/game/track/mutators";
 import { MEDAL_ORDER, TRIALS, medalFor, nextMedalFor, trialSeed } from "../src/game/track/trials";
 import { corridorLanes, validatePattern } from "../src/game/track/validator";
@@ -402,6 +414,26 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   assert.deepEqual(replayed.stats, live.stats, "replay stats must be identical");
   assert.deepEqual(replayEvents, liveEvents, "replay event stream must be identical");
   assert.equal(replayed.getRecording(), null, "replay worlds must not re-record");
+  const portable = parseFlight(serializeFlight(rec));
+  assert.deepEqual(portable, rec, "portable .flight round-trip must preserve the recording");
+  const highlight = selectFlightHighlight(rec);
+  assert.ok(highlight.startStep >= 0 && highlight.endStep <= rec.steps);
+  assert.ok(highlight.endStep - highlight.startStep <= Math.round(20 / FIXED_DT));
+  const veryLongHold = {
+    ...rec,
+    steps: 100_000_000,
+    data: [packInput(0, false), 100_000_000],
+  };
+  assert.deepEqual(
+    selectFlightHighlight(veryLongHold),
+    { startStep: 0, endStep: Math.round(20 / FIXED_DT) },
+    "highlight selection must stay bounded for highly compressed ultra-long holds",
+  );
+  assert.throws(
+    () => parseFlight('{"format":"hover-weave-flight","recording":{"v":0}}'),
+    /incompatible|incomplete/i,
+    "stale or malformed flight files must be rejected",
+  );
 
   // Size: human-style input (held keys, sparse changes) stays a few KB.
   const keyed = new SimWorld();
@@ -874,6 +906,84 @@ console.log("simulation assertions: PASS");
 
 console.log("edge-case assertions: PASS");
 
+// --- Strategic route telemetry + predictive cues + mythic depth --------------
+{
+  const world = new SimWorld();
+  world.start(endless("route-choice-probe"));
+  world.clearField();
+  world.chunkLog.length = 0;
+  (world as unknown as { generator: null }).generator = null;
+  world.time = 1;
+  world.speed = 30;
+  const input: InputState = {
+    axis: 0,
+    boost: false,
+    dash: false,
+    restart: false,
+    pause: false,
+  };
+  const spawn = (world as unknown as {
+    spawnChunk(chunk: GeneratedChunk): void;
+  }).spawnChunk.bind(world);
+  const aheadS = world.distance + 180;
+  const choiceS = world.distance + 24;
+  const baseChunk = {
+    requestedPatternId: "routeProbe",
+    attempts: 1,
+    intensity: 4,
+    skills: ["navigation", "commitment"] as const,
+    obstacles: [],
+    pickups: [],
+    path: [],
+  };
+  let aheadEvents = 0;
+  let routeEvents = 0;
+  world.events.on("patternAhead", () => aheadEvents++);
+  world.events.on("routeChoice", (event) => {
+    routeEvents++;
+    assert.equal(event.routeId, "tempo");
+  });
+  spawn({
+    ...baseChunk,
+    skills: [...baseChunk.skills],
+    s0: aheadS,
+    s1: aheadS + 80,
+    patternId: "photonGate",
+    routes: [],
+  });
+  spawn({
+    ...baseChunk,
+    skills: [...baseChunk.skills],
+    s0: choiceS - 10,
+    s1: choiceS + 10,
+    patternId: "routeLattice",
+    routes: [
+      { decisionId: "probe", routeId: "energy", label: "Refuel line", reward: "energy", s: choiceS, x: -10, half: 4 },
+      { decisionId: "probe", routeId: "flow", label: "Needle line", reward: "flow", s: choiceS, x: 0, half: 3 },
+      { decisionId: "probe", routeId: "tempo", label: "Tempo line", reward: "tempo", s: choiceS, x: 10, half: 4 },
+    ],
+  });
+  world.x = world.courseOffsetAt(choiceS) + 10;
+  for (let i = 0; i < 180 && world.distance <= choiceS + 1; i++) {
+    world.update(FIXED_DT, input);
+  }
+  assert.equal(aheadEvents, 1, "one visual/audio preview must fire inside the lookahead");
+  assert.equal(routeEvents, 1, "one branch must resolve at the decision row");
+  assert.equal(world.stats.routeChoices[0]?.routeId, "tempo");
+
+  const mythic = new SimWorld();
+  const mythicEvents: number[] = [];
+  mythic.start({ mode: "endless", seed: "mythic-probe", skipTo: 19_990 });
+  mythic.clearField();
+  (mythic as unknown as { generator: null }).generator = null;
+  mythic.events.on("mythic", (event) => mythicEvents.push(event.depth));
+  for (let i = 0; i < 120 && mythic.distance < 20_010; i++) {
+    mythic.update(FIXED_DT, input);
+  }
+  assert.deepEqual(mythicEvents, [20_000], "the first mythic threshold must fire once");
+  console.log("route/foreshadow/mythic gate: PASS");
+}
+
 // --- Phase 2 wall calibration ------------------------------------------------
 // The treadmill must never stop: every bot tier has to die (no immortal
 // line), and better play has to buy meaningfully more distance — stable,
@@ -1024,7 +1134,7 @@ console.log("edge-case assertions: PASS");
 // step: same stats from a re-sim, same finish from a lockstepped ghost, and a
 // hard freeze of score/distance at the line.
 {
-  const config: RunConfig = { mode: "sprint", seed: "sprint-gate" };
+  const config: RunConfig = { mode: "sprint", seed: "sprint-gate-v2" };
   const live = new SimWorld();
   const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const finishes: { score: number; distance: number }[] = [];
@@ -1103,7 +1213,7 @@ console.log("edge-case assertions: PASS");
     }
     assert.ok(trial.medals.bronze >= 250, `${trial.id} bronze must not be trivial`);
     assert.ok(trial.skills.length > 0, `${trial.id} must declare skills`);
-    // Reference lines (fun-frontier 4.1): the TAS wall must sit beyond the
+    // Reference distances (fun-frontier 4.1): the automated wall must sit beyond the
     // author medal — "100% of reference" is a statement, not a medal rerun.
     assert.ok(
       trial.reference > trial.medals.author,
@@ -1447,6 +1557,17 @@ console.log("edge-case assertions: PASS");
   assert.ok(Math.abs(runPerformance(3147) - 1700) < 1, "lookahead wall anchor");
   assert.ok(Math.abs(runPerformance(33791) - 3000) < 1, "superhuman wall anchor");
   assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
+  assert.equal(referencePerformance(0, 5000), RATING.FLOOR);
+  assert.equal(referencePerformance(5000, 5000), 3000);
+  assert.equal(referencePerformance(6000, 5000), RATING.CEIL);
+  assert.ok(
+    referencePerformance(3000, 5000) > referencePerformance(2000, 5000),
+    "fixed-reference performance must be monotone",
+  );
+  assert.equal(
+    updateRatingFromPerformance(RATING.START, 0, 1400),
+    Math.round(RATING.START + RATING.K_PROVISIONAL * (1400 - RATING.START)),
+  );
 
   // Elo-ish convergence: repeated identical runs settle at the performance;
   // the provisional phase moves faster than the settled phase.
@@ -2100,7 +2221,59 @@ console.log("edge-case assertions: PASS");
   st.set(-1, true, 1096);
   assert.equal(st.drain(1096), -1, "a zero-width drain must report the held sign");
   st.clear(1100);
+
+  // The same timestamped intent has the same integrated steering area when
+  // render polling is partitioned at 60, 90, or 144 Hz.
+  const integratedAt = (hz: number): number => {
+    const axis = new SubTickAxis();
+    axis.reset(0);
+    const events = [
+      { at: 0, dir: 1 as const, held: true },
+      { at: 137, dir: 1 as const, held: false },
+      { at: 182, dir: -1 as const, held: true },
+      { at: 263, dir: -1 as const, held: false },
+      { at: 310, dir: 1 as const, held: true },
+      { at: 503, dir: 1 as const, held: false },
+    ];
+    let event = 0;
+    let previous = 0;
+    let area = 0;
+    const frame = 1000 / hz;
+    while (previous < 600) {
+      const end = Math.min(600, previous + frame);
+      while (event < events.length && events[event].at <= end) {
+        const change = events[event++];
+        axis.set(change.dir, change.held, change.at);
+      }
+      area += axis.drain(end) * (end - previous);
+      previous = end;
+    }
+    return area;
+  };
+  const area60 = integratedAt(60);
+  assert.ok(Math.abs(area60 - integratedAt(90)) < 1e-9);
+  assert.ok(Math.abs(area60 - integratedAt(144)) < 1e-9);
+  assert.ok(
+    CARVE.FLICK_WINDOW >= 4 / 60,
+    "fresh-press technique window must span at least four 60 Hz polls",
+  );
   console.log("sub-tick input gate: PASS");
+}
+
+// --- Continuous boost/steering tradeoff --------------------------------------
+{
+  assert.equal(steeringAuthorityAt(0), 1);
+  assert.equal(steeringAuthorityAt(1), STEER.BOOST_AUTHORITY);
+  const residual = steeringAuthorityAt(0.8);
+  assert.ok(
+    residual < 0.75 && residual > STEER.BOOST_AUTHORITY,
+    `residual thrust must retain a proportional steering cost (${residual.toFixed(3)})`,
+  );
+  assert.ok(
+    steeringAuthorityAt(0.75) < steeringAuthorityAt(0.25),
+    "steering authority must decrease monotonically with thrust charge",
+  );
+  console.log("continuous boost-authority gate: PASS");
 }
 
 // --- Fun-frontier 1.2: carve physics (lab "carve") ------------------------------
@@ -2245,6 +2418,42 @@ console.log("edge-case assertions: PASS");
     );
   }
 
+  // Pump quality is a continuum: a near-peak reversal must produce a
+  // materially stronger rebound and telemetry value than an early reversal.
+  {
+    const pumpAt = (carried: number): { ratio: number; quality: number } => {
+      const world = carveWorld(["carve"], `carve-quality-${carried}`);
+      const input = freshInput();
+      let quality = -1;
+      world.events.on("pump", (e) => {
+        quality = e.strength;
+      });
+      for (let i = 0; i < 240; i++) world.update(FIXED_DT, input);
+      input.axis = -1;
+      for (let i = 0; i < 3; i++) world.update(FIXED_DT, input);
+      const maxLat = maxLatOf(world);
+      world.latVel = -carried * maxLat;
+      input.axis = 1;
+      world.update(FIXED_DT, input);
+      assert.equal(world.stats.pumps, 1, "quality probe reversal must pump");
+      assert.ok(
+        Math.abs(world.stats.pumpQualitySum - quality) < 1e-9,
+        "pump quality telemetry must match the event",
+      );
+      return { ratio: world.latVel / maxLat, quality };
+    };
+    const early = pumpAt(0.62);
+    const peak = pumpAt(0.94);
+    assert.ok(
+      peak.quality > early.quality + 0.6,
+      `pump quality must reward peak timing (${early.quality.toFixed(2)} -> ${peak.quality.toFixed(2)})`,
+    );
+    assert.ok(
+      peak.ratio > early.ratio + 0.35,
+      `peak timing must create a stronger rebound (×${early.ratio.toFixed(2)} -> ×${peak.ratio.toFixed(2)})`,
+    );
+  }
+
   // Wall-kiss: pressing away at the moment of clamp contact reflects the
   // impact (and counts as a pump); the plain model absorbs it.
   {
@@ -2274,5 +2483,7 @@ console.log("edge-case assertions: PASS");
 
   // (Carve replay exactness on a real track — pumps included — is proven by
   // the full-lab-stack gate above: stats and pump event streams deep-equal.)
-  console.log("carve gate: PASS (flick, pump envelope, mistime, boost-carve, wall-kiss)");
+  console.log(
+    "carve gate: PASS (flick, continuous pump quality, envelope, mistime, boost-carve, wall-kiss)",
+  );
 }

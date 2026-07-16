@@ -93,6 +93,22 @@ export interface PickupSpec {
   magnet?: boolean;
 }
 
+export type RouteReward = "energy" | "flow" | "tempo";
+
+/**
+ * One visible branch at a decision row. Rewards are expressed by authored
+ * geometry/pickups; this metadata names the choice for telemetry and feedback.
+ */
+export interface RouteChoiceSpec {
+  decisionId: string;
+  routeId: string;
+  label: string;
+  reward: RouteReward;
+  s: number;
+  x: number;
+  half: number;
+}
+
 /** Live pooled obstacle instance. */
 export interface Obstacle {
   id: number;
@@ -166,6 +182,8 @@ export interface PatternResult {
   exitHalf: number;
   obstacles: ObstacleSpec[];
   pickups: PickupSpec[];
+  /** Optional state-dependent route choices embedded in this pattern. */
+  routes?: RouteChoiceSpec[];
   /** Callout broadcast for set-pieces. */
   announce?: string;
 }

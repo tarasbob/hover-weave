@@ -2,7 +2,13 @@
 
 import { Color, Vector4 } from "three/webgpu";
 import { uniform } from "three/tsl";
-import { BIOMES, biomeBlendAt, type BiomeSpec } from "../track/biomes";
+import {
+  BIOMES,
+  MYTHIC_ZONES,
+  biomeBlendAt,
+  mythicZoneAt,
+  type BiomeSpec,
+} from "../track/biomes";
 import { lookaheadFor, TRACK } from "../core/constants";
 import type { SimWorld } from "../core/world";
 import { clamp01, damp, lerp } from "../core/mathUtils";
@@ -36,6 +42,11 @@ const biomeColors: BiomeColorSet[] = BIOMES.map((b: BiomeSpec) => ({
   terrainA: new Color(b.terrainA),
   terrainB: new Color(b.terrainB),
   light: new Color(b.lightColor),
+}));
+const mythicColors = MYTHIC_ZONES.map((zone) => ({
+  tint: new Color(zone.tint),
+  fog: new Color(zone.fog),
+  sky: new Color(zone.sky),
 }));
 
 /**
@@ -177,6 +188,18 @@ export class EnvState {
     lerpColor(this.uGridColor.value, CA.grid, CB.grid, t);
     lerpColor(this.uTerrainA.value, CA.terrainA, CB.terrainA, t);
     lerpColor(this.uTerrainB.value, CA.terrainB, CB.terrainB, t);
+    const mythic = mythicZoneAt(dist);
+    if (mythic) {
+      const colors = mythicColors[mythic.index];
+      const aura = mythic.mix * 0.34;
+      this.uPrimary.value.lerp(colors.tint, aura * 0.55);
+      this.uAccent.value.lerp(colors.tint, aura);
+      this.uWarn.value.lerp(colors.tint, aura * 0.35);
+      this.uFogColor.value.lerp(colors.fog, aura * 0.55);
+      this.uSkyTop.value.lerp(colors.sky, aura * 0.7);
+      this.uSkyBottom.value.lerp(colors.tint, aura * 0.18);
+      this.uAuroraA.value.lerp(colors.tint, aura * 0.65);
+    }
     lerpColor(this.lightColor, CA.light, CB.light, t);
 
     // Speed-proportional visibility: the lookahead grows with speed and fog
@@ -256,6 +279,8 @@ export class EnvState {
   }
 
   biomeLabelAt(dist: number): string {
+    const mythic = mythicZoneAt(dist);
+    if (mythic && mythic.mix > 0.2) return mythic.zone.label;
     const [ai, , t] = biomeBlendAt(dist);
     return t > 0.6 ? BIOMES[(ai + 1) % BIOMES.length].label : BIOMES[ai].label;
   }

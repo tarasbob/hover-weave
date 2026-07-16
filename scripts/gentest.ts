@@ -15,14 +15,25 @@ import {
   speedAt,
   type GeneratedChunk,
 } from "../src/game/track/generator";
-import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "../src/game/track/patterns";
+import {
+  BREATHER,
+  CIRCUIT_PATTERNS,
+  FIELD_PATTERNS,
+  NORMAL_PATTERNS,
+} from "../src/game/track/patterns";
 import { SETPIECES } from "../src/game/track/setpieces";
-import { mutatePattern } from "../src/game/track/mutators";
+import { mutatePattern, resonatePattern } from "../src/game/track/mutators";
 import { TRIALS, trialSeed } from "../src/game/track/trials";
 import { validatePattern, corridorLanes } from "../src/game/track/validator";
-import type { BuildCtx } from "../src/game/core/types";
+import type { BuildCtx, PatternResult } from "../src/game/core/types";
 
-const patterns = [...NORMAL_PATTERNS, ...FIELD_PATTERNS, ...SETPIECES, BREATHER];
+const patterns = [
+  ...NORMAL_PATTERNS,
+  ...FIELD_PATTERNS,
+  ...CIRCUIT_PATTERNS,
+  ...SETPIECES,
+  BREATHER,
+];
 
 // Per-pattern validation rate with a consistent entry corridor.
 console.log("== standalone validation rates, mutators on (100 tries each) ==");
@@ -374,6 +385,41 @@ console.log("\n== rhythm resonance: mainline beat grid, 2 × 10km ==");
   console.log(`chunks=${chunksTotal}, movers=${movers} — every rate on the beat grid`);
 }
 
+// Deep perception ceiling: the same snapped movers receive deterministic
+// rational 3:2 / 5:4 multipliers without changing geometry.
+{
+  const make = (): PatternResult => ({
+    length: 80,
+    exitX: 0,
+    exitHalf: 10,
+    pickups: [],
+    obstacles: [
+      { kind: "box", x: -8, s: 20, y: 2, hx: 1, hy: 2, hs: 1, motion: Motion.SweepX, m0: 2, m1: 0, m2: 4 },
+      { kind: "box", x: -2, s: 35, y: 2, hx: 1, hy: 2, hs: 1, motion: Motion.Piston, m0: 0.5, m1: 0, m2: 4 },
+      { kind: "box", x: 4, s: 50, y: 2, hx: 1, hy: 2, hs: 1, motion: Motion.RotateYaw, m0: 2 },
+      { kind: "sphere", x: 9, s: 65, y: 5, hx: 1, hy: 1, hs: 1, motion: Motion.Pendulum, m0: 4, m1: 0.5, m2: 2 },
+    ],
+  });
+  const base = make();
+  const deep = make();
+  resonatePattern(base, RESONANCE.BPM, 0);
+  resonatePattern(deep, RESONANCE.BPM, 1);
+  const rates = (result: PatternResult) => [
+    result.obstacles[0].m0!,
+    result.obstacles[1].m0!,
+    result.obstacles[2].m0!,
+    result.obstacles[3].m2!,
+  ];
+  const ratios = rates(deep).map((rate, i) => Math.abs(rate / rates(base)[i]));
+  assert.deepEqual(ratios, [1.5, 1.25, 1.5, 1.25]);
+  assert.deepEqual(
+    deep.obstacles.map((o) => [o.x, o.s, o.hx, o.hy, o.hs]),
+    base.obstacles.map((o) => [o.x, o.s, o.hx, o.hy, o.hs]),
+    "polyrhythm must not alter geometry",
+  );
+  console.log("deep polyrhythm gate: PASS (3:2 / 5:4, geometry unchanged)");
+}
+
 // Trial-mode generation (roadmap 4.1): each roster trial loops its forced
 // pattern for 8km on the trial's own escalation curves. The chain must stay
 // healthy — no stalls, only the forced pattern (plus the rare validated
@@ -401,7 +447,9 @@ for (const trial of TRIALS) {
         const gap = c.s0 - prevS1;
         if (prevS1 > 0) {
           assert.ok(gap >= 10 - 1e-9, `trial seam collapsed (${gap.toFixed(1)}m)`);
-          if (c.s0 < 1200) {
+          // Use the first two seams rather than an absolute distance: compound
+          // circuits can make one authored phrase longer than 1.2 km.
+          if (earlyGapN < 2) {
             earlyGapSum += gap;
             earlyGapN++;
           } else if (c.s0 > 4500) {

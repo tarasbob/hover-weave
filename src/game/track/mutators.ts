@@ -51,12 +51,17 @@ export function mutatePattern(
       }
     }
     for (const p of result.pickups) p.x = -p.x;
+    for (const route of result.routes ?? []) route.x = -route.x;
     result.exitX = -result.exitX;
   }
 
   // Positional jitter on free-standing obstacles (walls and wide slabs are
   // left alone so corridors keep their authored shape).
-  if (category !== "setpiece" && rng.chance(Math.min(0.92, 0.26 + difficulty * 0.24 + od * 0.08))) {
+  if (
+    category !== "setpiece" &&
+    !result.routes?.length &&
+    rng.chance(Math.min(0.92, 0.26 + difficulty * 0.24 + od * 0.08))
+  ) {
     log.jittered = true;
     const odScale = 1 + Math.min(1, od * 0.22);
     for (const o of result.obstacles) {
@@ -100,6 +105,7 @@ export function mutatePattern(
   const scatterCap = heat.scatterChanceScale > 1 ? 0.95 : 0.9;
   if (
     category === "normal" &&
+    !result.routes?.length &&
     rng.chance(Math.min(scatterCap, (0.2 + difficulty * 0.24 + od * 0.1) * heat.scatterChanceScale))
   ) {
     const n = rng.int(
@@ -139,9 +145,15 @@ export function mutatePattern(
  * the fixed resonance tempo. Timing only: amplitudes, lengths, and radii
  * are untouched, so worst-case validator envelopes (and with them
  * validation outcomes and solved paths) are unaffected by the re-grid.
- * No rng is drawn — a pure function of the built values.
+ * At mythic depth, a deterministic subset receives rational 3:2 / 5:4 rate
+ * multipliers. They still share a common downbeat, but reading the phrase
+ * requires more than one pulse. No rng is drawn.
  */
-export function resonatePattern(result: PatternResult, bpm: number = RESONANCE.BPM): void {
+export function resonatePattern(
+  result: PatternResult,
+  bpm: number = RESONANCE.BPM,
+  polyrhythm = 0,
+): void {
   const beat = 60 / bpm;
   // Sine/orbit rates are angular (rad/s): period = 2π / |w|.
   const snapAngular = (w: number): number => {
@@ -158,32 +170,47 @@ export function resonatePattern(result: PatternResult, bpm: number = RESONANCE.B
     return Math.sign(w) * (1 / (snapped * beat));
   };
   const quarterTurn = Math.PI / 2;
+  let moverIndex = 0;
   for (const o of result.obstacles) {
+    let rateField: "m0" | "m1" | "m2" | null = null;
     switch (o.motion) {
       case Motion.SweepX:
         o.m0 = snapAngular(o.m0 ?? 0);
         o.m1 = Math.round((o.m1 ?? 0) / quarterTurn) * quarterTurn;
+        rateField = "m0";
         break;
       case Motion.RotateYaw:
         // Rotation is continuous; only the rate needs the grid.
         o.m0 = snapAngular(o.m0 ?? 0);
+        rateField = "m0";
         break;
       case Motion.Piston:
         o.m0 = snapCycles(o.m0 ?? 0);
         o.m1 = Math.round((o.m1 ?? 0) * 4) / 4;
+        rateField = "m0";
         break;
       case Motion.Blink:
         // Beam duty (m2) is geometry-equivalent for the validator: untouched.
         o.m0 = snapCycles(o.m0 ?? 0);
         o.m1 = Math.round((o.m1 ?? 0) * 4) / 4;
+        rateField = "m0";
         break;
       case Motion.OrbitXZ:
         o.m1 = snapAngular(o.m1 ?? 0);
         o.m2 = Math.round((o.m2 ?? 0) / quarterTurn) * quarterTurn;
+        rateField = "m1";
         break;
       case Motion.Pendulum:
         o.m2 = snapAngular(o.m2 ?? 0);
+        rateField = "m2";
         break;
     }
+    if (!rateField) continue;
+    const threshold = ((moverIndex * 37) % 10) / 10;
+    if (threshold < Math.max(0, Math.min(1, polyrhythm))) {
+      const ratio = moverIndex % 2 === 0 ? 1.5 : 1.25;
+      o[rateField] = (o[rateField] ?? 0) * ratio;
+    }
+    moverIndex++;
   }
 }

@@ -5,7 +5,13 @@ import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { LAB_BY_ID } from "@/game/core/lab";
 import { MODE_LABELS } from "@/game/core/modes";
 import { trialById } from "@/game/track/trials";
-import { useGame, type SectionGradeToast, type SkillMoment } from "@/game/state/game";
+import {
+  useGame,
+  type AheadCue,
+  type FlightLessonStep,
+  type SectionGradeToast,
+  type SkillMoment,
+} from "@/game/state/game";
 import { useMeta } from "@/game/state/meta";
 import { useSettings } from "@/game/state/settings";
 
@@ -18,6 +24,8 @@ export function Hud() {
   const callout = useGame((s) => s.callout);
   const skillMoment = useGame((s) => s.skillMoment);
   const sectionGrade = useGame((s) => s.sectionGrade);
+  const aheadCue = useGame((s) => s.aheadCue);
+  const lesson = useGame((s) => s.lesson);
   const fps = useGame((s) => s.fps);
   const graphics = useGame((s) => s.graphics);
   const showFps = useSettings((s) => s.showFps);
@@ -226,6 +234,8 @@ export function Hud() {
       </div>
 
       {/* Center callouts */}
+      <AheadCueToast key={`ahead-${aheadCue?.at ?? "none"}`} cue={aheadCue} />
+      {phase === "running" && lesson && <FlightLesson step={lesson} />}
       <CalloutToast
         key={`callout-${callout?.at ?? "none"}`}
         text={callout?.text}
@@ -307,6 +317,82 @@ function formatTimer(seconds: number): string {
 function boostHint(): string {
   const touch = typeof window !== "undefined" && matchMedia("(pointer: coarse)").matches;
   return touch ? "SECOND FINGER TO BOOST" : "HOLD SHIFT / SPACE TO BOOST";
+}
+
+/** Quiet visual twin of the audio leitmotif at the lookahead horizon. */
+function AheadCueToast({ cue }: { cue: AheadCue | null }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!cue) return;
+    setVisible(true);
+    const timer = setTimeout(() => setVisible(false), 2400);
+    return () => clearTimeout(timer);
+  }, [cue]);
+  return (
+    <AnimatePresence>
+      {visible && cue && (
+        <motion.div
+          role="status"
+          aria-live="polite"
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          className="absolute left-1/2 top-[14%] -translate-x-1/2 rounded-full border border-white/10 bg-[#080817]/65 px-4 py-1.5 text-center backdrop-blur"
+        >
+          <div className="text-[9px] tracking-[0.24em] text-white/45">
+            {Math.max(1, Math.round(cue.lead))}s AHEAD
+          </div>
+          <div className="mt-0.5 text-[10px] font-bold tracking-[0.18em] text-fuchsia-200/85">
+            {formatPatternId(cue.patternId)}
+            {cue.skills.length > 0 && ` · ${cue.skills.slice(0, 2).join(" · ").toUpperCase()}`}
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/** Progressive first-flight prompt: one idea at a time, dismissed by play. */
+function FlightLesson({ step }: { step: FlightLessonStep }) {
+  const touch = typeof window !== "undefined" && matchMedia("(pointer: coarse)").matches;
+  const copy: Record<FlightLessonStep, { title: string; detail: string }> = {
+    steer: {
+      title: touch ? "HOLD EITHER SCREEN HALF" : "HOLD ← / → OR A / D",
+      detail: "MOMENTUM IS REAL · TURN BEFORE THE GAP",
+    },
+    graze: {
+      title: "SKIM A GLOWING EDGE",
+      detail: "CLOSE PASSES BUILD FLOW AND REFILL BOOST",
+    },
+    boost: {
+      title: touch ? "SECOND FINGER TO BOOST" : "HOLD SHIFT / SPACE TO BOOST",
+      detail: "FASTER, BUT WITH LESS TURN AUTHORITY",
+    },
+    rhythm: {
+      title: "MOVERS FOLLOW THE BEAT",
+      detail: "WATCH, LISTEN, THEN ARRIVE IN THE OPENING",
+    },
+  };
+  const message = copy[step];
+  return (
+    <motion.div
+      key={step}
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      className="absolute bottom-[22%] left-1/2 w-[min(88vw,32rem)] -translate-x-1/2 rounded-xl border border-cyan-200/20 bg-[#080817]/72 px-4 py-3 text-center backdrop-blur-md"
+    >
+      <div className="text-sm font-black tracking-[0.2em] text-cyan-100">
+        {message.title}
+      </div>
+      <div className="mt-1 text-[9px] tracking-[0.24em] text-white/55">
+        {message.detail}
+      </div>
+    </motion.div>
+  );
 }
 
 function CalloutToast({ text, sub, at }: { text?: string; sub?: string; at?: number }) {

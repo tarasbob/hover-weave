@@ -16,12 +16,16 @@ import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
 /**
+ * v4: boost steering authority now follows continuous thrust charge and
+ * carve pump strength follows reversal quality, so old input streams can
+ * produce different trajectories.
+ *
  * v3: rhythm resonance went mainline (fun-frontier 2.1) — every mover now
  * rides the 116 BPM beat grid and perfects grade resonant on every run, so
  * v2 streams no longer re-simulate. (v2: the winding course, glass/bumper/
  * beam obstacles, the Leviathan, and run events.)
  */
-export const REPLAY_VERSION = 3;
+export const REPLAY_VERSION = 4;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;
@@ -217,4 +221,158 @@ export function resimulate(
     onStep?.(world, step);
   }
   return world;
+}
+
+const FLIGHT_FORMAT = "hover-weave-flight";
+
+interface FlightEnvelope {
+  format: typeof FLIGHT_FORMAT;
+  recording: RunRecording;
+  /** Automatically selected high-input-density witness window. */
+  highlight: FlightHighlight;
+}
+
+export interface FlightHighlight {
+  startStep: number;
+  endStep: number;
+}
+
+/**
+ * Pick a compact witness window without re-simulating: reversals, modulation,
+ * and boost transitions are weighted above passive holds.
+ */
+export function selectFlightHighlight(
+  rec: RunRecording,
+  seconds = 20,
+): FlightHighlight {
+  const window = Math.max(1, Math.round(seconds / FIXED_DT));
+  const segments: {
+    start: number;
+    end: number;
+    passive: number;
+    edge: number;
+    prefix: number;
+  }[] = [];
+  let prevAxis = 0;
+  let prevBoost = false;
+  let step = 0;
+  let total = 0;
+  for (let i = 0; i < rec.data.length; i += 2) {
+    const packed = rec.data[i];
+    const run = rec.data[i + 1];
+    const axis = unpackAxis(packed);
+    const boost = unpackBoost(packed);
+    const passive = Math.abs(axis) * 0.04;
+    const edge =
+      Math.abs(axis - prevAxis) * 2 +
+      (boost !== prevBoost ? 1.5 : 0) +
+      passive;
+    segments.push({ start: step, end: step + run, passive, edge, prefix: total });
+    total += edge + Math.max(0, run - 1) * passive;
+    step += run;
+    prevAxis = axis;
+    prevBoost = boost;
+  }
+  const prefixAt = (at: number): number => {
+    const target = Math.max(0, Math.min(step, at));
+    if (target <= 0 || segments.length === 0) return 0;
+    if (target >= step) return total;
+    let lo = 0;
+    let hi = segments.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (segments[mid].end < target) lo = mid + 1;
+      else hi = mid;
+    }
+    const segment = segments[lo];
+    const consumed = Math.max(0, target - segment.start);
+    return (
+      segment.prefix +
+      (consumed > 0 ? segment.edge + Math.max(0, consumed - 1) * segment.passive : 0)
+    );
+  };
+  const candidates = new Set<number>([Math.min(window, step), step]);
+  for (const segment of segments) {
+    for (const boundary of [segment.start + 1, segment.end]) {
+      candidates.add(Math.max(0, Math.min(step, boundary)));
+      candidates.add(Math.max(0, Math.min(step, boundary + window)));
+    }
+  }
+  let bestSum = -1;
+  let bestEnd = Math.min(window, step);
+  for (const end of candidates) {
+    const sum = prefixAt(end) - prefixAt(end - window);
+    if (sum > bestSum) {
+      bestSum = sum;
+      bestEnd = end;
+    }
+  }
+  return {
+    startStep: Math.max(0, bestEnd - window),
+    endStep: Math.min(rec.steps, bestEnd),
+  };
+}
+
+/** Portable, human-shareable wrapper around the deterministic input stream. */
+export function serializeFlight(rec: RunRecording): string {
+  if (!ghostEligible(rec)) {
+    throw new Error("Only complete, current-version ranked flights can be exported");
+  }
+  const envelope: FlightEnvelope = {
+    format: FLIGHT_FORMAT,
+    recording: rec,
+    highlight: selectFlightHighlight(rec),
+  };
+  return JSON.stringify(envelope);
+}
+
+/** Parse and strictly validate an imported `.flight` payload. */
+export function parseFlight(text: string): RunRecording {
+  const value: unknown = JSON.parse(text);
+  if (!value || typeof value !== "object") throw new Error("Invalid flight file");
+  const envelope = value as Partial<FlightEnvelope>;
+  if (envelope.format !== FLIGHT_FORMAT) throw new Error("Unknown flight format");
+  const rec = envelope.recording;
+  if (!rec || !ghostEligible(rec)) {
+    throw new Error("Flight is incomplete, unranked, or from an incompatible version");
+  }
+  if (
+    typeof rec.seed !== "string" ||
+    !["endless", "daily", "sprint", "trial"].includes(rec.mode) ||
+    !Number.isFinite(rec.score) ||
+    !Number.isFinite(rec.distance) ||
+    !Array.isArray(rec.data) ||
+    rec.data.length % 2 !== 0
+  ) {
+    throw new Error("Flight metadata is malformed");
+  }
+  let steps = 0;
+  for (let i = 0; i < rec.data.length; i += 2) {
+    const packed = rec.data[i];
+    const run = rec.data[i + 1];
+    if (
+      !Number.isInteger(packed) ||
+      packed < 0 ||
+      packed > 1023 ||
+      !Number.isInteger(run) ||
+      run <= 0
+    ) {
+      throw new Error("Flight input stream is malformed");
+    }
+    steps += run;
+  }
+  if (steps !== rec.steps) throw new Error("Flight input length does not match its summary");
+  const copy: RunRecording = {
+    ...rec,
+    data: [...rec.data],
+  };
+  if (rec.heat) copy.heat = [...rec.heat];
+  else delete copy.heat;
+  delete copy.lab;
+  return copy;
+}
+
+export function flightFilename(rec: RunRecording): string {
+  const safeMode = rec.mode.replace(/[^a-z0-9-]/gi, "-");
+  return `hover-weave-${safeMode}-${Math.round(rec.distance)}m.flight`;
 }

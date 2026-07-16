@@ -1,16 +1,14 @@
 /**
- * Pilot Rating (roadmap 4.4). No backend exists, so the roadmap's "offline
- * fallback" IS the rating: each plain endless/daily run is scored against
- * the calibrated autopilot walls (the same tiers that gate difficulty in
- * simtest), then the rating moves Elo-style toward that run performance.
+ * Pilot Rating (roadmap 4.4). No backend exists, so serious rating comes from
+ * fixed-seed trials normalized by their automated reference distances. The
+ * legacy wall-anchor function remains useful for synthetic frontier reports.
  *
  * - Performance is piecewise-linear in log2(distance) through the anchors —
  *   distance is the skill axis the walls measure (score is economy-skill and
  *   heat-inflatable; distance is the honest survival metric).
  * - Provisional phase: early runs move the needle fast, veterans settle.
  *   One great run can't spoof a rating; ten can earn it.
- * - Only plain endless + daily runs rate (no heat, no trials, no sprints —
- *   different ladders, different physics).
+ * - Random-seed endless, daily periods, heat, and sprint never move rating.
  */
 
 import { clamp } from "./mathUtils";
@@ -65,8 +63,44 @@ export function runPerformance(distance: number): number {
 
 /** One Elo-ish update; `ratedRuns` is the count BEFORE this run. */
 export function updateRating(rating: number, ratedRuns: number, distance: number): number {
+  return updateRatingFromPerformance(rating, ratedRuns, runPerformance(distance));
+}
+
+/**
+ * Performance on a fixed-seed trial, normalized by its deepest automated
+ * reference distance. This removes random endless-seed luck from the serious
+ * offline rating signal.
+ */
+export function referencePerformance(distance: number, reference: number): number {
+  const ratio = Math.max(0, distance / Math.max(1, reference));
+  const anchors: readonly [number, number][] = [
+    [0, RATING.FLOOR],
+    [0.08, 400],
+    [0.2, 850],
+    [0.4, 1400],
+    [0.6, 1900],
+    [0.8, 2450],
+    [1, 3000],
+    [1.15, RATING.CEIL],
+  ];
+  for (let i = 1; i < anchors.length; i++) {
+    if (ratio <= anchors[i][0]) {
+      const lo = anchors[i - 1];
+      const hi = anchors[i];
+      const t = (ratio - lo[0]) / (hi[0] - lo[0]);
+      return clamp(lo[1] + (hi[1] - lo[1]) * t, RATING.FLOOR, RATING.CEIL);
+    }
+  }
+  return RATING.CEIL;
+}
+
+/** Elo-style smoothing toward an already normalized performance value. */
+export function updateRatingFromPerformance(
+  rating: number,
+  ratedRuns: number,
+  perf: number,
+): number {
   const k = ratedRuns < RATING.PROVISIONAL_RUNS ? RATING.K_PROVISIONAL : RATING.K_SETTLED;
-  const perf = runPerformance(distance);
   return clamp(Math.round(rating + k * (perf - rating)), RATING.FLOOR, RATING.CEIL);
 }
 

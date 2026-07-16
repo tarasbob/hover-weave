@@ -4,7 +4,11 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { heatScoreMult, type HeatId } from "../core/heat";
 import { normalizeLab, type LabId } from "../core/lab";
-import { RATING, updateRating } from "../core/rating";
+import {
+  RATING,
+  referencePerformance,
+  updateRatingFromPerformance,
+} from "../core/rating";
 import type { RunStats } from "../core/world";
 import { MEDAL_RANK, medalFor, trialById, type Medal } from "../track/trials";
 
@@ -277,13 +281,15 @@ export interface RunRecordResult {
   newTrialBest: boolean;
   /** Medal earned this run (trials only; may equal the previous best). */
   medal: Medal | null;
-  /** Rating movement from this run (null = the run was not rated). */
+  /** Rating movement from this run (null = not a fixed-seed trial). */
   ratingDelta: number | null;
   /** How many runs in a row have now ended on this pattern (1 = first). */
   deathStreak: number;
 }
 
 interface MetaState extends Omit<MetaSnapshot, "goldTrials" | "authorTrials"> {
+  /** The self-teaching opening has been completed at least once. */
+  onboardingComplete: boolean;
   dailyBest: Record<string, DailyRecord>;
   /** Best sprint per ISO-week key (roadmap 4.2). */
   sprintBest: Record<string, DailyRecord>;
@@ -315,6 +321,7 @@ interface MetaState extends Omit<MetaSnapshot, "goldTrials" | "authorTrials"> {
   selectTrail(id: string): void;
   selectHeat(ids: HeatId[]): void;
   selectLab(ids: LabId[]): void;
+  completeOnboarding(): void;
   markCelebrated(id: string): void;
 }
 
@@ -336,6 +343,7 @@ export const useMeta = create<MetaState>()(
       questsCompleted: 0,
       sprintsFinished: 0,
       bestHeatCleared: 1,
+      onboardingComplete: false,
       dailyBest: {},
       sprintBest: {},
       trialBest: {},
@@ -418,10 +426,18 @@ export const useMeta = create<MetaState>()(
                 }
               : null;
 
-        // Pilot rating (roadmap 4.4): plain endless/daily runs only — heat
-        // changes the track, trials/sprints are different ladders entirely.
-        const rated = countsGlobal && stats.heat.length === 0;
-        const rating = rated ? updateRating(s.rating, s.ratedRuns, stats.distance) : s.rating;
+        // Pilot rating is earned only on fixed-seed trials, normalized by the
+        // trial's automated reference distance. Random endless seed luck and
+        // period-specific daily difficulty cannot move the serious ladder.
+        const ratingTrial =
+          mode === "trial" && stats.trialId ? trialById(stats.trialId) : undefined;
+        const rated = Boolean(ratingTrial);
+        const performance = ratingTrial
+          ? referencePerformance(stats.distance, ratingTrial.reference)
+          : s.rating;
+        const rating = rated
+          ? updateRatingFromPerformance(s.rating, s.ratedRuns, performance)
+          : s.rating;
         const ratingDelta = rated ? rating - s.rating : null;
 
         // Heat mastery: the strongest stack carried past 2 km (roadmap 4.6).
@@ -487,13 +503,14 @@ export const useMeta = create<MetaState>()(
       selectTrail: (selectedTrail) => set({ selectedTrail }),
       selectHeat: (selectedHeat) => set({ selectedHeat }),
       selectLab: (selectedLab) => set({ selectedLab }),
+      completeOnboarding: () => set({ onboardingComplete: true }),
       markCelebrated: (id) =>
         set((s) => ({ celebrated: s.celebrated.includes(id) ? s.celebrated : [...s.celebrated, id] })),
     }),
     {
       name: "cubefield:meta",
-      version: 7,
-      migrate: (persisted) => {
+      version: 9,
+      migrate: (persisted, version) => {
         const state = persisted as Partial<MetaState>;
         return {
           ...state,
@@ -505,8 +522,10 @@ export const useMeta = create<MetaState>()(
           sprintBest: state.sprintBest ?? {},
           trialBest: state.trialBest ?? {},
           // v5: rating, quests, heat, mastery counters (roadmap 4.3–4.6).
-          rating: state.rating ?? RATING.START,
-          ratedRuns: state.ratedRuns ?? 0,
+          // v9 changes rating from random open-track distance to normalized
+          // fixed-seed trials. Old current values are not comparable.
+          rating: version < 9 ? RATING.START : (state.rating ?? RATING.START),
+          ratedRuns: version < 9 ? 0 : (state.ratedRuns ?? 0),
           peakRating: state.peakRating ?? 0,
           questDay: state.questDay ?? null,
           questDone: state.questDone ?? [],
@@ -518,6 +537,10 @@ export const useMeta = create<MetaState>()(
           // v7: "resonance" went mainline (fun-frontier 2.1) — drop retired
           // lab ids from persisted selections.
           selectedLab: normalizeLab(state.selectedLab ?? []),
+          // v8: returning pilots have already learned the opening; only a
+          // genuinely fresh profile receives the progressive first flight.
+          onboardingComplete:
+            state.onboardingComplete ?? (state.totalRuns ?? 0) > 0,
         } as MetaState;
       },
     },

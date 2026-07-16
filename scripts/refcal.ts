@@ -1,14 +1,14 @@
 /**
- * Reference-line calibration (fun-frontier 4.1): fly the TAS rollout pilot
+ * Reference-distance calibration (fun-frontier 4.1): fly the TAS rollout pilot
  * and the lookahead planner on every trial's fixed seed and print the
- * composite reference — the deepest *proven* line:
+ * composite automated distance:
  *
  *   reference = max(TAS wall, lookahead wall, 1.2 × author medal)
  *
- * The authored floor covers mover-heavy trials (pistons, pendulums) where
- * every bot tier under-times what humans can (the same asymmetry the medal
- * calibration corrects for). `reference` in src/game/track/trials.ts is
- * baked from this output. Deterministic: it only moves when tuning moves.
+ * The authored floor prevents a short-horizon model failure on mover-heavy
+ * trials from lowering an existing aspirational target. `reference` in
+ * src/game/track/trials.ts is baked from this output. Deterministic: it only
+ * moves when tuning moves.
  *
  * Run: npx tsx scripts/refcal.ts
  */

@@ -9,6 +9,7 @@ import type {
   PatternResult,
   PatternSkill,
   PickupSpec,
+  RouteChoiceSpec,
 } from "../core/types";
 import { biomeIndexAt } from "./biomes";
 import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
@@ -34,6 +35,8 @@ export interface GeneratedChunk {
   announce?: string;
   obstacles: ObstacleSpec[];
   pickups: PickupSpec[];
+  /** Named authored branches for route-choice telemetry. */
+  routes: RouteChoiceSpec[];
   /** Validator's solved safe line, [s, x] pairs (kill-cam + tooling). */
   path: [number, number][];
   debug?: ValidationResult;
@@ -201,7 +204,12 @@ export class TrackGenerator {
       // onto the beat grid after all mutation. Timing only — geometry,
       // envelopes, validation, and the rng stream are unaffected, so the
       // validator still proves exactly what it proved before the re-grid.
-      resonatePattern(built, RESONANCE.BPM);
+      // Past ~20 km, a growing deterministic subset moves in rational 3:2 /
+      // 5:4 relationships. Trials retain the single grid for clean practice.
+      const polyrhythm = this.trial
+        ? 0
+        : clamp01((this.pressureFor(s0) - 1.5) / 1.5);
+      resonatePattern(built, RESONANCE.BPM, polyrhythm);
       const v = validatePattern(
         built.obstacles,
         s0,
@@ -288,6 +296,7 @@ export class TrackGenerator {
       announce: result.announce,
       obstacles: result.obstacles,
       pickups,
+      routes: result.routes ?? [],
       path: validation.path,
     };
     if (this.debug) chunk.debug = validation;

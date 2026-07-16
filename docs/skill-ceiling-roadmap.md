@@ -2,7 +2,7 @@
 
 > **Complete.** This roadmap (v1) shipped in full — see the progress log.
 > Successor: [`fun-frontier.md`](./fun-frontier.md) (v2: execution depth,
-> musical readability, reference lines, and the magic layer).
+> musical readability, reference distances, and the magic layer).
 
 Tracking document for the "raise the skill ceiling" redesign. Update statuses,
 log decisions, and append to the progress log as work lands.

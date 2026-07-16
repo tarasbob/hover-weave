@@ -47,6 +47,55 @@ export interface BiomeSpec {
   landmarkScale: number;
 }
 
+export interface MythicZone {
+  at: number;
+  name: string;
+  label: string;
+  tint: string;
+  fog: string;
+  sky: string;
+}
+
+/** Rare depth layers: presentation changes, never geometry or scoring. */
+export const MYTHIC_ZONES: readonly MythicZone[] = [
+  {
+    at: 20_000,
+    name: "astralVerge",
+    label: "Astral Verge",
+    tint: "#fef08a",
+    fog: "#17102f",
+    sky: "#10052b",
+  },
+  {
+    at: 40_000,
+    name: "crownStatic",
+    label: "Crown of Static",
+    tint: "#e879f9",
+    fog: "#170b25",
+    sky: "#210633",
+  },
+  {
+    at: 80_000,
+    name: "eventHorizon",
+    label: "Event Horizon",
+    tint: "#fb7185",
+    fog: "#170308",
+    sky: "#26020a",
+  },
+] as const;
+
+export function mythicZoneAt(
+  s: number,
+): { zone: MythicZone; mix: number; index: number } | null {
+  let index = -1;
+  for (let i = 0; i < MYTHIC_ZONES.length; i++) {
+    if (s >= MYTHIC_ZONES[i].at) index = i;
+  }
+  if (index < 0) return null;
+  const zone = MYTHIC_ZONES[index];
+  return { zone, index, mix: clamp01((s - zone.at) / 900) };
+}
+
 export const BIOMES: BiomeSpec[] = [
   {
     name: "crystal",

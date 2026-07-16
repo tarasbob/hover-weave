@@ -1,7 +1,14 @@
 /** Minimal typed event emitter used to decouple sim -> audio/fx/ui. */
 
 import type { RunConfig } from "./modes";
-import type { MotionType, ObstacleKind, PrecisionGrade, RunEventKind } from "./types";
+import type {
+  MotionType,
+  ObstacleKind,
+  PatternSkill,
+  PrecisionGrade,
+  RouteReward,
+  RunEventKind,
+} from "./types";
 
 export type GameEvents = {
   nearMiss: {
@@ -61,6 +68,22 @@ export type GameEvents = {
     /** True when the pump was a wall-kiss off the lateral clamp. */
     wall: boolean;
   };
+  /** The craft crossed one authored branch in a strategic fork. */
+  routeChoice: {
+    decisionId: string;
+    routeId: string;
+    label: string;
+    reward: RouteReward;
+    s: number;
+  };
+  /** A challenge phrase entered the speed-scaled preview horizon. */
+  patternAhead: {
+    patternId: string;
+    skills: PatternSkill[];
+    lead: number;
+  };
+  /** One of the rare 20/40/80 km presentation layers was reached. */
+  mythic: { depth: number; name: string; index: number };
   flowTier: { tier: number; prev: number };
   /** A graded chunk was fully traversed (roadmap 3.4). */
   sectionGrade: {

@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useGameBundle } from "@/game/GameController";
-import { useGame } from "@/game/state/game";
+import { useGame, type RunOutcome } from "@/game/state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "@/game/state/meta";
+import { useReplays } from "@/game/state/replays";
 import { resolveTier, useSettings, type QualityPreset } from "@/game/state/settings";
 import { dailyKey, weeklyKey } from "@/game/core/rng";
 import { FLOW, SPRINT_MODE } from "@/game/core/constants";
@@ -12,7 +13,12 @@ import { HEATS, HEAT_BY_ID, heatScoreMult } from "@/game/core/heat";
 import { LABS, LAB_BY_ID } from "@/game/core/lab";
 import { questsForDay } from "@/game/core/quests";
 import { ratingTier } from "@/game/core/rating";
-import { GRADE_MIN_INTENSITY, type SectionResult } from "@/game/core/world";
+import { flightFilename, parseFlight, serializeFlight } from "@/game/core/replay";
+import {
+  GRADE_MIN_INTENSITY,
+  type RunStats,
+  type SectionResult,
+} from "@/game/core/world";
 import {
   MEDAL_ORDER,
   TRIALS,
@@ -166,6 +172,22 @@ function TitleScreen() {
   const sprintRecord = meta.sprintBest[week];
   const heatMult = heatScoreMult(meta.selectedHeat);
   const tier = ratingTier(meta.rating);
+  const firstFlight = !meta.onboardingComplete;
+  const [importError, setImportError] = useState("");
+  const flightInput = useRef<HTMLInputElement>(null);
+
+  const importFlight = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    try {
+      const recording = parseFlight(await file.text());
+      setImportError("");
+      bundle.raceRecording(recording);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Could not read that flight");
+    }
+  };
 
   return (
     <Screen dim={false}>
@@ -186,57 +208,91 @@ function TitleScreen() {
         >
           <div className="flex items-stretch justify-center gap-2">
             <button className={`${btnPrimary} text-lg`} onClick={() => bundle.startRun("endless")}>
-              LAUNCH
-              {heatMult > 1 && (
+              {firstFlight ? "BEGIN FIRST FLIGHT" : "LAUNCH"}
+              {!firstFlight && heatMult > 1 && (
                 <span className="ml-2 text-xs tracking-widest text-orange-900/90">
                   HEAT ×{heatMult.toFixed(2)}
                 </span>
               )}
-              {meta.selectedLab.length > 0 && (
+              {!firstFlight && meta.selectedLab.length > 0 && (
                 <span className="ml-2 text-xs tracking-widest text-violet-900/90">LAB</span>
               )}
             </button>
-            <button
-              className={`${btnGhost} !px-3 ${meta.selectedHeat.length > 0 ? "!border-orange-300/50 !text-orange-200" : ""}`}
-              onClick={() => setOverlay("heat")}
-              title="Opt-in burdens for a multiplied score"
-              aria-label="Configure heat modifiers"
-            >
-              HEAT
-            </button>
-            <button
-              className={`${btnGhost} !px-3 ${meta.selectedLab.length > 0 ? "!border-violet-300/50 !text-violet-200" : ""}`}
-              onClick={() => setOverlay("lab")}
-              title="Experimental prototypes — lab runs are unranked"
-              aria-label="Configure lab prototypes"
-            >
-              LAB
-            </button>
+            {!firstFlight && (
+              <>
+                <button
+                  className={`${btnGhost} !px-3 ${meta.selectedHeat.length > 0 ? "!border-orange-300/50 !text-orange-200" : ""}`}
+                  onClick={() => setOverlay("heat")}
+                  title="Opt-in burdens for a multiplied score"
+                  aria-label="Configure heat modifiers"
+                >
+                  HEAT
+                </button>
+                <button
+                  className={`${btnGhost} !px-3 ${meta.selectedLab.length > 0 ? "!border-violet-300/50 !text-violet-200" : ""}`}
+                  onClick={() => setOverlay("lab")}
+                  title="Experimental prototypes — lab runs are unranked"
+                  aria-label="Configure lab prototypes"
+                >
+                  LAB
+                </button>
+              </>
+            )}
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
-            <button className={btnGhost} onClick={() => bundle.startRun("daily")}>
-              DAILY COURSE
-              <span className="ml-2 text-[10px] text-cyan-200/70 tracking-widest">
-                {dailyRecord ? `BEST ${dailyRecord.score.toLocaleString()}` : today}
-              </span>
-            </button>
-            <button className={btnGhost} onClick={() => bundle.startRun("sprint")}>
-              SPRINT
-              <span className="ml-2 text-[10px] text-fuchsia-200/70 tracking-widest">
-                {sprintRecord
-                  ? `BEST ${sprintRecord.score.toLocaleString()}`
-                  : `${SPRINT_MODE.DURATION}s · ${week}`}
-              </span>
-            </button>
-          </div>
-          <DailyQuestCard />
+          {firstFlight ? (
+            <div className="max-w-sm text-xs leading-relaxed tracking-[0.12em] text-white/55">
+              STEER · GRAZE · BOOST
+              <div className="mt-1 tracking-normal text-white/40">
+                The opening teaches each system while you fly. No setup required.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap justify-center gap-2">
+                <button className={btnGhost} onClick={() => bundle.startRun("daily")}>
+                  DAILY COURSE
+                  <span className="ml-2 text-[10px] text-cyan-200/70 tracking-widest">
+                    {dailyRecord ? `BEST ${dailyRecord.score.toLocaleString()}` : today}
+                  </span>
+                </button>
+                <button className={btnGhost} onClick={() => bundle.startRun("sprint")}>
+                  SPRINT
+                  <span className="ml-2 text-[10px] text-fuchsia-200/70 tracking-widest">
+                    {sprintRecord
+                      ? `BEST ${sprintRecord.score.toLocaleString()}`
+                      : `${SPRINT_MODE.DURATION}s · ${week}`}
+                  </span>
+                </button>
+              </div>
+              <DailyQuestCard />
+            </>
+          )}
           <div className="mt-1 flex flex-wrap justify-center gap-2">
-            <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("trials")}>
-              TRIALS
-            </button>
-            <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("hangar")}>
-              HANGAR
-            </button>
+            {!firstFlight && (
+              <>
+                <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("trials")}>
+                  TRIALS
+                </button>
+                <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("hangar")}>
+                  HANGAR
+                </button>
+                <button
+                  className={`${btnGhost} !px-4 !py-2 text-sm`}
+                  onClick={() => flightInput.current?.click()}
+                >
+                  RACE FLIGHT
+                </button>
+                <input
+                  ref={flightInput}
+                  type="file"
+                  accept=".flight,application/json"
+                  className="hidden"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={importFlight}
+                />
+              </>
+            )}
             <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("settings")}>
               SETTINGS
             </button>
@@ -244,6 +300,11 @@ function TitleScreen() {
               HOW TO FLY
             </button>
           </div>
+          {importError && (
+            <div role="alert" className="max-w-md text-xs text-rose-300/85">
+              {importError}
+            </div>
+          )}
         </motion.div>
 
         <motion.div
@@ -309,6 +370,7 @@ function GameOverScreen() {
   const bundle = useGameBundle();
   const outcome = useGame((s) => s.outcome);
   const mode = useGame((s) => s.mode);
+  const lastRun = useReplays((s) => s.lastRun);
   const [show, setShow] = useState(false);
 
   useEffect(() => {
@@ -319,6 +381,7 @@ function GameOverScreen() {
   if (!outcome || !show) return null;
   const s = outcome.stats;
   const labRun = s.lab.length > 0;
+  const unranked = labRun || outcome.rival;
   const graded = s.sections.filter(
     (section) => section.intensity >= GRADE_MIN_INTENSITY,
   );
@@ -343,6 +406,20 @@ function GameOverScreen() {
             ? "NEW PERSONAL BEST"
             : null;
   const scoreDeltaLabel = mode === "sprint" ? "WEEK BEST" : "PB";
+  const coaching = deathCoach(outcome);
+  const exportRun = () => {
+    if (!lastRun) return;
+    const blob = new Blob([serializeFlight(lastRun)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = flightFilename(lastRun);
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
 
   return (
     <Screen>
@@ -412,6 +489,16 @@ function GameOverScreen() {
                 ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
                 : "SIGNAL TERMINATED"}
           </div>
+          {coaching && (
+            <div className="mt-2 rounded-lg border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2">
+              <div className="text-[9px] tracking-[0.24em] text-cyan-200/55">
+                NEXT ATTEMPT
+              </div>
+              <div className="mt-0.5 text-xs font-semibold text-cyan-100/85">
+                {coaching}
+              </div>
+            </div>
+          )}
           {s.heat.length > 0 && (
             <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-orange-300/90">
               HEAT ×{heatScoreMult(s.heat).toFixed(2)} ·{" "}
@@ -422,6 +509,11 @@ function GameOverScreen() {
             <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-violet-300/90">
               LAB · {s.lab.map((id) => LAB_BY_ID[id].name.toUpperCase()).join(" · ")} — UNRANKED,
               NOTHING SAVED
+            </div>
+          )}
+          {outcome.rival && (
+            <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-sky-300/90">
+              IMPORTED RIVAL FLIGHT — UNRANKED, NOTHING SAVED
             </div>
           )}
           {outcome.deathStreak >= 2 && s.deathCause && (
@@ -447,7 +539,7 @@ function GameOverScreen() {
               )}
             </div>
           )}
-          {mode !== "trial" && !labRun && (
+          {mode !== "trial" && !unranked && (
             <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
               {outcome.scoreDelta > 0
                 ? `${scoreDeltaLabel} +${outcome.scoreDelta.toLocaleString()}`
@@ -456,7 +548,7 @@ function GameOverScreen() {
                 : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of ${scoreDeltaLabel}`}
             </div>
           )}
-          {labRun ? null : mode === "trial" ? (
+          {unranked ? null : mode === "trial" ? (
             outcome.newTrialBest ? (
               <div className="mt-0.5 text-xs font-semibold text-amber-200">
                 DEEPEST RUN ON THIS TRIAL
@@ -477,6 +569,8 @@ function GameOverScreen() {
           ) : null}
           {outcome.ratingDelta !== null && <RatingLine delta={outcome.ratingDelta} />}
         </div>
+
+        <TechniqueDebrief stats={s} />
 
         {mode === "daily" && (
           <div className="mt-4 flex justify-center">
@@ -509,6 +603,11 @@ function GameOverScreen() {
               DRILL · {drillTrial.name.toUpperCase()}
             </button>
           )}
+          {lastRun && !unranked && (
+            <button className={btnGhost} onClick={exportRun}>
+              EXPORT .FLIGHT
+            </button>
+          )}
           <button className={btnGhost} onClick={() => bundle.backToTitle()}>
             MENU
           </button>
@@ -516,6 +615,158 @@ function GameOverScreen() {
         <div className="mt-3 text-center text-xs text-white/40">R / ENTER for instant restart</div>
       </motion.div>
     </Screen>
+  );
+}
+
+/** One actionable diagnosis distilled from the richer kill-cam data. */
+export function deathCoach(outcome: RunOutcome): string | null {
+  const cause = outcome.stats.deathCause;
+  if (outcome.finished || !cause) return null;
+  const { stats, forensics } = outcome;
+  if (forensics) {
+    const points = forensics.path.flat();
+    let nearest: [number, number] | null = null;
+    let nearestDs = Infinity;
+    for (const point of points) {
+      const ds = Math.abs(point[0] - forensics.deathS);
+      if (ds < nearestDs) {
+        nearestDs = ds;
+        nearest = point;
+      }
+    }
+    if (nearest) {
+      const offset = forensics.deathX - nearest[1];
+      if (Math.abs(offset) >= 2) {
+        const side = offset > 0 ? "RIGHT" : "LEFT";
+        const correction = offset > 0 ? "LEFT" : "RIGHT";
+        return `ENTERED ${Math.abs(offset).toFixed(1)} m TOO FAR ${side} · COMMIT ${correction} EARLIER`;
+      }
+    }
+  }
+  if (cause.motion !== 0) {
+    return "MOVING HAZARDS REPEAT ON THE BEAT · WATCH ONE CYCLE, THEN COMMIT";
+  }
+  if (stats.distance < 500) {
+    return "STEER BEFORE THE GAP · LATERAL MOMENTUM TAKES TIME TO BUILD";
+  }
+  if (stats.nearMisses === 0) {
+    return "USE THE SAFE LINE FIRST · MOVE CLOSER ONLY AFTER THE ROUTE IS STABLE";
+  }
+  return "COMPARE YOUR LINE WITH THE DASHED SAFE ROUTE · CORRECT THE ENTRY, NOT THE IMPACT";
+}
+
+interface TechniqueMetric {
+  label: string;
+  value: string;
+  score: number;
+  advice: string;
+  focusEligible?: boolean;
+}
+
+/** Deterministic, actionable technique summary built only from run telemetry. */
+export function techniqueReport(stats: RunStats): {
+  metrics: TechniqueMetric[];
+  focus: string;
+} {
+  const precision =
+    stats.nearMisses > 0
+      ? (stats.perfectPasses + stats.razorPasses * 0.65 + stats.closePasses * 0.3) /
+        stats.nearMisses
+      : 0;
+  const rhythm =
+    stats.perfectPasses > 0 ? stats.resonantPasses / stats.perfectPasses : 0;
+  const thrust = stats.duration > 0 ? stats.boostChargeTime / stats.duration : 0;
+  const flow = Math.min(1, stats.maxFlowPoints / 40);
+  const metrics: TechniqueMetric[] = [
+    {
+      label: "PRECISION",
+      value: stats.nearMisses > 0 ? `${Math.round(precision * 100)}%` : "—",
+      score: precision,
+      advice: "Approach the safe line first, then trim clearance one pass at a time.",
+    },
+    {
+      label: "RESONANCE",
+      value: stats.perfectPasses > 0
+        ? `${stats.resonantPasses}/${stats.perfectPasses}`
+        : "—",
+      score: rhythm,
+      advice: "Use the mover pulse and soundtrack to arrive on the shared beat.",
+    },
+    {
+      label: "THRUST",
+      value: `${Math.round(thrust * 100)}%`,
+      score: Math.min(1, thrust / 0.65),
+      advice: "Convert graze energy into boost, then release before high-curvature entries.",
+    },
+    {
+      label: "FLOW",
+      value: `×${(1 + stats.maxFlowPoints * FLOW.MULT_PER_POINT).toFixed(1)}`,
+      score: flow,
+      advice: "Link close passes before the grace window expires.",
+    },
+  ];
+  if (stats.pumps > 0) {
+    const quality = stats.pumpQualitySum / stats.pumps;
+    metrics.push({
+      label: "CARVE",
+      value: `${Math.round(quality * 100)}%`,
+      score: quality,
+      advice: "Reverse nearer peak lateral velocity; early flips return less momentum.",
+    });
+  }
+  if (stats.routeChoices.length > 0) {
+    const counts = { energy: 0, flow: 0, tempo: 0 };
+    for (const choice of stats.routeChoices) counts[choice.reward]++;
+    metrics.push({
+      label: "ROUTES",
+      value: `E${counts.energy} F${counts.flow} T${counts.tempo}`,
+      score: 1,
+      advice: "Route mix is descriptive; the correct branch depends on current state.",
+      focusEligible: false,
+    });
+  }
+  const candidates = metrics.filter(
+    (metric) => metric.value !== "—" && metric.focusEligible !== false,
+  );
+  const focus = (candidates.length > 0
+    ? candidates.reduce((lowest, metric) => (metric.score < lowest.score ? metric : lowest))
+    : metrics[0]
+  ).advice;
+  return { metrics, focus };
+}
+
+function TechniqueDebrief({ stats }: { stats: RunStats }) {
+  const report = techniqueReport(stats);
+  return (
+    <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.035] px-4 py-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[10px] tracking-[0.24em] text-white/40">
+          TECHNIQUE
+        </span>
+        <span className="text-[9px] tracking-[0.16em] text-cyan-200/55">
+          NEXT FOCUS
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-3">
+        {report.metrics.map((metric) => (
+          <div key={metric.label}>
+            <div className="flex items-baseline justify-between text-[9px] tracking-[0.14em] text-white/45">
+              <span>{metric.label}</span>
+              <span className="font-semibold tabular-nums text-white/75">{metric.value}</span>
+            </div>
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-cyan-300/75 to-fuchsia-300/75"
+                style={{ width: `${Math.max(2, Math.min(100, metric.score * 100))}%` }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2.5 text-[11px] leading-relaxed text-cyan-100/70">
+        {report.focus}
+      </div>
+    </div>
   );
 }
 
@@ -583,13 +834,12 @@ function MedalLadder({
   );
 }
 
-/** A run as a percentage of the trial's TAS reference line (fun-frontier 4.1). */
+/** A run as a percentage of the trial's deepest automated reference distance. */
 export function referencePct(trial: TrialDef, distance: number): number {
   return (distance / trial.reference) * 100;
 }
 
-/** Trial run result: the medal earned (or missed), the ladder, and the
- *  reference line — how much of what this track provably allows you flew. */
+/** Trial result: medal ladder plus progress toward the deepest automated run. */
 function TrialResult({
   trial,
   distance,
@@ -625,7 +875,7 @@ function TrialResult({
       </div>
       <div className="mt-2.5">
         <div className="flex items-baseline justify-between text-[10px] tracking-[0.24em] text-white/45">
-          <span>REFERENCE LINE</span>
+          <span>REFERENCE DISTANCE</span>
           <span className="tabular-nums text-white/70">{pct.toFixed(1)}%</span>
         </div>
         <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10">
@@ -635,7 +885,7 @@ function TrialResult({
           />
         </div>
         <div className="mt-1 text-[10px] text-white/40">
-          the proven-possible line reaches {trial.reference.toLocaleString()} m
+          the deepest automated run reaches {trial.reference.toLocaleString()} m
         </div>
       </div>
     </div>
@@ -873,7 +1123,7 @@ function TrialsOverlay() {
                 {best && (
                   <div
                     className="text-[10px] tabular-nums text-cyan-200/70"
-                    title={`The TAS reference line reaches ${trial.reference.toLocaleString()} m`}
+                    title={`Deepest automated reference distance: ${trial.reference.toLocaleString()} m`}
                   >
                     {referencePct(trial, best.distance).toFixed(1)}% OF REF
                   </div>
@@ -1241,7 +1491,8 @@ function HelpOverlay() {
           <span className="font-bold text-cyan-200">Near misses build FLOW.</span> Graze obstacles
           to raise your multiplier — Close, Razor, and Perfect passes pay increasingly more.
           Chain precise passes before Flow decays to reach the highest scores; every chain climbs
-          the melody.
+          the melody. Pass tightly between obstacles on both sides to{" "}
+          <span className="font-bold text-emerald-200">THREAD</span> the gap.
         </div>
         <div>
           <span className="font-bold text-fuchsia-300">The world moves on the beat.</span> Every
@@ -1282,21 +1533,23 @@ function HelpOverlay() {
           <span className="font-bold text-emerald-200">Sprint</span> is a fixed {SPRINT_MODE.DURATION}s
           score attack on a weekly course — survive the clock and bank everything.{" "}
           <span className="font-bold text-amber-200">Trials</span> loop a single pattern at
-          ever-rising speed: chase Bronze, Silver, Gold, and Author medals, and race your own
-          ghost line.
+          ever-rising speed: chase Bronze, Silver, Gold, and Author medals, compare against the
+          deepest automated reference distance, and race your own ghost line.
         </div>
         <div>
           <span className="font-bold text-orange-300">Heat</span> stacks opt-in burdens on the
           endless track — scarcer shields, denser fields, narrower gaps — and multiplies every
           point you score. Your <span className="font-bold text-cyan-200">Pilot Rating</span>{" "}
-          climbs as your plain endless and daily flights push past the calibrated walls, and
+          climbs on fixed-seed trials normalized against their automated references, and
           three fresh <span className="font-bold text-lime-200">daily quests</span> reward
           skill, never grind.
         </div>
         <div>
           The <span className="font-bold text-violet-300">Lab</span> hosts experimental flight
-          systems still on the bench. Lab runs are unranked and save nothing — fly them for the
-          feel, not the ladder.
+          systems still on the bench, including Carve&apos;s timed reversals, glides, and
+          wall-kisses. Lab runs are unranked and save nothing — fly them for the feel, not the
+          ladder. Export a <span className="font-bold text-sky-200">.flight</span> after a run
+          to share it; imported flights launch an unranked ghost race on the exact course.
         </div>
       </div>
     </OverlayShell>

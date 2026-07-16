@@ -9,11 +9,13 @@
  * - superhuman:  TAS-style rollout search over the exact steering dynamics —
  *                only dies when *no* input stream survives its horizon.
  */
-import { CRAFT, STEER, TRACK } from "../src/game/core/constants";
+import { CRAFT, FIXED_DT, STEER, TRACK } from "../src/game/core/constants";
 import type { InputState } from "../src/game/core/input";
+import type { RunConfig } from "../src/game/core/modes";
 import { quantizeAxis } from "../src/game/core/replay";
-import { Motion, type ObstacleSpec } from "../src/game/core/types";
-import type { SimWorld } from "../src/game/core/world";
+import { createRng, type Rng } from "../src/game/core/rng";
+import { Motion, type ObstacleKind, type ObstacleSpec, type RunStatus } from "../src/game/core/types";
+import { SimWorld } from "../src/game/core/world";
 import { blockedRanges } from "../src/game/track/validator";
 
 export function specOf(o: SimWorld["obstacles"][number]): ObstacleSpec {
@@ -396,4 +398,607 @@ export function superhumanPilot(world: SimWorld, input: InputState): void {
   if (bestSurvived < steps) search(0.25);
   input.axis = bestAxis;
   input.boost = false;
+}
+
+// --- Restricted-observation synthetic pilots --------------------------------
+
+/**
+ * An ordered stress-model configuration, not a claim about a human population.
+ * Every decision is made from a noisy snapshot of currently evaluated geometry
+ * inside `observationHorizonSeconds`; generator metadata and solved paths are
+ * deliberately absent.
+ */
+export interface SyntheticPilotProfile {
+  id: string;
+  observationHorizonSeconds: number;
+  decisionHz: number;
+  latencySeconds: number;
+  observationNoiseMeters: number;
+  motorNoiseAxis: number;
+  /** Number of evenly spaced axis values, including -1 and +1. */
+  axisLevels: number;
+  planningSlices: number;
+  laneWidth: number;
+  safetyMargin: number;
+  /** Fraction of the physical lateral-speed envelope assumed reachable. */
+  reachFraction: number;
+  /** Seconds ahead on the selected path used as the immediate steering aim. */
+  targetLeadSeconds: number;
+  steeringGain: number;
+  targetSmoothing: number;
+}
+
+function validateSyntheticProfile(profile: SyntheticPilotProfile): SyntheticPilotProfile {
+  const positive: [keyof SyntheticPilotProfile, number][] = [
+    ["observationHorizonSeconds", profile.observationHorizonSeconds],
+    ["decisionHz", profile.decisionHz],
+    ["axisLevels", profile.axisLevels],
+    ["planningSlices", profile.planningSlices],
+    ["laneWidth", profile.laneWidth],
+    ["reachFraction", profile.reachFraction],
+    ["targetLeadSeconds", profile.targetLeadSeconds],
+    ["steeringGain", profile.steeringGain],
+  ];
+  for (const [name, value] of positive) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`synthetic profile ${profile.id}: ${name} must be positive`);
+    }
+  }
+  if (!Number.isInteger(profile.axisLevels) || profile.axisLevels < 2) {
+    throw new RangeError(`synthetic profile ${profile.id}: axisLevels must be an integer >= 2`);
+  }
+  if (!Number.isInteger(profile.planningSlices) || profile.planningSlices < 2) {
+    throw new RangeError(`synthetic profile ${profile.id}: planningSlices must be an integer >= 2`);
+  }
+  for (const [name, value] of [
+    ["latencySeconds", profile.latencySeconds],
+    ["observationNoiseMeters", profile.observationNoiseMeters],
+    ["motorNoiseAxis", profile.motorNoiseAxis],
+    ["safetyMargin", profile.safetyMargin],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RangeError(`synthetic profile ${profile.id}: ${name} must be non-negative`);
+    }
+  }
+  if (
+    !Number.isFinite(profile.targetSmoothing) ||
+    profile.targetSmoothing < 0 ||
+    profile.targetSmoothing >= 1
+  ) {
+    throw new RangeError(`synthetic profile ${profile.id}: targetSmoothing must be in [0, 1)`);
+  }
+  return Object.freeze({ ...profile });
+}
+
+/** Define a checked profile or derive one from an existing stress model. */
+export function defineSyntheticPilotProfile(
+  profile: SyntheticPilotProfile,
+  overrides: Partial<SyntheticPilotProfile> = {},
+): SyntheticPilotProfile {
+  return validateSyntheticProfile({ ...profile, ...overrides });
+}
+
+const SYNTHETIC_PROFILE_BASE: SyntheticPilotProfile = {
+  id: "synthetic-base",
+  observationHorizonSeconds: 1,
+  decisionHz: 8,
+  latencySeconds: 0.12,
+  observationNoiseMeters: 0.3,
+  motorNoiseAxis: 0.08,
+  axisLevels: 5,
+  planningSlices: 6,
+  laneWidth: 2,
+  safetyMargin: 0.9,
+  reachFraction: 0.55,
+  targetLeadSeconds: 0.3,
+  steeringGain: 0.26,
+  targetSmoothing: 0.3,
+};
+
+export const MODELED_NOVICE_PROFILE = defineSyntheticPilotProfile(SYNTHETIC_PROFILE_BASE, {
+  id: "modeled-novice",
+  observationHorizonSeconds: 0.7,
+  decisionHz: 5,
+  latencySeconds: 0.18,
+  observationNoiseMeters: 0.55,
+  motorNoiseAxis: 0.14,
+  axisLevels: 3,
+  planningSlices: 4,
+  laneWidth: 2.5,
+  safetyMargin: 1.25,
+  reachFraction: 0.4,
+  targetLeadSeconds: 0.22,
+  steeringGain: 0.2,
+  targetSmoothing: 0.52,
+});
+
+export const MODELED_REACTIVE_PROFILE = defineSyntheticPilotProfile(SYNTHETIC_PROFILE_BASE, {
+  id: "modeled-reactive",
+  observationHorizonSeconds: 1.3,
+  decisionHz: 10,
+  latencySeconds: 0.1,
+  observationNoiseMeters: 0.24,
+  motorNoiseAxis: 0.065,
+  axisLevels: 7,
+  planningSlices: 7,
+  laneWidth: 1.5,
+  safetyMargin: 0.9,
+  reachFraction: 0.62,
+  targetLeadSeconds: 0.34,
+  steeringGain: 0.26,
+  targetSmoothing: 0.3,
+});
+
+export const MODELED_INTERMEDIATE_PROFILE = defineSyntheticPilotProfile(SYNTHETIC_PROFILE_BASE, {
+  id: "modeled-intermediate",
+  observationHorizonSeconds: 2.1,
+  decisionHz: 15,
+  latencySeconds: 0.05,
+  observationNoiseMeters: 0.08,
+  motorNoiseAxis: 0.025,
+  axisLevels: 17,
+  planningSlices: 11,
+  laneWidth: 1,
+  safetyMargin: 0.65,
+  reachFraction: 0.78,
+  targetLeadSeconds: 0.48,
+  steeringGain: 0.3,
+  targetSmoothing: 0.16,
+});
+
+export const MODELED_SYNTHETIC_PROFILES = Object.freeze({
+  novice: MODELED_NOVICE_PROFILE,
+  reactive: MODELED_REACTIVE_PROFILE,
+  intermediate: MODELED_INTERMEDIATE_PROFILE,
+});
+
+export interface SyntheticObstacleObservation {
+  id: number;
+  kind: ObstacleKind;
+  x: number;
+  s: number;
+  y: number;
+  hx: number;
+  hy: number;
+  hs: number;
+  yaw: number;
+  inner: number;
+}
+
+export interface SyntheticObservation {
+  time: number;
+  x: number;
+  latVel: number;
+  distance: number;
+  speed: number;
+  horizonMeters: number;
+  obstacles: SyntheticObstacleObservation[];
+  /** Visible course centers sampled at each planning slice. */
+  courseOffsets: number[];
+}
+
+const symmetricNoise = (rng: Rng, amplitude: number): number =>
+  amplitude === 0 ? 0 : rng.range(-amplitude, amplitude);
+
+/**
+ * Build the only state exposed to a synthetic policy. It contains live,
+ * render-equivalent transforms in a bounded forward window. It never reads
+ * chunk paths, validator ranges, generator state, future RNG, or authored
+ * motion parameters.
+ */
+export function observeSyntheticWorld(
+  world: SimWorld,
+  profile: SyntheticPilotProfile,
+  rng: Rng,
+): SyntheticObservation {
+  const speed = Math.max(20, world.speed);
+  const horizonMeters = 8 + speed * profile.observationHorizonSeconds;
+  const distance = world.distance + symmetricNoise(rng, profile.observationNoiseMeters * 0.15);
+  const obstacles: SyntheticObstacleObservation[] = [];
+  for (const obstacle of world.obstacles) {
+    if (!obstacle.active || !obstacle.collidable || obstacle.kind === "decor") continue;
+    const cos = Math.abs(Math.cos(obstacle.cyaw));
+    const sin = Math.abs(Math.sin(obstacle.cyaw));
+    const sHalf = cos * obstacle.hs + sin * obstacle.hx;
+    if (obstacle.cs + sHalf < distance - 2 || obstacle.cs - sHalf > distance + horizonMeters) {
+      continue;
+    }
+    const vHalf = obstacle.kind === "ring" ? obstacle.hx : obstacle.hy;
+    if (obstacle.cy - vHalf > CRAFT.Y_MAX || obstacle.cy + vHalf < CRAFT.Y_MIN) continue;
+    obstacles.push({
+      id: obstacle.id,
+      kind: obstacle.kind,
+      x: obstacle.cx + symmetricNoise(rng, profile.observationNoiseMeters),
+      s: obstacle.cs + symmetricNoise(rng, profile.observationNoiseMeters),
+      y: obstacle.cy + symmetricNoise(rng, profile.observationNoiseMeters * 0.25),
+      hx: obstacle.hx,
+      hy: obstacle.hy,
+      hs: obstacle.hs,
+      yaw: obstacle.cyaw,
+      inner: obstacle.inner,
+    });
+  }
+  obstacles.sort((a, b) => a.s - b.s || a.id - b.id);
+
+  const courseOffsets: number[] = [];
+  for (let slice = 0; slice < profile.planningSlices; slice++) {
+    const frac = (slice + 0.5) / profile.planningSlices;
+    courseOffsets.push(world.courseOffsetAt(distance + horizonMeters * frac));
+  }
+  return {
+    time: world.time,
+    x: world.x + symmetricNoise(rng, profile.observationNoiseMeters * 0.35),
+    latVel: world.latVel + symmetricNoise(rng, profile.observationNoiseMeters * 0.8),
+    distance,
+    speed,
+    horizonMeters,
+    obstacles,
+    courseOffsets,
+  };
+}
+
+function observedBlockedRanges(
+  obstacle: SyntheticObstacleObservation,
+  profile: SyntheticPilotProfile,
+): [number, number][] {
+  const margin = CRAFT.RADIUS + profile.safetyMargin;
+  if (obstacle.kind === "ring") {
+    const dy = Math.abs(CRAFT.HOVER_HEIGHT - obstacle.y);
+    const innerRadius = Math.max(0, obstacle.inner - CRAFT.RADIUS * 0.4 - profile.safetyMargin);
+    const openingHalf = dy < innerRadius
+      ? Math.sqrt(Math.max(0, innerRadius * innerRadius - dy * dy))
+      : 0;
+    const outerHalf = obstacle.hx + margin;
+    return [
+      [obstacle.x - outerHalf, obstacle.x - openingHalf],
+      [obstacle.x + openingHalf, obstacle.x + outerHalf],
+    ];
+  }
+  const cos = Math.abs(Math.cos(obstacle.yaw));
+  const sin = Math.abs(Math.sin(obstacle.yaw));
+  const lateralHalf = cos * obstacle.hx + sin * obstacle.hs + margin;
+  return [[obstacle.x - lateralHalf, obstacle.x + lateralHalf]];
+}
+
+function corridorClearance(row: Uint8Array, lane: number): number {
+  let cells = 0;
+  for (let d = 1; d < row.length; d++) {
+    if (lane - d < 0 || lane + d >= row.length || row[lane - d] || row[lane + d]) break;
+    cells++;
+  }
+  return cells;
+}
+
+/** Axis quantization owned by the stress model, followed by replay quantization. */
+export function quantizeSyntheticAxis(axis: number, levels: number): number {
+  if (!Number.isInteger(levels) || levels < 2) {
+    throw new RangeError("axis levels must be an integer >= 2");
+  }
+  const clamped = Math.max(-1, Math.min(1, axis));
+  const bucket = Math.round(((clamped + 1) * (levels - 1)) / 2);
+  const modeled = (bucket * 2) / (levels - 1) - 1;
+  return quantizeAxis(modeled);
+}
+
+function planSyntheticTarget(
+  observation: SyntheticObservation,
+  profile: SyntheticPilotProfile,
+): number {
+  const slices = profile.planningSlices;
+  const sliceMeters = observation.horizonMeters / slices;
+  const sliceSeconds = sliceMeters / observation.speed;
+  const frameCenter = observation.courseOffsets[0] ?? 0;
+  const frameHalf = TRACK.X_LIMIT + 18;
+  const frame0 = frameCenter - frameHalf;
+  const lanes = Math.floor((frameHalf * 2) / profile.laneWidth) + 1;
+  const laneX = (lane: number): number => frame0 + lane * profile.laneWidth;
+  const blocked: Uint8Array[] = Array.from({ length: slices }, () => new Uint8Array(lanes));
+
+  for (let slice = 0; slice < slices; slice++) {
+    const center = observation.courseOffsets[slice];
+    const lo = center - TRACK.X_LIMIT;
+    const hi = center + TRACK.X_LIMIT;
+    const row = blocked[slice];
+    for (let lane = 0; lane < lanes; lane++) {
+      const x = laneX(lane);
+      if (x < lo || x > hi) row[lane] = 1;
+    }
+  }
+
+  for (const obstacle of observation.obstacles) {
+    const cos = Math.abs(Math.cos(obstacle.yaw));
+    const sin = Math.abs(Math.sin(obstacle.yaw));
+    const sHalf = cos * obstacle.hs + sin * obstacle.hx + CRAFT.RADIUS;
+    for (let slice = 0; slice < slices; slice++) {
+      const rowS = observation.distance + sliceMeters * (slice + 0.5);
+      if (Math.abs(obstacle.s - rowS) > sHalf + sliceMeters * 0.5) continue;
+      for (const [x0, x1] of observedBlockedRanges(obstacle, profile)) {
+        const lane0 = Math.max(0, Math.floor((x0 - frame0) / profile.laneWidth));
+        const lane1 = Math.min(lanes - 1, Math.ceil((x1 - frame0) / profile.laneWidth));
+        for (let lane = lane0; lane <= lane1; lane++) blocked[slice][lane] = 1;
+      }
+    }
+  }
+
+  const maxLat = observation.speed * STEER.RATIO;
+  const reachPerSlice = Math.max(
+    1,
+    Math.ceil((maxLat * sliceSeconds * profile.reachFraction) / profile.laneWidth),
+  );
+  const startLane = Math.max(0, Math.min(lanes - 1, Math.round((observation.x - frame0) / profile.laneWidth)));
+  const costs: Float64Array[] = Array.from(
+    { length: slices },
+    () => new Float64Array(lanes).fill(-Infinity),
+  );
+  const parents: Int16Array[] = Array.from(
+    { length: slices },
+    () => new Int16Array(lanes).fill(-1),
+  );
+
+  const firstReach = Math.max(1, Math.ceil(reachPerSlice * 0.5));
+  for (
+    let lane = Math.max(0, startLane - firstReach);
+    lane <= Math.min(lanes - 1, startLane + firstReach);
+    lane++
+  ) {
+    if (blocked[0][lane]) continue;
+    costs[0][lane] =
+      corridorClearance(blocked[0], lane) * 0.55 -
+      Math.abs(lane - startLane) * 0.45;
+  }
+  if (!costs[0].some(Number.isFinite)) {
+    let nearest = -1;
+    for (let delta = 0; delta < lanes && nearest < 0; delta++) {
+      for (const lane of [startLane - delta, startLane + delta]) {
+        if (lane >= 0 && lane < lanes && !blocked[0][lane]) {
+          nearest = lane;
+          break;
+        }
+      }
+    }
+    if (nearest >= 0) costs[0][nearest] = 0;
+  }
+
+  let deepest = 0;
+  for (let slice = 1; slice < slices; slice++) {
+    const prev = costs[slice - 1];
+    const cur = costs[slice];
+    for (let lane = 0; lane < lanes; lane++) {
+      if (blocked[slice][lane]) continue;
+      let best = -Infinity;
+      let bestParent = -1;
+      const lo = Math.max(0, lane - reachPerSlice);
+      const hi = Math.min(lanes - 1, lane + reachPerSlice);
+      for (let parent = lo; parent <= hi; parent++) {
+        const candidate = prev[parent] - Math.abs(lane - parent) * 0.35;
+        if (candidate > best) {
+          best = candidate;
+          bestParent = parent;
+        }
+      }
+      if (bestParent >= 0 && Number.isFinite(best)) {
+        cur[lane] = best + Math.min(6, corridorClearance(blocked[slice], lane)) * 0.55;
+        parents[slice][lane] = bestParent;
+      }
+    }
+    if (cur.some(Number.isFinite)) deepest = slice;
+    else break;
+  }
+
+  let bestLane = startLane;
+  let bestCost = -Infinity;
+  for (let lane = 0; lane < lanes; lane++) {
+    const cost = costs[deepest][lane] - Math.abs(lane - startLane) * 0.025;
+    if (cost > bestCost) {
+      bestCost = cost;
+      bestLane = lane;
+    }
+  }
+  if (!Number.isFinite(bestCost)) return observation.courseOffsets[0] ?? observation.x;
+
+  const targetSlice = Math.min(
+    deepest,
+    Math.max(0, Math.round(profile.targetLeadSeconds / Math.max(FIXED_DT, sliceSeconds)) - 1),
+  );
+  for (let slice = deepest; slice > targetSlice; slice--) {
+    const parent = parents[slice][bestLane];
+    if (parent < 0) break;
+    bestLane = parent;
+  }
+  return laneX(bestLane);
+}
+
+export interface SyntheticPilotController {
+  readonly profile: SyntheticPilotProfile;
+  readonly decisions: number;
+  step(world: SimWorld, input: InputState): void;
+}
+
+class RestrictedSyntheticPilot implements SyntheticPilotController {
+  readonly profile: SyntheticPilotProfile;
+  private readonly rng: Rng;
+  private nextDecisionAt = 0;
+  private targetX = 0;
+  private appliedAxis = 0;
+  private decisionCount = 0;
+  private pending: { applyAt: number; axis: number }[] = [];
+
+  constructor(profile: SyntheticPilotProfile, seed: string) {
+    this.profile = validateSyntheticProfile(profile);
+    this.rng = createRng(seed);
+  }
+
+  get decisions(): number {
+    return this.decisionCount;
+  }
+
+  step(world: SimWorld, input: InputState): void {
+    if (world.time + 1e-9 >= this.nextDecisionAt) {
+      const observation = observeSyntheticWorld(world, this.profile, this.rng);
+      const plannedTarget = planSyntheticTarget(observation, this.profile);
+      this.targetX =
+        this.targetX * this.profile.targetSmoothing +
+        plannedTarget * (1 - this.profile.targetSmoothing);
+      const error = this.targetX - observation.x;
+      const desiredVel =
+        Math.sign(error) *
+        Math.min(Math.abs(error) * 4, observation.speed * STEER.RATIO * this.profile.reachFraction);
+      const rawAxis =
+        (desiredVel - observation.latVel) * this.profile.steeringGain +
+        symmetricNoise(this.rng, this.profile.motorNoiseAxis);
+      this.pending.push({
+        applyAt: world.time + this.profile.latencySeconds,
+        axis: quantizeSyntheticAxis(rawAxis, this.profile.axisLevels),
+      });
+      this.decisionCount++;
+      this.nextDecisionAt = world.time + 1 / this.profile.decisionHz;
+    }
+
+    while (this.pending.length > 0 && this.pending[0].applyAt <= world.time + 1e-9) {
+      this.appliedAxis = this.pending.shift()!.axis;
+    }
+    input.axis = this.appliedAxis;
+    input.boost = false;
+    input.dash = false;
+  }
+}
+
+/** Create one deterministic restricted-observation policy instance. */
+export function createSyntheticPilot(
+  profile: SyntheticPilotProfile,
+  noiseSeed: string,
+): SyntheticPilotController {
+  return new RestrictedSyntheticPilot(profile, noiseSeed);
+}
+
+export interface PilotCohortRun {
+  cohortId: string;
+  seed: string;
+  status: RunStatus;
+  capped: boolean;
+  distance: number;
+  score: number;
+  duration: number;
+  steps: number;
+  decisions: number | null;
+  obstacleDrops: number;
+  pickupDrops: number;
+}
+
+export interface PilotCohortAggregate {
+  runs: number;
+  meanDistance: number;
+  medianDistance: number;
+  minDistance: number;
+  maxDistance: number;
+  spreadRatio: number;
+  trimmedSpreadRatio: number;
+  cappedRuns: number;
+}
+
+export interface PilotCohortReport {
+  cohortId: string;
+  runs: PilotCohortRun[];
+  aggregate: PilotCohortAggregate;
+}
+
+export interface PilotCohortController {
+  step(world: SimWorld, input: InputState): void;
+  readonly decisions?: number;
+}
+
+export interface PilotCohortOptions {
+  cohortId: string;
+  seeds: readonly string[];
+  maxSeconds: number;
+  createController: (seed: string) => PilotCohortController;
+  configForSeed?: (seed: string) => RunConfig;
+}
+
+function medianValue(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function spreadRatio(values: readonly number[], trim: boolean): number {
+  let sorted = [...values].sort((a, b) => a - b);
+  if (trim && sorted.length >= 5) sorted = sorted.slice(1, -1);
+  return sorted[0] > 0 ? sorted[sorted.length - 1] / sorted[0] : Infinity;
+}
+
+export function aggregatePilotCohort(runs: readonly PilotCohortRun[]): PilotCohortAggregate {
+  if (runs.length === 0) throw new RangeError("a pilot cohort needs at least one run");
+  const distances = runs.map((run) => run.distance);
+  return {
+    runs: runs.length,
+    meanDistance: distances.reduce((sum, distance) => sum + distance, 0) / distances.length,
+    medianDistance: medianValue(distances),
+    minDistance: Math.min(...distances),
+    maxDistance: Math.max(...distances),
+    spreadRatio: spreadRatio(distances, false),
+    trimmedSpreadRatio: spreadRatio(distances, true),
+    cappedRuns: runs.filter((run) => run.capped).length,
+  };
+}
+
+/** Run any deterministic policy factory across identical track seeds. */
+export function runPilotCohort(options: PilotCohortOptions): PilotCohortReport {
+  if (options.seeds.length === 0) throw new RangeError("a pilot cohort needs at least one seed");
+  if (!Number.isFinite(options.maxSeconds) || options.maxSeconds <= 0) {
+    throw new RangeError("maxSeconds must be positive");
+  }
+  const runs: PilotCohortRun[] = [];
+  const maxSteps = Math.ceil(options.maxSeconds / FIXED_DT);
+  for (const seed of options.seeds) {
+    const world = new SimWorld();
+    world.recordInputs = false;
+    world.start(options.configForSeed?.(seed) ?? { mode: "endless", seed });
+    const input: InputState = {
+      axis: 0,
+      boost: false,
+      dash: false,
+      restart: false,
+      pause: false,
+    };
+    const controller = options.createController(seed);
+    let steps = 0;
+    while (world.status === "running" && steps < maxSteps) {
+      controller.step(world, input);
+      world.update(FIXED_DT, input);
+      steps++;
+    }
+    runs.push({
+      cohortId: options.cohortId,
+      seed,
+      status: world.status,
+      capped: world.status === "running",
+      distance: world.distance,
+      score: world.score,
+      duration: world.stats.duration,
+      steps,
+      decisions: controller.decisions ?? null,
+      obstacleDrops: world.stats.obstacleDrops,
+      pickupDrops: world.stats.pickupDrops,
+    });
+  }
+  return {
+    cohortId: options.cohortId,
+    runs,
+    aggregate: aggregatePilotCohort(runs),
+  };
+}
+
+/** Run one parameterized restricted-observation profile across a seed cohort. */
+export function runSyntheticCohort(
+  profile: SyntheticPilotProfile,
+  seeds: readonly string[],
+  maxSeconds: number,
+): PilotCohortReport {
+  return runPilotCohort({
+    cohortId: profile.id,
+    seeds,
+    maxSeconds,
+    createController: (seed) => createSyntheticPilot(profile, `${profile.id}|${seed}|noise`),
+  });
 }

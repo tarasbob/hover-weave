@@ -3,7 +3,7 @@
 import * as Tone from "tone";
 import { RESONANCE } from "../core/constants";
 import type { SimWorld } from "../core/world";
-import type { PrecisionGrade, RunEventKind } from "../core/types";
+import type { PatternSkill, PrecisionGrade, RunEventKind } from "../core/types";
 import { clamp01, damp } from "../core/mathUtils";
 
 /**
@@ -662,6 +662,23 @@ export class AudioEngine {
     });
   }
 
+  /** Predictive leitmotif: a skill-family phrase entering the lookahead. */
+  foreshadow(skill: PatternSkill = "navigation"): void {
+    this.oneShot(() => {
+      const motifs: Record<PatternSkill, [string, string]> = {
+        precision: ["D6", "A6"],
+        rhythm: ["F5", "C6"],
+        reaction: ["D4", "D5"],
+        commitment: ["A4", "E5"],
+        navigation: ["C5", "G5"],
+      };
+      const notes = motifs[skill];
+      const now = Tone.now();
+      this.chime.triggerAttackRelease(notes[0], "32n", now, 0.24);
+      this.chime.triggerAttackRelease(notes[1], "16n", now + 0.12, 0.2);
+    });
+  }
+
   biome(index: number): void {
     this.oneShot(() => {
       const notes = ["D5", "F5", "A5", "C6"];
@@ -671,6 +688,22 @@ export class AudioEngine {
         undefined,
         0.42,
       );
+    });
+  }
+
+  /** Mythic-depth arrival: a rare, widening three-note signature. */
+  mythic(index: number): void {
+    this.oneShot(() => {
+      const chords = [
+        ["D4", "A4", "F5"],
+        ["C4", "G4", "Eb5"],
+        ["A2", "E3", "D5"],
+      ];
+      const notes = chords[Math.min(index, chords.length - 1)];
+      const now = Tone.now();
+      notes.forEach((note, i) => {
+        this.chime.triggerAttackRelease(note, i === 2 ? "2n" : "4n", now + i * 0.14, 0.7);
+      });
     });
   }
 

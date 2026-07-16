@@ -17,7 +17,7 @@
 import { SPEED } from "../core/constants";
 import { clamp01, lerp } from "../core/mathUtils";
 import type { PatternDef, PatternSkill } from "../core/types";
-import { FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
+import { CIRCUIT_PATTERNS, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
 
 export type Medal = "bronze" | "silver" | "gold" | "author";
 export const MEDAL_ORDER: readonly Medal[] = ["bronze", "silver", "gold", "author"];
@@ -53,8 +53,8 @@ export interface TrialDef {
   /** Distance thresholds (m), strictly increasing. */
   medals: Record<Medal, number>;
   /**
-   * The reference line (fun-frontier 4.1): the deepest *proven* line on this
-   * trial's exact seed — max of the TAS rollout wall, the lookahead planner
+   * The reference distance (fun-frontier 4.1): the deepest automated run on
+   * this trial's exact seed — max of the TAS rollout wall, lookahead planner,
    * wall, and 1.2 × the author medal — from `scripts/refcal.ts`.
    * Deterministic; it only moves when tuning moves. The death screen reports
    * a run as a percentage of this line; nobody is expected to reach 100%.
@@ -69,7 +69,7 @@ export function trialSeed(id: string): string {
   return `cubefield-trial-${id}`;
 }
 
-const PATTERN_POOL = [...NORMAL_PATTERNS, ...FIELD_PATTERNS];
+const PATTERN_POOL = [...NORMAL_PATTERNS, ...FIELD_PATTERNS, ...CIRCUIT_PATTERNS];
 
 function defineTrial(
   patternId: string,
@@ -106,7 +106,7 @@ function defineTrial(
  * out-reacts humans. Bronze ≈ a few clean pattern reps; Author is a
  * statement (~1.5× gold, trial speed 130+ m/s). Drift alarms in simtest.
  *
- * Reference lines from `scripts/refcal.ts` — the deepest proven line per
+ * Reference distances from `scripts/refcal.ts` — the deepest automated run per
  * seed: max(TAS rollout wall, lookahead wall, 1.2 × author). The authored
  * floor covers mover-heavy trials where every bot under-times what humans
  * can. Re-baked 2026-07-15 with the resonance-mainline track.
@@ -161,6 +161,13 @@ export const TRIALS: TrialDef[] = [
     "splitDecision", "Split Second", "Forks at speed. Choose once, commit forever.",
     { bronze: 400, silver: 750, gold: 1300, author: 2000 },
     5919,
+  ),
+  defineTrial(
+    "weaverCircuit",
+    "Weaver Circuit",
+    "Four linked disciplines. Resources and exit position carry into what comes next.",
+    { bronze: 500, silver: 800, gold: 1450, author: 3000 },
+    7110,
   ),
 ];
 

@@ -385,14 +385,16 @@ export const CARVE = {
   FLICK_BOOST: 1.6,
   /** |latVel| >= this × maxLat at the reversal for a pump to fire. */
   PUMP_MIN_FRAC: 0.55,
+  /** Reversals at or above this fraction receive full pump quality. */
+  PUMP_FULL_FRAC: 0.95,
   /** Fraction of carried speed mirrored into the new direction. */
   PUMP_KEEP: 0.9,
   /** Extra bite, as a fraction of maxLat, added on top of the mirror. */
   PUMP_BONUS: 0.3,
   /** Pump bonus multiplier while boosting (boost-carve sequencing). */
   PUMP_BOOST_GAIN: 1.3,
-  /** Seconds between pump payouts. */
-  PUMP_COOLDOWN: 0.24,
+  /** Anti-chatter lockout; optimal timing still follows carried velocity. */
+  PUMP_COOLDOWN: 0.16,
   /** Lateral speed hard cap as a multiple of maxLat. */
   OVER_RATIO: 1.45,
   /** Per-second decay of the excess above maxLat while gliding. */

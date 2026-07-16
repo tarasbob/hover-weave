@@ -17,6 +17,11 @@ import { EnvState } from "./render/env";
 import { AudioEngine } from "./audio/engine";
 import type { RunConfig } from "./core/modes";
 import { questsForDay, type QuestCounters, type QuestDef } from "./core/quests";
+import {
+  ghostEligible,
+  recordingConfig,
+  type RunRecording,
+} from "./core/replay";
 import { dailyKey, dailySeed, randomSeed, weeklyKey, weeklySeed } from "./core/rng";
 import { trialSeed } from "./track/trials";
 import { useGame, type GameMode } from "./state/game";
@@ -31,9 +36,13 @@ export interface GameBundle {
   env: EnvState;
   audio: AudioEngine;
   haptics: GamepadHaptics;
+  /** Imported rival currently being raced; mutable run-session state. */
+  rival: { recording: RunRecording | null };
   /** Ambient scroll distance used on the title screen. */
   ambient: { value: number };
   startRun(mode: GameMode, trialId?: string): void;
+  /** Launch the exact course carried by an imported flight and race its ghost. */
+  raceRecording(recording: RunRecording): void;
   /** Re-run the last config (defaults to endless before any run). */
   restart(): void;
   togglePause(): void;
@@ -57,6 +66,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const audio = new AudioEngine();
     const haptics = new GamepadHaptics();
     const ambient = { value: 0 };
+    const rival: { recording: RunRecording | null } = { recording: null };
 
     // The active run's identity, captured at launch: restart replays the
     // exact config; the period key keeps a run that crosses UTC midnight (or
@@ -80,10 +90,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
               : { mode, seed: randomSeed() };
       // Heat and lab prototypes ride only on endless launches (roadmap 4.3 /
       // Phase 5), from the pre-run selections. The sim canonicalizes both.
-      if (mode === "endless") {
-        const heat = useMeta.getState().selectedHeat;
+      const meta = useMeta.getState();
+      const firstFlight = mode === "endless" && !meta.onboardingComplete;
+      if (mode === "endless" && !firstFlight) {
+        const heat = meta.selectedHeat;
         if (heat.length > 0) config.heat = [...heat];
-        const lab = useMeta.getState().selectedLab;
+        const lab = meta.selectedLab;
         if (lab.length > 0) config.lab = [...lab];
       }
       // Dev probe: `?start=25000` spawns deep into an endless run (overdrive
@@ -98,10 +110,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }
       active.config = config;
       active.periodKey = mode === "daily" ? dailyKey() : mode === "sprint" ? weeklyKey() : null;
+      rival.recording = null;
 
       useGame.getState().setMode(mode, config.trialId ?? null);
       useGame.getState().setOutcome(null);
       useGame.getState().clearRunFeedback();
+      useGame.getState().setLesson(firstFlight ? "steer" : null);
       world.start(config);
       // Race your PB ghost: daily/sprint/trial share the seed (true spatial
       // ghosts), endless re-flies its own recorded track (pace ghost).
@@ -116,9 +130,28 @@ export function GameProvider({ children }: { children: ReactNode }) {
       audio.startMusic();
     };
 
+    const raceRecording = (recording: RunRecording) => {
+      if (!ghostEligible(recording)) {
+        throw new Error("Imported flight is not eligible for a rival race");
+      }
+      lockLandscape();
+      const config = recordingConfig(recording);
+      active.config = config;
+      active.periodKey = null;
+      rival.recording = recording;
+      useGame.getState().setMode(config.mode, config.trialId ?? null);
+      useGame.getState().setOutcome(null);
+      useGame.getState().clearRunFeedback();
+      world.start(config);
+      ghost.arm(recording);
+      useGame.getState().setPhase("running");
+      audio.startMusic();
+    };
+
     const restart = () => {
       const { config } = active;
-      if (!config.seed) startRun("endless");
+      if (rival.recording) raceRecording(rival.recording);
+      else if (!config.seed) startRun("endless");
       else startRun(config.mode, config.trialId);
     };
 
@@ -139,10 +172,25 @@ export function GameProvider({ children }: { children: ReactNode }) {
       ghost.arm(null);
       useGame.getState().setPhase("title");
       useGame.getState().setOutcome(null);
+      useGame.getState().setLesson(null);
       audio.pauseMusic();
     };
 
-    return { world, ghost, input, env, audio, haptics, ambient, startRun, restart, togglePause, backToTitle };
+    return {
+      world,
+      ghost,
+      input,
+      env,
+      audio,
+      haptics,
+      ambient,
+      rival,
+      startRun,
+      raceRecording,
+      restart,
+      togglePause,
+      backToTitle,
+    };
   }, []);
 
   // Dev-only console handle (assigned post-commit so Strict Mode's discarded
@@ -151,7 +199,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (process.env.NODE_ENV === "development") {
       (window as unknown as { __game: unknown }).__game = bundle;
-      (window as unknown as { __stores: unknown }).__stores = { useGame, useSettings, useMeta };
+      (window as unknown as { __stores: unknown }).__stores = {
+        useGame,
+        useSettings,
+        useMeta,
+        useReplays,
+      };
       (window as unknown as { __carve: unknown }).__carve = CARVE;
     }
   }, [bundle]);
@@ -200,11 +253,13 @@ export function GameProvider({ children }: { children: ReactNode }) {
       // no rating, no streaks, no lifetime tallies, no ghost — nothing
       // persists. The run still records in-memory so replays stay testable.
       const labRun = stats.lab.length > 0;
+      const rivalRun = bundle.rival.recording !== null;
+      const unrankedRun = labRun || rivalRun;
       // Mode-aware "how close was I": sprint runs race the week's best score,
       // trials race their own distance table, endless/daily the global PBs.
       const prevSprint = periodKey ? meta.sprintBest[periodKey] : undefined;
       const prevTrial = stats.trialId ? meta.trialBest[stats.trialId] : undefined;
-      const res = labRun
+      const res = unrankedRun
         ? {
             newBestScore: false,
             newBestDistance: false,
@@ -219,7 +274,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const after = metaSnapshot(useMeta.getState());
       // Persist the run's input recording — tomorrow's ghost (roadmap 3.1/3.2).
       const recording = world.getRecording();
-      if (recording && !labRun) useReplays.getState().recordRun(recording, periodKey);
+      if (recording && !unrankedRun) useReplays.getState().recordRun(recording, periodKey);
       const unlocked: { kind: "craft" | "trail"; id: string; name: string }[] = [];
       for (const c of CRAFTS) {
         if (!c.unlock.check(before) && c.unlock.check(after)) {
@@ -231,14 +286,14 @@ export function GameProvider({ children }: { children: ReactNode }) {
           unlocked.push({ kind: "trail", id: t.id, name: t.name });
         }
       }
-      const scoreDelta = labRun
+      const scoreDelta = unrankedRun
         ? 0
         : stats.mode === "sprint"
           ? stats.score - (prevSprint?.score ?? 0)
           : stats.mode === "trial"
             ? 0
             : stats.score - before.bestScore;
-      const distanceDelta = labRun
+      const distanceDelta = unrankedRun
         ? 0
         : stats.mode === "sprint"
           ? 0
@@ -248,6 +303,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       g.setOutcome({
         stats: { ...stats },
         finished,
+        rival: rivalRun,
         ...res,
         scoreDelta,
         distanceDelta,
@@ -260,7 +316,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const offs: (() => void)[] = [
       world.events.on("runStart", ({ config }) => {
         quest.counters = { riskShards: 0, fastPerfects: 0 };
-        if (config.mode === "daily") {
+        if (config.mode === "daily" && !bundle.rival.recording) {
           quest.day = dailyKey();
           quest.defs = questsForDay(quest.day);
         } else {
@@ -280,6 +336,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
         endRun(true);
       }),
       world.events.on("nearMiss", (e) => {
+        const game = useGame.getState();
+        if (game.lesson === "graze") game.setLesson("boost");
         env.triggerNearMiss(e.precision, e.x - world.x);
         audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision, e.chain);
         haptics.nearMiss(e.grade);
@@ -371,6 +429,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
         haptics.shieldBreak();
       }),
       world.events.on("boostStart", () => {
+        const game = useGame.getState();
+        if (game.lesson === "boost") game.setLesson("rhythm");
         env.triggerBoost(1);
         audio.boostStart();
         haptics.boostStart();
@@ -388,6 +448,29 @@ export function GameProvider({ children }: { children: ReactNode }) {
         env.triggerBoost(0.35 + e.strength * 0.3);
         audio.pump(e.dir, e.strength, e.wall);
         haptics.pump(e.strength, e.wall);
+      }),
+      world.events.on("routeChoice", (e) => {
+        useGame.getState().setSkillMoment(
+          e.label.toUpperCase(),
+          e.reward === "energy"
+            ? "ENERGY ROUTE · REFUEL AHEAD"
+            : e.reward === "flow"
+              ? "FLOW ROUTE · PRECISION AHEAD"
+              : "TEMPO ROUTE · READ THE BEAT",
+          e.reward === "energy" ? "shard" : e.reward === "flow" ? "thread" : "perfect",
+        );
+      }),
+      world.events.on("patternAhead", (e) => {
+        audio.foreshadow(e.skills[0] ?? "navigation");
+        useGame.getState().setAheadCue(e.patternId, e.skills, e.lead);
+      }),
+      world.events.on("mythic", (e) => {
+        env.triggerTransition();
+        audio.mythic(e.index);
+        useGame.getState().setCallout(
+          e.name.toUpperCase(),
+          `${(e.depth / 1000).toFixed(0)} KM · MYTHIC DEPTH`,
+        );
       }),
       world.events.on("boostEnd", () => {
         env.triggerBoost(0.45);
