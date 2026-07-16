@@ -18,6 +18,7 @@ import {
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { CRAFT } from "../core/constants";
+import { clamp } from "../core/mathUtils";
 import { CRAFTS, TRAILS, useMeta } from "../state/meta";
 import { useSettings } from "../state/settings";
 
@@ -291,8 +292,15 @@ export function Craft() {
     const dist = idle ? 0 : world.renderDistance;
     const x = idle ? 0 : world.renderX;
     const bank = idle ? Math.sin(performance.now() * 0.0011) * 0.08 : world.renderBank;
-    const bob = Math.sin((idle ? performance.now() * 0.002 : world.time * 6.4)) * 0.06;
-    const y = CRAFT.HOVER_HEIGHT + bob;
+    // Airborne the craft is a projectile, not a hovercraft: the bob fades out.
+    const airLift = idle ? 0 : world.renderY - CRAFT.HOVER_HEIGHT;
+    const bob =
+      Math.sin(idle ? performance.now() * 0.002 : world.time * 6.4) * 0.06 *
+      (world.airborne ? 0.25 : 1);
+    const y = CRAFT.HOVER_HEIGHT + airLift + bob;
+    // Flight pitch: nose rides the velocity vector — up off the lip, down
+    // through a dive — layered over the usual speed/boost trim.
+    const flightPitch = idle || dead ? 0 : clamp(-world.vy * 0.028, -0.34, 0.42);
 
     if (dead) {
       const t = Math.min(world.deathTimer / 1.1, 1);
@@ -312,7 +320,7 @@ export function Craft() {
         : -((world.courseOffsetAt(dist + 9) - world.courseOffsetAt(dist - 3)) / 12) * 0.7;
       group.position.set(x, y, 0);
       group.rotation.set(
-        0.02 - world.speedNorm * 0.04 - world.boostCharge * 0.09,
+        0.02 - world.speedNorm * 0.04 - world.boostCharge * 0.09 + flightPitch,
         -world.latVel * 0.006 + courseYaw,
         bank,
       );
@@ -332,6 +340,7 @@ export function Craft() {
       10 + world.speedNorm * 14 + world.boostCharge * 26 + env.uBoostPulse.value * 12;
     uTrailBoost.value =
       world.boostCharge + env.uFlow.value * 0.25 + world.glide * 0.5 +
+      (world.airborne ? 0.3 : 0) +
       trailFlash.current * (reduceFlash ? 0.2 : 0.65);
 
     // Shield bubble scale animation.
@@ -352,7 +361,7 @@ export function Craft() {
     }
     const trailWidth =
       (0.09 + world.boostCharge * 0.1 + env.uFlow.value * 0.025 + trailFlash.current * 0.035 +
-        world.glide * 0.12) *
+        world.glide * 0.12 + (world.airborne ? 0.07 : 0)) *
       (0.7 + smoothness.current * 0.3);
     trails.left.write(dist, trailWidth);
     trails.right.write(dist, trailWidth);

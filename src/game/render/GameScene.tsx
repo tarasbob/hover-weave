@@ -20,6 +20,7 @@ import { ObstacleField } from "./ObstacleField";
 import { Particles } from "./Particles";
 import { Pickups } from "./Pickups";
 import { PostFX } from "./PostFX";
+import { SkyAids } from "./SkyAids";
 import { SkyDome } from "./SkyDome";
 import { Terrain } from "./Terrain";
 import { Ocean } from "./Ocean";
@@ -75,6 +76,10 @@ export function GameScene() {
       }),
       world.events.on("thread", () => {
         kiss.current = KISS.HOLD + KISS.RELEASE;
+      }),
+      // A perfect flare-landing earns the same breath as a perfect pass.
+      world.events.on("land", (e) => {
+        if (e.grade === "perfect") kiss.current = KISS.HOLD + KISS.RELEASE;
       }),
     ];
     return () => offs.forEach((off) => off());
@@ -329,6 +334,7 @@ export function GameScene() {
       <ObstacleField shadows={quality.shadows} />
       <Pickups />
       <Craft />
+      <SkyAids />
       <Ghost />
       <Particles max={quality.maxParticles} />
       <Lightning />

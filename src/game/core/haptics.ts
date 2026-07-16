@@ -67,6 +67,18 @@ export class GamepadHaptics {
     this.pulse(wall ? 0.7 : 0.35 + strength * 0.35, 0.5, wall ? 90 : 65);
   }
 
+  /** Skyhook lip (fun-frontier 6.1): a rising kick scaled by launch energy. */
+  launch(energy: number): void {
+    this.pulse(0.25 + energy * 0.3, 0.6 + energy * 0.3, 90);
+  }
+
+  /** Touchdown: perfect rings light and bright, hard slams the strong motor. */
+  land(grade: "clean" | "hard" | "perfect", impact: number): void {
+    if (grade === "perfect") this.pulse(0.4, 0.9, 90);
+    else if (grade === "hard") this.pulse(0.8 + impact * 0.2, 0.5, 170);
+    else this.pulse(0.18, 0.32, 55);
+  }
+
   dash(): void {
     this.pulse(0.5, 0.8, 80);
   }

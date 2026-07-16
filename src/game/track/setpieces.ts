@@ -8,6 +8,7 @@ import {
   type PickupSpec,
 } from "../core/types";
 import { box, funnelTo, gateRow, leadInDist, shardLine } from "./patterns";
+import { SKY_SETPIECES } from "./skyhooks";
 import { PATH_SLOPE, pathSlopeAt } from "./validator";
 
 const XP = TRACK.X_PATTERN;
@@ -413,4 +414,5 @@ export const SETPIECES: PatternDef[] = [
   turbineField,
   apexGauntlet,
   leviathan,
+  ...SKY_SETPIECES,
 ];

@@ -14,6 +14,7 @@ import type {
 import { biomeIndexAt } from "./biomes";
 import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
 import { SETPIECES } from "./setpieces";
+import { SKY_NORMAL } from "./skyhooks";
 import { mutatePattern, resonatePattern } from "./mutators";
 import type { TrialDef } from "./trials";
 import {
@@ -75,6 +76,9 @@ export function patternIntensity(pattern: PatternDef): number {
 export interface GeneratorEmit {
   chunk(chunk: GeneratedChunk): void;
 }
+
+/** Rotating everyday pool: classic normals plus the teaching skyhook. */
+const GROUND_NORMALS: PatternDef[] = [...NORMAL_PATTERNS, ...SKY_NORMAL];
 
 /**
  * Streams patterns ahead of the craft. Every chunk — including all random
@@ -322,12 +326,13 @@ export class TrackGenerator {
       (!p.biomes || p.biomes.includes(biome)) &&
       (p.maxEntryHalf === undefined || entryHalf <= p.maxEntryHalf) &&
       (p.minEntryHalf === undefined || entryHalf >= p.minEntryHalf) &&
+      (p.maxSpeed === undefined || this.speedFor(s0) <= p.maxSpeed) &&
       p.id !== this.lastPatternId;
 
     // A short low-intensity weave follows stacked peaks. Late recovery keeps
     // the player steering instead of dropping into a long empty breather.
     if (this.recoveryDue) {
-      const recovery = NORMAL_PATTERNS.filter(
+      const recovery = GROUND_NORMALS.filter(
         (p) => eligible(p) && patternIntensity(p) <= 2,
       );
       if (recovery.length > 0) {
@@ -344,13 +349,13 @@ export class TrackGenerator {
     if (setpieceDue) {
       pool = SETPIECES.filter(eligible);
       if (pool.length === 0) {
-        pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
+        pool = [...GROUND_NORMALS, ...FIELD_PATTERNS].filter(eligible);
       }
     } else if (fieldDue) {
       pool = FIELD_PATTERNS.filter(eligible);
-      if (pool.length === 0) pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
+      if (pool.length === 0) pool = [...GROUND_NORMALS, ...FIELD_PATTERNS].filter(eligible);
     } else {
-      pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
+      pool = [...GROUND_NORMALS, ...FIELD_PATTERNS].filter(eligible);
     }
     if (pool.length === 0) return BREATHER;
 

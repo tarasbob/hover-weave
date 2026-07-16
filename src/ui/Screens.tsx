@@ -714,6 +714,24 @@ export function techniqueReport(stats: RunStats): {
       advice: "Reverse nearer peak lateral velocity; early flips return less momentum.",
     });
   }
+  if (stats.jumps > 0) {
+    // Flight quality: landings resolved (perfect > clean > hard), sweetened
+    // by airborne grazes — dead airtime is the thing to coach away.
+    const landings = Math.max(1, stats.perfectLandings + stats.hardLandings +
+      (stats.jumps - stats.perfectLandings - stats.hardLandings));
+    const flight = Math.min(
+      1,
+      (stats.perfectLandings + (landings - stats.perfectLandings - stats.hardLandings) * 0.45) /
+        landings +
+        Math.min(0.25, stats.airGrazes * 0.05),
+    );
+    metrics.push({
+      label: "FLIGHT",
+      value: `${stats.perfectLandings}/${stats.jumps}${stats.airGrazes > 0 ? ` · A${stats.airGrazes}` : ""}`,
+      score: flight,
+      advice: "Dive with boost to place the reticle, then flick opposite just before touchdown.",
+    });
+  }
   if (stats.routeChoices.length > 0) {
     const counts = { energy: 0, flow: 0, tempo: 0 };
     for (const choice of stats.routeChoices) counts[choice.reward]++;

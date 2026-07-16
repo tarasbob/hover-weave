@@ -15,8 +15,20 @@ export type ObstacleKind =
   /** Elastic puck: contact flings the craft sideways instead of killing. */
   | "bumper"
   /** Energy beam: collidable only during the ON phase of its Blink cycle. */
-  | "beam";
+  | "beam"
+  /**
+   * Skyhook launch wedge (fun-frontier 6.1): a rideable surface that never
+   * kills. `hs` = half length, `hx` = half width, `hy` = full lip height
+   * (the deck rises linearly toward +s), `y` = 0 (base on the ground).
+   * Left `collidable` so the validator and gap-scanning bots plan ground
+   * traffic *around* the deck — riding it is always a deliberate choice —
+   * while the sim's collision loop skips the kind and the vertical step
+   * reads the surface directly.
+   */
+  | "ramp";
 export type PrecisionGrade = "close" | "razor" | "perfect";
+/** Airborne touchdown quality (skyhook ramps, fun-frontier 6.1). */
+export type LandingGrade = "clean" | "hard" | "perfect";
 
 export const Motion = {
   None: 0,
@@ -207,6 +219,12 @@ export interface PatternDef {
   maxEntryHalf?: number;
   /** Only eligible when the entry corridor half-width is at least this. */
   minEntryHalf?: number;
+  /**
+   * Only eligible while the ambient target speed is at most this (m/s).
+   * Patterns whose safe geometry scales with speed (skyhook landing tubes)
+   * must retire before unbounded escalation dilutes them into free track.
+   */
+  maxSpeed?: number;
   build(ctx: BuildCtx): PatternResult;
 }
 

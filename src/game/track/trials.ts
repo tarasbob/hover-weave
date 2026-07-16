@@ -18,6 +18,7 @@ import { SPEED } from "../core/constants";
 import { clamp01, lerp } from "../core/mathUtils";
 import type { PatternDef, PatternSkill } from "../core/types";
 import { CIRCUIT_PATTERNS, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
+import { SKY_PATTERNS } from "./skyhooks";
 
 export type Medal = "bronze" | "silver" | "gold" | "author";
 export const MEDAL_ORDER: readonly Medal[] = ["bronze", "silver", "gold", "author"];
@@ -69,7 +70,12 @@ export function trialSeed(id: string): string {
   return `cubefield-trial-${id}`;
 }
 
-const PATTERN_POOL = [...NORMAL_PATTERNS, ...FIELD_PATTERNS, ...CIRCUIT_PATTERNS];
+const PATTERN_POOL = [
+  ...NORMAL_PATTERNS,
+  ...FIELD_PATTERNS,
+  ...CIRCUIT_PATTERNS,
+  ...SKY_PATTERNS,
+];
 
 function defineTrial(
   patternId: string,
@@ -169,6 +175,11 @@ export const TRIALS: TrialDef[] = [
     { bronze: 500, silver: 800, gold: 1450, author: 3000 },
     7110,
   ),
+  // No skyhook trial, deliberately: a looped wedge pattern cannot build a
+  // wall. Its guaranteed-clear landing tube scales linearly with speed, so
+  // under the trial's unbounded escalation the course dilutes into an ever
+  // longer safe corridor (calibration bots rode one past 300,000 km). Sky
+  // patterns also carry `maxSpeed`, retiring them from any such escalation.
 ];
 
 export function trialById(id: string): TrialDef | undefined {

@@ -12,6 +12,8 @@ import {
   lookaheadFor,
   MAX_STEPS_PER_FRAME,
   onBeatAt,
+  RAMP,
+  rampMaxFlight,
   RESONANCE,
   RUN,
   SERPENT,
@@ -32,6 +34,7 @@ import { InputRecorder, quantizeAxis, type RunRecording } from "./replay";
 import { createRng, type Rng } from "./rng";
 import {
   Motion,
+  type LandingGrade,
   type MotionType,
   type Obstacle,
   type ObstacleKind,
@@ -129,6 +132,8 @@ export const GRADE_MIN_INTENSITY = 2;
 export interface TraceSample {
   s: number;
   x: number;
+  /** Craft height (HOVER_HEIGHT unless airborne) — the kill-cam jump arc. */
+  y: number;
   speed: number;
   flow: number;
   /** Tightest hull clearance observed since the previous sample (99 = open). */
@@ -240,6 +245,20 @@ export interface RunStats {
   glideTime: number;
   /** Perfects confirmed on the beat grid (mainline since fun-frontier 2.1). */
   resonantPasses: number;
+  /** Skyhook launches ridden off a lip (fun-frontier 6.1). */
+  jumps: number;
+  /** Seconds spent airborne. */
+  airTime: number;
+  /** Seconds spent boost-diving while airborne. */
+  diveTime: number;
+  /** Flared touchdowns (any quality > 0). */
+  flares: number;
+  perfectLandings: number;
+  hardLandings: number;
+  /** Near misses confirmed while airborne. */
+  airGrazes: number;
+  /** Longest single flight, lip to touchdown (m). */
+  longestFlight: number;
   /** Glass panes smashed through while boosting. */
   glassSmashed: number;
   /** Bumper flings survived. */
@@ -309,6 +328,25 @@ export class SimWorld {
   speed = 0;
   /** Current speed as a 0..1 fraction of the possible span (for fx/audio). */
   speedNorm = 0;
+  /** Craft height (skyhook ramps, fun-frontier 6.1). HOVER_HEIGHT unless a
+   *  ramp is ridden — the only way the craft ever leaves the ground band. */
+  y: number = CRAFT.HOVER_HEIGHT;
+  vy = 0;
+  airborne = false;
+  /** Track s where the current flight left its lip (flight-length stat). */
+  private flightStartS = 0;
+  private flightStartTime = 0;
+  /** Lip position of the wedge currently/last ridden (side-slip detection). */
+  private rideLipS = -Infinity;
+  /** Flare detection: fresh committed presses while airborne. */
+  private airPressDir = 0;
+  private airPressAge = 999;
+  private airPressGap = 999;
+  /** Seconds of halved steering authority after a hard landing. */
+  private numbTimer = 0;
+  /** Perfect-landing rush: captured over-target speed, decaying. */
+  private rushTimer = 0;
+  private rushBonus = 0;
 
   // Meters.
   time = 0;
@@ -394,6 +432,8 @@ export class SimWorld {
   readonly pickups: Pickup[] = [];
   private obstacleFree: number[] = [];
   private pickupFree: number[] = [];
+  /** Live ramp wedges in the pool — 0 keeps the vertical step a no-op. */
+  private liveRamps = 0;
 
   private generator: TrackGenerator | null = null;
   private accumulator = 0;
@@ -403,6 +443,7 @@ export class SimWorld {
   prevX = 0;
   prevDistance = 0;
   prevBank = 0;
+  prevY: number = CRAFT.HOVER_HEIGHT;
 
   debugChunks: GeneratedChunk[] = [];
   collectDebug = false;
@@ -435,6 +476,8 @@ export class SimWorld {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
       closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
       dashes: 0, pumps: 0, pumpQualitySum: 0, glideTime: 0, resonantPasses: 0,
+      jumps: 0, airTime: 0, diveTime: 0, flares: 0,
+      perfectLandings: 0, hardLandings: 0, airGrazes: 0, longestFlight: 0,
       glassSmashed: 0, bounces: 0, runEvents: 0,
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0, boostChargeTime: 0,
@@ -449,6 +492,7 @@ export class SimWorld {
   clearField(): void {
     for (const o of this.obstacles) o.active = false;
     for (const p of this.pickups) p.active = false;
+    this.liveRamps = 0;
     this.obstacleFree.length = 0;
     this.pickupFree.length = 0;
     for (let i = OBSTACLE_CAP - 1; i >= 0; i--) this.obstacleFree.push(i);
@@ -498,6 +542,18 @@ export class SimWorld {
     this.distance = 0;
     this.speed = 0;
     this.speedNorm = 0;
+    this.y = CRAFT.HOVER_HEIGHT;
+    this.vy = 0;
+    this.airborne = false;
+    this.flightStartS = 0;
+    this.flightStartTime = 0;
+    this.rideLipS = -Infinity;
+    this.airPressDir = 0;
+    this.airPressAge = 999;
+    this.airPressGap = 999;
+    this.numbTimer = 0;
+    this.rushTimer = 0;
+    this.rushBonus = 0;
     this.time = 0;
     this.score = 0;
     this.flowPoints = 0;
@@ -533,6 +589,7 @@ export class SimWorld {
     this.prevX = 0;
     this.prevDistance = 0;
     this.prevBank = 0;
+    this.prevY = CRAFT.HOVER_HEIGHT;
     this.lastBiomeIndex = 0;
     this.nextMythicIndex = MYTHIC_ZONES.findIndex((zone) => zone.at > skipTo);
     if (this.nextMythicIndex < 0) this.nextMythicIndex = MYTHIC_ZONES.length;
@@ -554,6 +611,7 @@ export class SimWorld {
 
     for (const o of this.obstacles) o.active = false;
     for (const p of this.pickups) p.active = false;
+    this.liveRamps = 0;
     this.obstacleFree.length = 0;
     this.pickupFree.length = 0;
     for (let i = OBSTACLE_CAP - 1; i >= 0; i--) this.obstacleFree.push(i);
@@ -604,6 +662,7 @@ export class SimWorld {
       this.prevX = this.x;
       this.prevDistance = this.distance;
       this.prevBank = this.bank;
+      this.prevY = this.y;
       const wasRunning = this.status === "running";
       this.step(FIXED_DT, input);
       this.accumulator -= FIXED_DT;
@@ -635,6 +694,10 @@ export class SimWorld {
 
   get renderBank(): number {
     return lerp(this.prevBank, this.bank, this.alpha);
+  }
+
+  get renderY(): number {
+    return lerp(this.prevY, this.y, this.alpha);
   }
 
   get biomeIndex(): number {
@@ -692,6 +755,20 @@ export class SimWorld {
     this.boostCharge = clamp01(this.boostCharge + (this.boosting ? dt * 3.2 : -dt * 2.4));
     targetSpeed *= 1 + (SPEED.BOOST_MULT - 1) * this.boostCharge;
 
+    // Skyhook air economy (fun-frontier 6.1): a boost-dive converts sink
+    // rate into forward speed while it lasts; a perfect landing keeps that
+    // transient alive as a decaying rush instead of losing it at touchdown.
+    // Both terms are exactly 0 for a craft that never rides a ramp.
+    if (alive) {
+      if (this.airborne && this.boosting && this.vy < 0) {
+        targetSpeed += RAMP.DIVE_SPEED_GAIN * -this.vy;
+      }
+      if (this.rushTimer > 0) {
+        this.rushTimer = Math.max(0, this.rushTimer - dt);
+        targetSpeed += this.rushBonus * (this.rushTimer / RAMP.RUSH_TIME);
+      }
+    }
+
     // Phase dash (lab 5.3): rising edge fires a short committed lateral
     // burst — energy-priced, cooldown-gated, no i-frames. With the flag off
     // dashHeld is always false and every timer stays 0: bit-identical.
@@ -700,6 +777,7 @@ export class SimWorld {
       if (
         dashHeld &&
         !this.dashHeld &&
+        !this.airborne && // No phase-blinking mid-flight.
         this.dashTimer <= 0 &&
         this.dashCooldown <= 0 &&
         Math.abs(axis) >= DASH.MIN_AXIS &&
@@ -743,7 +821,22 @@ export class SimWorld {
     // --- Steering (speed-proportional, momentum-based) -------------------
     const maxLat = Math.max(10, this.speed) * STEER.RATIO;
     if (alive) {
-      if (this.dashTimer > 0) {
+      // Post-hard-landing numb: halved authority while the struts recover.
+      // 1 whenever no ramp has been slammed — the plain path is untouched.
+      if (this.numbTimer > 0) this.numbTimer = Math.max(0, this.numbTimer - dt);
+      const numb = this.numbTimer > 0 ? 0.5 : 1;
+      if (this.airborne) {
+        // Airborne (fun-frontier 6.1): weak bite, thin drag. Carried carve
+        // momentum persists — only air drag erodes it — so a pumped lip
+        // launch glides. Enough authority to feather a line, not re-plan it.
+        const authority =
+          steeringAuthorityAt(this.boostCharge) * RAMP.AIR_AUTHORITY * numb;
+        this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
+        this.latVel *= Math.exp(-RAMP.AIR_DRAG * dt);
+        const airCap = maxLat * CARVE.OVER_RATIO;
+        this.latVel = clamp(this.latVel, -airCap, airCap);
+        this.x += this.latVel * dt;
+      } else if (this.dashTimer > 0) {
         // Mid-dash (lab 5.3): steering is committed — a fixed-rate burst
         // that ends as a reposition, not a fling.
         this.dashTimer = Math.max(0, this.dashTimer - dt);
@@ -751,12 +844,12 @@ export class SimWorld {
         this.x += this.latVel * dt;
         if (this.dashTimer <= 0) this.latVel *= DASH.EXIT_MOMENTUM;
       } else if (this.labFx.carve) {
-        this.stepCarve(dt, axis, maxLat);
+        this.stepCarve(dt, axis, maxLat, numb);
       } else {
         // Speed and steering cost share the same continuous thrust state.
         // Releasing boost no longer grants full authority while residual
         // charge still supplies almost-full speed.
-        const authority = steeringAuthorityAt(this.boostCharge);
+        const authority = steeringAuthorityAt(this.boostCharge) * numb;
         this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
         const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
         this.latVel *= Math.exp(-drag * dt * lerp(1, 0.85, this.boostCharge));
@@ -773,25 +866,28 @@ export class SimWorld {
         (courseX - this.course.offsetAt(this.distance - this.speed * dt)) / dt;
       if (this.x < courseX - TRACK.X_LIMIT) {
         this.x = courseX - TRACK.X_LIMIT;
-        if (this.labFx.carve && axis >= CARVE.COMMIT) {
+        if (this.labFx.carve && !this.airborne && axis >= CARVE.COMMIT) {
           this.wallKiss(1, wallVel, maxLat);
         } else {
           this.latVel = wallVel + Math.max(0, this.latVel - wallVel) * 0.4;
         }
       } else if (this.x > courseX + TRACK.X_LIMIT) {
         this.x = courseX + TRACK.X_LIMIT;
-        if (this.labFx.carve && axis <= -CARVE.COMMIT) {
+        if (this.labFx.carve && !this.airborne && axis <= -CARVE.COMMIT) {
           this.wallKiss(-1, wallVel, maxLat);
         } else {
           this.latVel = wallVel + Math.min(0, this.latVel - wallVel) * 0.4;
         }
       }
-      // Glide readout for FX/HUD (0 everywhere but a carving craft).
-      if (this.labFx.carve) {
+      // Glide readout for FX/HUD (0 everywhere but a carving or flying craft).
+      if (this.labFx.carve || this.airborne) {
         this.glide = clamp01((Math.abs(this.latVel) / maxLat - 1) / (CARVE.OVER_RATIO - 1));
       } else if (this.glide !== 0) {
         this.glide = 0;
       }
+
+      // --- Skyhook vertical state (ride / launch / fly / land) ------------
+      this.stepVertical(dt, axis);
     } else {
       this.latVel *= Math.exp(-4 * dt);
     }
@@ -885,7 +981,7 @@ export class SimWorld {
    * while boosting). Pure holds behave like plain steering outside the
    * flick window, so the novice line is untouched in feel.
    */
-  private stepCarve(dt: number, axis: number, maxLat: number): void {
+  private stepCarve(dt: number, axis: number, maxLat: number, numb = 1): void {
     const dir = axis >= CARVE.COMMIT ? 1 : axis <= -CARVE.COMMIT ? -1 : 0;
     if (this.pumpCooldown > 0) this.pumpCooldown = Math.max(0, this.pumpCooldown - dt);
     this.pressTimer += dt;
@@ -937,7 +1033,7 @@ export class SimWorld {
     const pushing = gliding && this.latVel * axis > 0;
     const flick = this.pressTimer < CARVE.FLICK_WINDOW ? CARVE.FLICK_BOOST : 1;
     const authority =
-      steeringAuthorityAt(this.boostCharge) * (pushing ? 0 : 1);
+      steeringAuthorityAt(this.boostCharge) * (pushing ? 0 : 1) * numb;
     this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * flick * authority * dt;
     if (Math.abs(this.latVel) > maxLat) {
       // Above the cap only the excess decays (slowly) — the carve rides.
@@ -974,6 +1070,171 @@ export class SimWorld {
         strength: quality,
       });
     }
+  }
+
+  /**
+   * Skyhook vertical state (fun-frontier 6.1). The craft leaves hover height
+   * only by riding a wedge, so a run that never touches one reduces this to
+   * a counter check — grounded physics stay bit-identical to pre-ramp builds.
+   *
+   * Riding sets vy to the climb rate (slope × speed × EFFICIENCY, capped), so
+   * leaving the wedge — over the lip or off a side — simply keeps flying on
+   * whatever the ride was carrying. Airborne, gravity (plus the boost-dive)
+   * integrates until the craft meets its floor: the ground, or the surface
+   * of the next wedge in a chain.
+   */
+  private stepVertical(dt: number, axis: number): void {
+    if (this.liveRamps === 0 && !this.airborne) return;
+
+    // Flare detection: a fresh committed press while airborne arms the
+    // flare; its timing quality is read at touchdown. Two fresh presses
+    // inside CHATTER_GAP void it, so a PWM steering cadence never lands one.
+    if (this.airborne) {
+      const dir = axis >= RAMP.COMMIT ? 1 : axis <= -RAMP.COMMIT ? -1 : 0;
+      if (dir !== 0 && dir !== this.airPressDir) {
+        this.airPressGap = this.airPressAge;
+        this.airPressAge = 0;
+      }
+      this.airPressDir = dir;
+      this.airPressAge += dt;
+    }
+
+    // The floor under the craft: the ground, or the tallest ridden surface.
+    let floorY: number = CRAFT.HOVER_HEIGHT;
+    let climb = 0;
+    let riding = false;
+    let lipS = -Infinity;
+    if (this.liveRamps > 0) {
+      const d = this.distance;
+      for (const o of this.obstacles) {
+        if (!o.active || o.kind !== "ramp") continue;
+        const f = (d - (o.cs - o.hs)) / (2 * o.hs);
+        if (f < 0 || f > 1) continue;
+        if (Math.abs(this.x - o.cx) > o.hx) continue;
+        const h = CRAFT.HOVER_HEIGHT + f * o.hy;
+        if (h >= floorY) {
+          floorY = h;
+          climb = (o.hy / (2 * o.hs)) * this.speed;
+          lipS = o.cs + o.hs;
+          riding = true;
+        }
+      }
+    }
+
+    if (!this.airborne) {
+      if (riding) {
+        // Snap up onto the surface (side entries pop on), then track it —
+        // the tracking rate always outruns the deck's own climb.
+        this.y = Math.min(floorY, this.y + Math.max(RAMP.SNAP_UP, climb * 1.15) * dt);
+        this.vy = Math.min(climb * RAMP.EFFICIENCY, RAMP.VY_MAX);
+        this.rideLipS = lipS;
+      } else if (this.y > CRAFT.HOVER_HEIGHT) {
+        // Left the wedge above ground level. Only the lip pays the launch:
+        // sliding off a side drops instead of flying, so a mis-carve never
+        // sails beyond the guaranteed-clear landing tube.
+        const lipLaunch = this.distance >= this.rideLipS - 0.5;
+        if (!lipLaunch) this.vy = 0;
+        this.airborne = true;
+        this.flightStartS = this.distance;
+        this.flightStartTime = this.time;
+        this.airPressDir = 0;
+        this.airPressAge = 999;
+        this.airPressGap = 999;
+        if (lipLaunch && this.vy >= RAMP.EVENT_MIN_VY) {
+          this.stats.jumps++;
+          this.events.emit("launch", {
+            x: this.x,
+            s: this.distance,
+            vy: this.vy,
+            boosted: this.boosting,
+          });
+        }
+      } else {
+        this.y = CRAFT.HOVER_HEIGHT;
+        this.vy = 0;
+      }
+    }
+
+    if (this.airborne) {
+      const dive = this.boosting;
+      this.vy -= (RAMP.GRAVITY + (dive ? RAMP.DIVE_ACCEL : 0)) * dt;
+      this.y += this.vy * dt;
+      this.stats.airTime += dt;
+      if (dive) this.stats.diveTime += dt;
+      if (this.y <= floorY) {
+        this.y = floorY;
+        this.onLand();
+      }
+    }
+  }
+
+  /**
+   * Airborne touchdown. Impact is graded continuously: a flare (one fresh
+   * committed press within FLARE_WINDOW of this moment) forgives FLARE_KEEP
+   * of the impact by its timing quality. Un-dived arcs land clean by
+   * construction (VY_MAX < SOFT_VY); an unflared dive lands hard (speed
+   * scrub + numb steering); a well-flared dive grades perfect — the dive's
+   * speed transient survives as a decaying rush and the landing pays out
+   * like a precision event (resonant on the beat grid).
+   */
+  private onLand(): void {
+    const impact = Math.max(0, -this.vy);
+    const flare =
+      this.airPressAge <= RAMP.FLARE_WINDOW && this.airPressGap >= RAMP.CHATTER_GAP
+        ? clamp01(1 - this.airPressAge / RAMP.FLARE_WINDOW)
+        : 0;
+    const effective = impact * (1 - RAMP.FLARE_KEEP * flare);
+    const grade: LandingGrade =
+      effective <= RAMP.SOFT_VY
+        ? flare >= RAMP.PERFECT_MIN_Q && impact > RAMP.SOFT_VY
+          ? "perfect"
+          : "clean"
+        : "hard";
+
+    this.airborne = false;
+    this.vy = 0;
+    const airTime = this.time - this.flightStartTime;
+    this.stats.longestFlight = Math.max(
+      this.stats.longestFlight,
+      this.distance - this.flightStartS,
+    );
+    if (flare > 0) this.stats.flares++;
+
+    let scoreAward = 0;
+    let energyAward = 0;
+    let resonant = false;
+    if (grade === "hard") {
+      this.stats.hardLandings++;
+      this.speed *= 1 - RAMP.HARD_SCRUB;
+      this.numbTimer = RAMP.NUMB_TIME;
+    } else if (grade === "perfect") {
+      this.stats.perfectLandings++;
+      // The dive bonus doesn't vanish at touchdown — it decays instead.
+      this.rushBonus = RAMP.DIVE_SPEED_GAIN * impact;
+      this.rushTimer = RAMP.RUSH_TIME;
+      resonant = onBeatAt(this.time);
+      this.flowPoints += RAMP.LAND_FLOW * this.speedFlowFactor;
+      this.flowTimer = 0;
+      energyAward = this.grantEnergy(RAMP.LAND_ENERGY);
+      scoreAward = Math.round(
+        RAMP.LAND_SCORE * (0.6 + Math.min(airTime, 1.6)) * this.flowMultiplier *
+          this.speedRewardFactor * this.heatFx.scoreMult *
+          (resonant ? RESONANCE.BONUS : 1),
+      );
+      this.score += scoreAward;
+      if (this.section) this.section.events++;
+    }
+    this.events.emit("land", {
+      x: this.x,
+      s: this.distance,
+      grade,
+      impact,
+      flare,
+      airTime,
+      resonant,
+      scoreAward,
+      energyAward,
+    });
   }
 
   get flowMultiplier(): number {
@@ -1070,6 +1331,7 @@ export class SimWorld {
     const sample: TraceSample = {
       s: this.distance,
       x: this.x,
+      y: this.y,
       speed: this.speed,
       flow: this.flowPoints,
       clearance: Math.min(this.sampleClearance, TRACE_OPEN_CLEARANCE),
@@ -1132,7 +1394,7 @@ export class SimWorld {
       }
     }
     for (const o of this.obstacles) {
-      if (!o.active || !o.collidable || o.kind === "decor") continue;
+      if (!o.active || !o.collidable || o.kind === "decor" || o.kind === "ramp") continue;
       if (o.cs < s0 || o.cs > s1) continue;
       const vHalf = o.kind === "ring" ? o.hx : o.hy;
       if (o.cy - vHalf > CRAFT.Y_MAX || o.cy + vHalf < CRAFT.Y_MIN) continue;
@@ -1242,8 +1504,25 @@ export class SimWorld {
   }
 
   /**
+   * Is track position s inside a live skyhook approach/flight/landing
+   * window? Drama-director rocks must never salt a landing tube — an
+   * airborne craft has no authority to dodge a fresh drop.
+   */
+  private inRampWindow(s: number): boolean {
+    if (this.liveRamps === 0) return false;
+    for (const o of this.obstacles) {
+      if (!o.active || o.kind !== "ramp") continue;
+      const lip = o.cs + o.hs;
+      const flight = rampMaxFlight(o.hy, o.hs * 2, this.speedCurve(lip));
+      if (s > o.cs - o.hs - 20 && s < lip + flight + 10) return true;
+    }
+    return false;
+  }
+
+  /**
    * One telegraphed meteor: lands ahead as a permanent rock, never within
-   * METEOR_PATH_CLEAR of the solved safe line. No proven line => no rock.
+   * METEOR_PATH_CLEAR of the solved safe line (nor inside a skyhook flight
+   * window). No proven line => no rock.
    */
   private spawnEventMeteor(): void {
     const s = this.distance + this.eventRng.range(EVENTS.METEOR_LEAD_MIN, EVENTS.METEOR_LEAD_MAX);
@@ -1258,6 +1537,7 @@ export class SimWorld {
     const drop = this.eventRng.range(0, 8);
     const restY = this.eventRng.range(1.4, 2);
     if (safeX === null) return;
+    if (this.inRampWindow(s)) return;
     const x = off + lane;
     if (Math.abs(x - safeX) < EVENTS.METEOR_PATH_CLEAR + w) return;
     // spawnObstacle re-applies the course offset: hand it local-frame specs.
@@ -1478,6 +1758,7 @@ export class SimWorld {
     o.nearMissSide = 0;
     o.patternId = patternId;
     o.spawnTime = this.time;
+    if (o.kind === "ramp") this.liveRamps++;
   }
 
   private updateObstacles(dt: number, alive: boolean): void {
@@ -1486,14 +1767,26 @@ export class SimWorld {
     const behind = craftS - TRACK.DESPAWN_BEHIND;
     let engageDensity = 0;
     let availDensity = 0;
+    // Craft vertical band follows the (usually grounded) craft. `y` is set
+    // to HOVER_HEIGHT *exactly* whenever no ramp is in play, so these are
+    // bit-identical to the classic Y_MIN/Y_MAX constants on the ground.
+    const yLo =
+      this.y === CRAFT.HOVER_HEIGHT
+        ? CRAFT.Y_MIN
+        : this.y + (CRAFT.Y_MIN - CRAFT.HOVER_HEIGHT);
+    const yHi =
+      this.y === CRAFT.HOVER_HEIGHT
+        ? CRAFT.Y_MAX
+        : this.y + (CRAFT.Y_MAX - CRAFT.HOVER_HEIGHT);
 
     for (const o of this.obstacles) {
       if (!o.active) continue;
 
       if (obstacleTrailingEdge(o) < behind) {
+        if (o.kind === "ramp") this.liveRamps = Math.max(0, this.liveRamps - 1);
         // Keep the envelope around for the kill-cam: its window reaches far
         // past the recycling line.
-        if (o.collidable && o.kind !== "decor") {
+        if (o.collidable && o.kind !== "decor" && o.kind !== "ramp") {
           const vHalf = o.kind === "ring" ? o.hx : o.hy;
           if (o.cy - vHalf < CRAFT.Y_MAX && o.cy + vHalf > CRAFT.Y_MIN) {
             this.recentObstacles.push({
@@ -1580,7 +1873,10 @@ export class SimWorld {
         }
       }
 
-      if (!alive || !o.collidable) continue;
+      // Ramps are rideable surfaces, never colliders or danger: the vertical
+      // step reads them directly. They stay `collidable` so the validator
+      // and gap-scanning bots route ground traffic around the deck.
+      if (!alive || !o.collidable || o.kind === "ramp") continue;
       // Pulse beams only exist while their duty window is ON: no collision
       // and no clearance credit while phased out (passes still confirm).
       const beamOff = o.kind === "beam" && o.motion === Motion.Blink && o.state >= o.m2;
@@ -1597,8 +1893,11 @@ export class SimWorld {
       // Only geometry in the craft's vertical band counts — an arch crossbar
       // overhead is scenery, not danger.
       if (Math.abs(dS) < DANGER.S_WINDOW) {
-        const vHalf = o.kind === "ring" ? o.hx : o.hy;
-        if (o.cy - vHalf < CRAFT.Y_MAX && o.cy + vHalf > CRAFT.Y_MIN) {
+        // Rings gauge danger by their tube band (hy): a grounded ring rim
+        // fills the craft band exactly as before, while a skyhook air ring
+        // far overhead never inflates ground availability.
+        const vHalf = o.hy;
+        if (o.cy - vHalf < yHi && o.cy + vHalf > yLo) {
           const ws = 1 - Math.abs(dS) / DANGER.S_WINDOW;
           availDensity += ws;
           const effHx = o.kind === "ring"
@@ -1614,8 +1913,8 @@ export class SimWorld {
       const withinS = Math.abs(dS) < sExtent + stepLen + CRAFT.RADIUS + 1.5;
 
       if (withinS && !beamOff) {
-        // Vertical overlap (movers use current cy).
-        const yOverlap = o.cy - o.hy < CRAFT.Y_MAX && o.cy + o.hy > CRAFT.Y_MIN;
+        // Vertical overlap (movers use current cy, band follows the craft).
+        const yOverlap = o.cy - o.hy < yHi && o.cy + o.hy > yLo;
         if (yOverlap) {
           let hit = false;
           let clearance = Infinity;
@@ -1624,7 +1923,7 @@ export class SimWorld {
             const inS = Math.abs(dS) < o.hs + stepLen * 0.5 + CRAFT.RADIUS * 0.5;
             if (inS) {
               const dx = this.x - o.cx;
-              const dy = CRAFT.HOVER_HEIGHT - o.cy;
+              const dy = this.y - o.cy;
               const r = Math.hypot(dx, dy);
               const innerEdge = o.inner - CRAFT.RADIUS * 0.4;
               const outerEdge = o.hx + CRAFT.RADIUS * 0.6;
@@ -1760,6 +2059,7 @@ export class SimWorld {
     this.flowPoints += reward.flowPoints * this.speedFlowFactor;
     this.flowTimer = 0;
     this.stats.nearMisses++;
+    if (this.airborne) this.stats.airGrazes++;
     if (this.section) this.section.events++;
 
     // Grazes fund boost — the perpetual-boost loop for elite play.
@@ -1949,7 +2249,11 @@ export class SimWorld {
 
       const dS = p.s - craftS;
       const dx = p.x - this.x;
-      const distSq = dS * dS + dx * dx;
+      // Vertical gate (skyhook air shards): only separation beyond the
+      // craft/pickup reach counts, so every grounded layout (shards at
+      // 1.3–1.5 vs hover 1.15) keeps its exact classic 2D distance.
+      const dyGap = Math.max(0, Math.abs(p.y - this.y) - 1.35);
+      const distSq = dS * dS + dx * dx + dyGap * dyGap;
 
       if (p.type === "shard") {
         if (
@@ -1965,7 +2269,8 @@ export class SimWorld {
           const pull = 34 * dt;
           p.x -= (dx / d) * pull * 0.6;
           p.s -= (dS / d) * pull;
-          p.y = lerp(p.y, CRAFT.HOVER_HEIGHT, 8 * dt);
+          // Seek toward the craft's height (== HOVER_HEIGHT when grounded).
+          p.y = lerp(p.y, this.y, 8 * dt);
         }
       }
 

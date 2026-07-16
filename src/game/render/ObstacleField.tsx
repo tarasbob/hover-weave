@@ -19,7 +19,34 @@ const SETPIECE_IDS = new Set([
   "turbineField",
   "apexGauntlet",
   "leviathan",
+  "skyRamp",
+  "skyGateRun",
+  "canyonVault",
+  "doubleSky",
 ]);
+
+/**
+ * Skyhook wedge: unit prism spanning x ±1, y 0..1, z ±1, rising toward -z
+ * (the lip is the far end in render space, which is +s in track space).
+ * Non-indexed so computed normals stay flat per face.
+ */
+function wedgeGeometry(): THREE.BufferGeometry {
+  const A = [-1, 0, 1], B = [1, 0, 1]; // entry (low) edge
+  const C = [-1, 0, -1], D = [1, 0, -1]; // lip base
+  const E = [-1, 1, -1], F = [1, 1, -1]; // lip crest
+  const tris = [
+    [A, B, F], [A, F, E], // deck slope
+    [D, C, E], [D, E, F], // lip back face
+    [B, D, F], // +x side
+    [A, E, C], // -x side
+    [A, C, D], [A, D, B], // underside
+  ];
+  const positions = new Float32Array(tris.flat(2));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
 
 interface KindPool {
   kind: ObstacleKind;
@@ -82,6 +109,7 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
     const glass = new THREE.BoxGeometry(2, 2, 2);
     const bumper = new THREE.SphereGeometry(1, 18, 12);
     const beam = new THREE.BoxGeometry(2, 2, 2);
+    const ramp = wedgeGeometry();
 
     return [
       make("box", box, POOL_SIZES.box, true),
@@ -92,6 +120,7 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
       make("glass", glass, POOL_SIZES.glass, false),
       make("bumper", bumper, POOL_SIZES.bumper, true),
       make("beam", beam, POOL_SIZES.beam, false),
+      make("ramp", ramp, POOL_SIZES.ramp, true),
     ] as KindPool[];
   }, [env, shadows]);
   const poolByKind = useMemo(
@@ -196,6 +225,13 @@ function writeInstance(
       if (k > 0) glowScale = 1 + k * 1.6;
       break;
     }
+    case "ramp":
+      // Unit wedge already spans y 0..1: scale by full lip height, sit on
+      // the ground (cy = 0), lip toward +s. A slow shimmer sells the deck.
+      _s.set(o.hx, o.hy, o.hs);
+      _e.set(0, o.cyaw, 0);
+      glowScale = 1 + Math.sin(time * 2.4 + o.s * 0.05) * 0.18;
+      break;
     case "beam": {
       // Phase choreography: ghost trace while off, building charge before
       // the shot, full blaze while solid. `state` is the live Blink phase.

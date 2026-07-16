@@ -23,6 +23,10 @@ export function specOf(o: SimWorld["obstacles"][number]): ObstacleSpec {
     kind: o.kind, s: o.s, x: o.x, y: o.y, hx: o.hx, hy: o.hy, hs: o.hs,
     yaw: o.yaw, motion: o.motion, m0: o.m0, m1: o.m1, m2: o.m2,
     inner: o.inner, collidable: o.collidable,
+    // Skyhook air rings are collidable-but-noValidate: without this flag the
+    // pilots would dodge phantom ground blocks under geometry that only
+    // exists at altitude.
+    noValidate: o.kind === "ring" && o.y - o.hy > CRAFT.Y_MAX ? true : undefined,
   };
 }
 

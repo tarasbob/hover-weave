@@ -43,7 +43,7 @@ export function gateRow(
 }
 
 /** Wall segments leaving multiple authored gaps, ordered left to right. */
-function multiGapRow(
+export function multiGapRow(
   s: number,
   gaps: { x: number; half: number }[],
   hy: number,

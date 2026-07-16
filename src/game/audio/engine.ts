@@ -3,7 +3,7 @@
 import * as Tone from "tone";
 import { RESONANCE } from "../core/constants";
 import type { SimWorld } from "../core/world";
-import type { PatternSkill, PrecisionGrade, RunEventKind } from "../core/types";
+import type { LandingGrade, PatternSkill, PrecisionGrade, RunEventKind } from "../core/types";
 import { clamp01, damp } from "../core/mathUtils";
 
 /**
@@ -653,6 +653,51 @@ export class AudioEngine {
   /** Resonant perfect (mainline, fun-frontier 2.1): a bell exactly on the beat. */
   resonant(): void {
     this.oneShot(() => this.chime.triggerAttackRelease("D7", "32n", undefined, 0.5));
+  }
+
+  /**
+   * Skyhook launch (fun-frontier 6.1): a rising whoosh that opens with the
+   * jump's energy — boosted lips get the full riser sweep.
+   */
+  launch(energy: number, boosted: boolean): void {
+    this.oneShot(() => {
+      this.whooshPanner.pan.rampTo(0, 0.02);
+      this.whooshFilter.frequency.value = 700 + energy * 1500;
+      this.whoosh.triggerAttackRelease("4n", undefined, 0.5 + energy * 0.4);
+      if (boosted) {
+        this.riserFilter.frequency.cancelScheduledValues(Tone.now());
+        this.riserFilter.frequency.value = 500;
+        this.riserFilter.frequency.rampTo(3600, 0.4);
+        this.riser.triggerAttackRelease("4n", undefined, 0.5);
+      }
+    });
+  }
+
+  /**
+   * Touchdown, graded: perfect strums the current chord like a thread (a
+   * landing that resolves inside the music), clean is a soft settle, hard is
+   * a low slam with crash noise scaled by the impact.
+   */
+  land(grade: LandingGrade, impact: number): void {
+    this.oneShot(() => {
+      if (grade === "perfect") {
+        const now = Tone.now();
+        this.currentChord.forEach((n, i) => {
+          this.chime.triggerAttackRelease(
+            Tone.Frequency(n).transpose(12).toNote(),
+            "16n",
+            now + i * 0.04,
+            0.5,
+          );
+        });
+        this.impact.triggerAttackRelease("C2", "32n", undefined, 0.2);
+      } else if (grade === "hard") {
+        this.impact.triggerAttackRelease("G1", "16n", undefined, 0.45 + impact * 0.4);
+        this.crashNoise.triggerAttackRelease("16n", undefined, 0.2 + impact * 0.3);
+      } else {
+        this.impact.triggerAttackRelease("C2", "32n", undefined, 0.18 + impact * 0.15);
+      }
+    });
   }
 
   flowTierUp(tier: number): void {

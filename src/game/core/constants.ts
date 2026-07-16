@@ -405,6 +405,127 @@ export const CARVE = {
   COMMIT: 0.25,
 };
 
+/**
+ * Skyhook ramps (fun-frontier 6.1, mainline): authored wedges loft the craft
+ * into a ballistic jump — the only way the craft ever leaves hover height,
+ * so every non-ramp meter stays bit-identical to pre-ramp physics. Jumps are
+ * always optional routes (the validated ground path never requires one).
+ * The skill stack, novice → lifetime:
+ *
+ * - Approach: launch vy = lip slope × speed × EFFICIENCY (capped at VY_MAX);
+ *   boosting into the lip buys height and distance, priced by the usual
+ *   thrust-authority trade.
+ * - Lip carve: lateral velocity carries ballistically — carving into the lip
+ *   jumps diagonally across the course.
+ * - Air steering: AIR_AUTHORITY × normal bite with AIR_DRAG damping; enough
+ *   to feather a line, not to re-plan it.
+ * - Dive: holding boost while airborne pitches down (DIVE_ACCEL) and
+ *   converts descent into forward speed (DIVE_SPEED_GAIN × sink rate) —
+ *   land sooner, faster, on a spot steered continuously.
+ * - Flare: one committed fresh press within FLARE_WINDOW of touchdown
+ *   forgives impact by FLARE_KEEP × timing quality. A flared dive grades
+ *   PERFECT: no scrub, the dive's over-target speed is held as a decaying
+ *   rush, and flow/score/energy pay out (RESONANT ×1.25 on the beat).
+ *   Chattered presses (two fresh presses inside CHATTER_GAP) void the flare,
+ *   so PWM steering macros can never farm landings.
+ *
+ * Landing grades: |vy| ≤ SOFT_VY lands CLEAN (VY_MAX < SOFT_VY, so every
+ * un-dived arc — a novice's default flight — is clean by construction).
+ * An unflared dive lands HARD: HARD_SCRUB of speed and NUMB_TIME of halved
+ * steering authority. Risk scales exactly with ambition.
+ *
+ * Not `as const`: the dev console exposes this object (`__ramp`) as the
+ * feel-tuning harness — mutate values live, restart the run, re-feel.
+ */
+export const RAMP = {
+  /** Downward acceleration while airborne (m/s²) — gamey, snappy. */
+  GRAVITY: 24,
+  /** Fraction of (lip slope × forward speed) converted into launch vy. */
+  EFFICIENCY: 0.9,
+  /** Launch vy cap (m/s): bounds airtime, so flight length stays linear in speed. */
+  VY_MAX: 11,
+  /** Steering acceleration multiplier while airborne. */
+  AIR_AUTHORITY: 0.25,
+  /** Lateral drag while airborne (per second; ground is 5.2 / 8.5). */
+  AIR_DRAG: 1.1,
+  /** Extra downward acceleration while boost-diving (m/s²). */
+  DIVE_ACCEL: 30,
+  /** Forward target-speed bonus per m/s of sink rate while diving. */
+  DIVE_SPEED_GAIN: 0.55,
+  /** Rate at which the craft snaps up onto a ramp surface entered mid-slope. */
+  SNAP_UP: 14,
+  /**
+   * Impact |vy| at or below this lands clean. Must exceed the worst
+   * un-dived impact — a capped launch falling the tallest authored lip:
+   * sqrt(VY_MAX² + 2·GRAVITY·lipHeight) ≈ 16.3 at lipHeight 3 — so every
+   * boost-free arc lands clean by construction (gentest proves the bound
+   * for each authored wedge). Dives (DIVE_ACCEL) blow well past it.
+   */
+  SOFT_VY: 16.6,
+  /** Fraction of forward speed scrubbed by a hard landing. */
+  HARD_SCRUB: 0.1,
+  /** Seconds of halved steering authority after a hard landing. */
+  NUMB_TIME: 0.35,
+  /** Seconds before touchdown inside which a fresh press counts as a flare. */
+  FLARE_WINDOW: 0.14,
+  /** Fraction of impact vy a perfectly timed flare forgives. */
+  FLARE_KEEP: 0.75,
+  /** Minimum flare quality for a cushioned dive to grade perfect. */
+  PERFECT_MIN_Q: 0.4,
+  /** A fresh press closer than this to the previous one voids the flare. */
+  CHATTER_GAP: 0.45,
+  /** Committed-direction threshold on the quantized axis (flare detection). */
+  COMMIT: 0.25,
+  /** Seconds a perfect landing holds its captured over-target speed. */
+  RUSH_TIME: 2.5,
+  /** Perfect-landing payout: base score and flow/energy awards. */
+  LAND_SCORE: 110,
+  LAND_FLOW: 2,
+  LAND_ENERGY: 8,
+  /** Launches with vy below this are silent slips, not events. */
+  EVENT_MIN_VY: 2.5,
+};
+
+// --- Skyhook flight envelopes (shared by sim, patterns, and test gates) -----
+
+/** Launch vy off a wedge (`lipHeight` over `deckLen`) ridden at `speed`. */
+export function rampLaunchVy(lipHeight: number, deckLen: number, speed: number): number {
+  return Math.min((lipHeight / deckLen) * speed * RAMP.EFFICIENCY, RAMP.VY_MAX);
+}
+
+/** Un-dived airtime for a launch at `vy` from `lipHeight` above hover. */
+export function rampAirTime(vy: number, lipHeight: number): number {
+  return (vy + Math.sqrt(vy * vy + 2 * RAMP.GRAVITY * lipHeight)) / RAMP.GRAVITY;
+}
+
+/**
+ * Speed ceiling for flight-envelope planning: full boost over the flow
+ * speed-bonus ceiling, plus headroom for a landing rush carried into a
+ * chained lip. Diving only ever shortens a flight, so the floaty full-boost
+ * arc at this speed bounds every reachable landing.
+ */
+export function rampMaxAirSpeed(speed: number): number {
+  return speed * SPEED.BOOST_MULT * 1.22 + 16;
+}
+
+/** Worst-case flight length off a wedge at ambient (pre-boost) `speed`. */
+export function rampMaxFlight(lipHeight: number, deckLen: number, speed: number): number {
+  const v = rampMaxAirSpeed(speed);
+  const vy = rampLaunchVy(lipHeight, deckLen, v);
+  return v * rampAirTime(vy, lipHeight);
+}
+
+/**
+ * Half-width of the guaranteed-clear landing tube beyond a lip: the deck
+ * column, residual hands-off lateral drift (air drag bleeds carried carve
+ * within the first second), and worst-case winding-course wander across the
+ * flight. Patterns keep this tube free of collidable ground-band geometry;
+ * a structural test gate re-proves it with simulated hands-off crossings.
+ */
+export function rampTubeHalf(deckHalfW: number, maxFlight: number): number {
+  return deckHalfW + 8 + 0.03 * maxFlight;
+}
+
 /** Beat length in seconds at the resonance tempo. */
 export const RESONANCE_BEAT = 60 / RESONANCE.BPM;
 
@@ -451,6 +572,7 @@ export const POOL_SIZES = {
   glass: 140,
   bumper: 130,
   beam: 90,
+  ramp: 24,
   shard: 340,
   shield: 18,
   decor: 380,

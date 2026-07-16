@@ -2,6 +2,7 @@
 
 import type { RunConfig } from "./modes";
 import type {
+  LandingGrade,
   MotionType,
   ObstacleKind,
   PatternSkill,
@@ -111,6 +112,23 @@ export type GameEvents = {
   bounce: { x: number; s: number; dir: number; scoreAward: number };
   /** A pulse beam near ahead of the craft switched ON. */
   beamFire: { x: number; s: number };
+  /** The craft left a skyhook ramp lip (fun-frontier 6.1). */
+  launch: { x: number; s: number; vy: number; boosted: boolean };
+  /** Airborne touchdown, graded by impact velocity and flare quality. */
+  land: {
+    x: number;
+    s: number;
+    grade: LandingGrade;
+    /** |vy| at touchdown (m/s). */
+    impact: number;
+    /** 0..1 flare timing quality (0 = no flare). */
+    flare: number;
+    airTime: number;
+    /** Perfect landing confirmed on the beat grid. */
+    resonant: boolean;
+    scoreAward: number;
+    energyAward: number;
+  };
   /** A global run event began (meteor barrage, golden rush, ...). */
   runEvent: { kind: RunEventKind; name: string };
 };

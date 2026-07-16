@@ -3,7 +3,16 @@
  * pressure across deterministic seeds.
  */
 import assert from "node:assert/strict";
-import { COURSE, overdriveAt, RESONANCE, SPEED } from "../src/game/core/constants";
+import {
+  COURSE,
+  CRAFT,
+  overdriveAt,
+  RAMP,
+  rampMaxFlight,
+  rampTubeHalf,
+  RESONANCE,
+  SPEED,
+} from "../src/game/core/constants";
 import { HEATS, normalizeHeat, resolveHeat } from "../src/game/core/heat";
 import { createRng } from "../src/game/core/rng";
 import { Motion } from "../src/game/core/types";
@@ -22,6 +31,7 @@ import {
   NORMAL_PATTERNS,
 } from "../src/game/track/patterns";
 import { SETPIECES } from "../src/game/track/setpieces";
+import { SKY_NORMAL, SKY_PATTERNS } from "../src/game/track/skyhooks";
 import { mutatePattern, resonatePattern } from "../src/game/track/mutators";
 import { TRIALS, trialSeed } from "../src/game/track/trials";
 import { validatePattern, corridorLanes } from "../src/game/track/validator";
@@ -29,6 +39,7 @@ import type { BuildCtx, PatternResult } from "../src/game/core/types";
 
 const patterns = [
   ...NORMAL_PATTERNS,
+  ...SKY_NORMAL,
   ...FIELD_PATTERNS,
   ...CIRCUIT_PATTERNS,
   ...SETPIECES,
@@ -82,6 +93,89 @@ for (const id of ["precisionLadder", "pulseWeave", "rotorRhythm", "splitDecision
     built.pickups.some((pickup) => pickup.type === "shard" && pickup.magnet === false),
     `${id} needs an explicit non-magnetic risk reward line`,
   );
+}
+
+// --- Skyhook envelopes (fun-frontier 6.1) -----------------------------------
+// Every wedge a sky pattern authors must be followed by a guaranteed-clear
+// landing tube: no collidable ground-band geometry inside the worst-case
+// (full-boost, floaty) flight window, the pattern must own the whole window,
+// air furniture must live strictly above the grounded craft band, and the
+// mutator pipeline must never jitter or scatter these layouts (mirroring is
+// exercised and must keep every guarantee).
+console.log("\n== skyhook envelopes: landing tubes stay clear ==");
+{
+  let decks = 0;
+  let airRings = 0;
+  for (const p of SKY_PATTERNS) {
+    const rng = createRng(`sky-envelope-${p.id}`);
+    for (let i = 0; i < 120; i++) {
+      const difficulty = rng.range(p.minDifficulty, Math.min(1, p.maxDifficulty));
+      // Sweep placement depth: mid-game through deep overdrive speeds.
+      const s0 = rng.chance(0.5) ? rng.range(1600, 9000) : rng.range(9000, 60000);
+      const speed = speedAt(s0);
+      const ctx: BuildCtx = {
+        rng, s0, difficulty,
+        entryX: rng.range(-8, 8),
+        entryHalf: rng.range(4, Math.min(14, p.maxEntryHalf ?? 14)),
+        speed,
+        biome: 0,
+      };
+      const built = p.build(ctx);
+      const log = mutatePattern(rng, built, s0, p.category, ctx.entryX, difficulty, overdriveAt(s0));
+      assert.ok(!log.jittered, `${p.id} must be protected from jitter`);
+      assert.equal(log.scatterAdded, 0, `${p.id} must be protected from scatter`);
+      resonatePattern(built, RESONANCE.BPM, 0);
+
+      const ramps = built.obstacles.filter((o) => o.kind === "ramp");
+      assert.ok(ramps.length > 0, `${p.id} authored no wedge`);
+      for (const deck of ramps) {
+        decks++;
+        // The novice contract: a capped launch falling this wedge's full
+        // lip height must still land under the clean ceiling.
+        const worstUndivedImpact = Math.sqrt(
+          RAMP.VY_MAX * RAMP.VY_MAX + 2 * RAMP.GRAVITY * deck.hy,
+        );
+        assert.ok(
+          worstUndivedImpact < RAMP.SOFT_VY,
+          `${p.id}: lip ${deck.hy.toFixed(1)}m makes an un-dived arc land hard ` +
+          `(${worstUndivedImpact.toFixed(1)} ≥ ${RAMP.SOFT_VY})`,
+        );
+        const lip = deck.s + deck.hs;
+        const flight = rampMaxFlight(deck.hy, deck.hs * 2, speed);
+        const tube = rampTubeHalf(deck.hx, flight);
+        assert.ok(
+          lip + flight + 10 <= s0 + built.length + 1e-6,
+          `${p.id}: flight window (${(lip + flight).toFixed(0)}m) escapes the pattern ` +
+          `(ends ${(s0 + built.length).toFixed(0)}m) at speed ${speed.toFixed(0)}`,
+        );
+        for (const o of built.obstacles) {
+          if (o === deck || o.kind === "ramp" || o.collidable === false) continue;
+          // Only ground-band geometry can hurt a landing craft (collision
+          // bands use hy for every kind, ring tubes included); skyhook air
+          // furniture is checked separately below.
+          if (o.y - o.hy > CRAFT.Y_MAX) continue;
+          if (o.s + o.hs < lip || o.s - o.hs > lip + flight) continue;
+          const oHalf = Math.abs(Math.cos(o.yaw ?? 0)) * o.hx + Math.abs(Math.sin(o.yaw ?? 0)) * o.hs;
+          const gap = Math.abs(o.x - deck.x) - oHalf - tube;
+          assert.ok(
+            gap > 0,
+            `${p.id}: ${o.kind} at (${o.x.toFixed(1)}, ${o.s.toFixed(0)}) intrudes ` +
+            `${(-gap).toFixed(1)}m into the landing tube (±${tube.toFixed(1)}m, ` +
+            `flight ${flight.toFixed(0)}m at speed ${speed.toFixed(0)})`,
+          );
+        }
+      }
+      for (const o of built.obstacles) {
+        if (o.kind !== "ring" || !o.noValidate) continue;
+        airRings++;
+        assert.ok(
+          o.y - o.hy > CRAFT.Y_MAX + 1.4,
+          `${p.id}: air ring at y=${o.y.toFixed(1)} can reach the grounded craft band`,
+        );
+      }
+    }
+  }
+  console.log(`skyhook envelope gate: PASS (${decks} decks, ${airRings} air rings audited)`);
 }
 
 let orbitMutationCovered = false;

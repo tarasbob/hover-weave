@@ -261,6 +261,57 @@ export function Particles({ max }: { max: number }) {
           });
         }
       }),
+      world.events.on("launch", (e) => {
+        // Lip dust: a fan of sparks kicked back off the wedge crest.
+        c.copy(env.uAccent.value);
+        const count = Math.max(6, Math.round((10 + e.vy * 1.2) * burstScale));
+        for (let i = 0; i < count; i++) {
+          sys.spawn({
+            x: e.x + rng.range(-1.6, 1.6),
+            y: world.y + rng.range(-0.4, 0.3),
+            s: e.s + rng.range(-1.2, 0.4),
+            vx: rng.range(-5, 5),
+            vy: rng.range(-2, 4),
+            vs: rng.range(-20, -9),
+            grav: -9, drag: 1.2, life: rng.range(0.3, 0.7),
+            size0: rng.range(0.08, 0.2), size1: 0.02,
+            r: c.r * 2 * brightness,
+            g: c.g * 2 * brightness,
+            b: c.b * 2 * brightness,
+          });
+        }
+      }),
+      world.events.on("land", (e) => {
+        // Touchdown wash: ground dust ring, sized by impact; a perfect flare
+        // flashes accent, a slam churns warn-colored debris.
+        c.copy(
+          e.grade === "perfect" ? env.uAccent.value
+          : e.grade === "hard" ? env.uWarn.value
+          : env.uDim.value,
+        );
+        const energy = e.grade === "perfect" ? 2.6 : e.grade === "hard" ? 2.2 : 1.4;
+        const count = Math.max(
+          5,
+          Math.round((8 + e.impact * 1.6 + (e.grade === "perfect" ? 10 : 0)) * burstScale),
+        );
+        for (let i = 0; i < count; i++) {
+          const ang = rng.range(0, Math.PI * 2);
+          const sp = rng.range(2, 6 + e.impact * 0.5);
+          sys.spawn({
+            x: e.x + Math.cos(ang) * rng.range(0.3, 1),
+            y: 0.25 + rng.range(0, 0.3),
+            s: e.s + Math.sin(ang) * rng.range(0.3, 1),
+            vx: Math.cos(ang) * sp,
+            vy: rng.range(0.5, 2.5 + e.impact * 0.25),
+            vs: Math.sin(ang) * sp - 4,
+            grav: -10, drag: 1.6, life: rng.range(0.3, 0.7),
+            size0: rng.range(0.09, 0.24), size1: 0.02,
+            r: c.r * energy * brightness,
+            g: c.g * energy * brightness,
+            b: c.b * energy * brightness,
+          });
+        }
+      }),
       world.events.on("lightning", ({ intensity }) => {
         c.copy(env.uWarn.value);
         const count = Math.max(4, Math.round(14 * burstScale * intensity));

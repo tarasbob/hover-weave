@@ -4,6 +4,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { useGameBundle } from "../GameController";
+import { CRAFT } from "../core/constants";
 import { damp, lerp } from "../core/mathUtils";
 import { useSettings } from "../state/settings";
 
@@ -26,6 +27,9 @@ export function CameraRig() {
     boostKick: 0,
     flowKick: 0,
     deathSpeed: 0,
+    /** Smoothed vertical follow of the craft's flight height. */
+    lift: 0,
+    launchKick: 0,
   });
 
   const target = useMemo(() => new THREE.Vector3(), []);
@@ -59,6 +63,16 @@ export function CameraRig() {
         const d = Math.abs(e.s - world.distance);
         if (d < 60) state.current.trauma = Math.max(state.current.trauma, 0.3 - d * 0.004);
       }),
+      world.events.on("launch", (e) => {
+        state.current.launchKick = Math.min(1, 0.4 + e.vy * 0.05);
+      }),
+      world.events.on("land", (e) => {
+        if (e.grade === "hard") {
+          state.current.trauma = Math.max(state.current.trauma, 0.42);
+        } else if (e.grade === "perfect") {
+          state.current.flowKick = Math.max(state.current.flowKick, 0.7);
+        }
+      }),
     ];
     return () => offs.forEach((off) => off());
   }, [world]);
@@ -72,6 +86,11 @@ export function CameraRig() {
     s.nearWhip = damp(s.nearWhip, 0, 9, dt);
     s.boostKick = damp(s.boostKick, 0, 7.5, dt);
     s.flowKick = damp(s.flowKick, 0, 3.6, dt);
+    s.launchKick = damp(s.launchKick, 0, 2.6, dt);
+    // Partial vertical follow: rise with the flight but keep some parallax so
+    // altitude reads on screen instead of being cancelled by the camera.
+    const liftTarget = idle ? 0 : Math.max(0, world.renderY - CRAFT.HOVER_HEIGHT) * 0.55;
+    s.lift = damp(s.lift, liftTarget, 6, dt);
 
     // Curve anticipation: look (and lean) into the winding course ahead so
     // bends read as bends instead of a sideways-sliding field.
@@ -87,8 +106,9 @@ export function CameraRig() {
 
     const speedK = world.speedNorm;
     const motionScale = reduceMotion ? 0.25 : 1;
-    const baseY = 4.5 + speedK * 0.8 - s.flowKick * 0.22 * motionScale;
-    const baseZ = 8.6 - speedK * 0.7 + s.flowKick * 0.48 * motionScale;
+    const baseY = 4.5 + speedK * 0.8 - s.flowKick * 0.22 * motionScale + s.lift;
+    const baseZ =
+      8.6 - speedK * 0.7 + s.flowKick * 0.48 * motionScale + s.launchKick * 0.9 * motionScale;
 
     let px = s.x;
     let py = baseY;
@@ -121,7 +141,9 @@ export function CameraRig() {
     const shRoll = Math.sin(tt * 31.1) * sh * 0.05;
 
     camera.position.set(px + shX, py + shY, pz);
-    target.set(s.lookX + shX * 0.4, 1.7 + shY * 0.3, -13);
+    // The look target lifts with a fraction of the flight so the horizon
+    // dips slightly during a jump — height becomes legible at a glance.
+    target.set(s.lookX + shX * 0.4, 1.7 + shY * 0.3 + s.lift * 0.6, -13);
     camera.lookAt(target);
 
     // Bank roll on top of lookAt (plus a light lean into upcoming bends).
@@ -129,10 +151,11 @@ export function CameraRig() {
     s.roll = damp(s.roll, bank * 0.34 - bend * 0.0045, 8, dt);
     camera.rotation.z += s.roll + shRoll;
 
-    // FOV: speed + boost kick, slight tunnel on death.
+    // FOV: speed + boost kick, a breath of air on launch, slight tunnel on death.
     const targetFov =
       66 + speedK * 13 + world.boostCharge * 9 - (dead ? 6 : 0) +
-      Math.min(world.flowTier, 6) * 0.7 + s.boostKick * 4.2 * motionScale + s.flowKick * 1.4 * motionScale;
+      Math.min(world.flowTier, 6) * 0.7 + s.boostKick * 4.2 * motionScale +
+      s.flowKick * 1.4 * motionScale + s.launchKick * 3.2 * motionScale;
     s.fov = damp(s.fov, reduceMotion ? lerp(66, targetFov, 0.4) : targetFov, 4, dt);
     if (Math.abs(camera.fov - s.fov) > 0.01) {
       camera.fov = s.fov;

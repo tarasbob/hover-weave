@@ -6,6 +6,8 @@ import { SimWorld } from "./world";
 
 export interface GhostPose {
   x: number;
+  /** Flight height (HOVER_HEIGHT unless the ghost is riding/flying a ramp). */
+  y: number;
   distance: number;
   bank: number;
 }
@@ -85,6 +87,7 @@ export class GhostDriver {
     const a = clamp01(1 - (w.time - liveRenderTime) / FIXED_DT);
     return {
       x: lerp(w.prevX, w.x, a),
+      y: lerp(w.prevY, w.y, a),
       distance: lerp(w.prevDistance, w.distance, a),
       bank: lerp(w.prevBank, w.bank, a),
     };

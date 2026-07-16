@@ -15,7 +15,7 @@ import {
   uniform,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
-import { CRAFT, FIXED_DT } from "../core/constants";
+import { FIXED_DT } from "../core/constants";
 import { useSettings } from "../state/settings";
 
 const GHOST_TINT = 0x9fd8ff;
@@ -95,7 +95,7 @@ export function Ghost() {
     }
     group.visible = true;
     const bob = Math.sin((ghost.world?.time ?? 0) * 6.4) * 0.06;
-    group.position.set(pose.x, CRAFT.HOVER_HEIGHT + bob, z);
+    group.position.set(pose.x, pose.y + bob, z);
     group.rotation.set(0.02, 0, pose.bank);
     // Fade with distance so the hologram never reads as a solid craft, and
     // dim a crashed ghost to a faint marker while the live run flies past.

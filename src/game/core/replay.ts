@@ -16,6 +16,11 @@ import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
 /**
+ * v5: skyhook ramps went mainline (fun-frontier 6.1) — ramp patterns joined
+ * the generation pools (shifting every endless course at a given seed) and
+ * the craft gained vertical state (ride/launch/dive/flare), so v4 streams no
+ * longer re-simulate.
+ *
  * v4: boost steering authority now follows continuous thrust charge and
  * carve pump strength follows reversal quality, so old input streams can
  * produce different trajectories.
@@ -25,7 +30,7 @@ import type { SimWorld } from "./world";
  * v2 streams no longer re-simulate. (v2: the winding course, glass/bumper/
  * beam obstacles, the Leviathan, and run events.)
  */
-export const REPLAY_VERSION = 4;
+export const REPLAY_VERSION = 5;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;

@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { SimWorld } from "./core/world";
-import { CARVE } from "./core/constants";
+import { CARVE, RAMP } from "./core/constants";
 import { GhostDriver } from "./core/ghost";
 import { GamepadHaptics } from "./core/haptics";
 import { InputManager } from "./core/input";
@@ -194,8 +194,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Dev-only console handle (assigned post-commit so Strict Mode's discarded
-  // bundle never leaks here). `__carve` is the carve-physics feel-tuning
-  // harness: mutate values live, restart the run, re-feel.
+  // bundle never leaks here). `__carve` / `__ramp` are the physics
+  // feel-tuning harnesses: mutate values live, restart the run, re-feel.
   useEffect(() => {
     if (process.env.NODE_ENV === "development") {
       (window as unknown as { __game: unknown }).__game = bundle;
@@ -206,12 +206,17 @@ export function GameProvider({ children }: { children: ReactNode }) {
         useReplays,
       };
       (window as unknown as { __carve: unknown }).__carve = CARVE;
+      (window as unknown as { __ramp: unknown }).__ramp = RAMP;
     }
   }, [bundle]);
 
   // Wire world events -> stores + audio (render/FX layers subscribe separately).
   useEffect(() => {
     const { world, audio, env, haptics } = bundle;
+
+    // One-shot skyhook teaching callout: the first lip of the session
+    // explains the whole verb set in a breath (fun-frontier 6.1).
+    const skyhookSeen = { current: false };
 
     // Daily quest tracking (roadmap 4.5). Counters cover the event-only
     // signals; everything else reads live run stats. Completion banks the
@@ -448,6 +453,38 @@ export function GameProvider({ children }: { children: ReactNode }) {
         env.triggerBoost(0.35 + e.strength * 0.3);
         audio.pump(e.dir, e.strength, e.wall);
         haptics.pump(e.strength, e.wall);
+      }),
+      world.events.on("launch", (e) => {
+        env.triggerBoost(0.5);
+        audio.launch(Math.min(1, e.vy / 11), e.boosted);
+        haptics.launch(Math.min(1, e.vy / 11));
+        if (!skyhookSeen.current) {
+          skyhookSeen.current = true;
+          useGame.getState().setCallout(
+            "SKYHOOK",
+            "BOOST INTO THE LIP TO FLY FAR · HOLD BOOST TO DIVE · FLICK OPPOSITE TO LAND",
+          );
+        }
+      }),
+      world.events.on("land", (e) => {
+        audio.land(e.grade, Math.min(1, e.impact / 24));
+        haptics.land(e.grade, Math.min(1, e.impact / 24));
+        if (e.grade === "hard") {
+          env.triggerImpact(0.4);
+          useGame.getState().setSkillMoment(
+            "HARD LANDING",
+            `-10% SPEED · FLICK OPPOSITE BEFORE TOUCHDOWN`,
+            "close",
+          );
+        } else if (e.grade === "perfect") {
+          env.triggerFlow(0.9);
+          if (e.resonant) audio.resonant();
+          useGame.getState().setSkillMoment(
+            e.resonant ? "RESONANT LANDING" : "PERFECT LANDING",
+            `+${e.scoreAward.toLocaleString()} · SPEED KEPT · +${e.energyAward.toFixed(1)} ENERGY`,
+            "perfect",
+          );
+        }
       }),
       world.events.on("routeChoice", (e) => {
         useGame.getState().setSkillMoment(

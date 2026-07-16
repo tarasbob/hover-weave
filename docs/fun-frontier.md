@@ -37,8 +37,11 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 
 ## Design principles (v1 guardrails still bind, plus)
 
-- Two buttons, no brakes, no vertical, no analog hardware (v1 decisions
-  stand). New depth must come from the *response* to the same two buttons.
+- Two buttons, no brakes, no vertical *input*, no analog hardware (v1
+  decisions stand). New depth must come from the *response* to the same two
+  buttons. (Amended 2026-07-16: authored geometry may loft the craft — see
+  Pillar 6. The input surface is untouched; verticality is a track feature
+  you read, never a verb you press.)
 - Novice holds must behave exactly as today: every new dynamic is
   event-conditional on timing (fresh press, reversal at speed, edge contact).
   Enforced by the conservative-bot drift gate.
@@ -97,6 +100,13 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 | 5.4 | **Gamepad haptics** — graze ticks by grade, thread double-tap, pump thump, wall-kiss knock, death drop, boost floor. The craft in the hands. | done | `core/haptics.ts` (`GamepadHaptics`), wired beside audio in `GameController`; boost floor re-fires as a weak rumble bed; `haptics` settings toggle (default on, only fires when a gamepad is connected) |
 | 5.5 | **Mythic depths** — visual/musical zones at 20/40/80 km that almost nobody reaches. Cheap content, enormous aura. | done | Astral Verge, Crown of Static, and Event Horizon tint the live procedural palette, replace the HUD biome label, fire one-time callouts, and resolve with unique musical signatures |
 
+## Pillar 6 — The sky is track (authored verticality)
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 6.1 | **Skyhook ramps** — authored wedges loft the craft into ballistic flight on the same two buttons + boost: approach speed sets the launch (vy = slope × speed, capped), lateral carry jumps diagonally, air steering is thin (×0.25 authority), holding boost dives (altitude → forward speed, reticle-steered), and one committed flick inside 140 ms of touchdown flares the landing — perfect flares keep the dive speed as a decaying rush and pay flow/score/energy (RESONANT ×1.25 on the beat). Un-dived arcs land clean by construction (`SOFT_VY` exceeds the capped launch falling the tallest authored lip, √(VY_MAX² + 2·G·lip) — gentest bounds every wedge); unflared dives land hard (−10% speed, 0.35 s numb). PWM chatter voids the flare, so cadence macros can't farm landings. | done | Mainline under `REPLAY_VERSION` 5. Every jump is optional: decks block their own lanes, so the lane DP still proves a pure ground line, and a structural gate (gentest + probe crossings in simtest) proves the landing tube clear at worst-case (full-boost, floaty) flight for every wedge, every mutation, every depth. Mutators skip sky layouts (they carry `routes`); the drama director keeps meteors out of flight windows. Air rings/arc shards make airtime scoring-alive (`airGrazes`); the FLIGHT technique metric + a one-shot HUD callout teach the verb set. New sim state (`y`/`vy`/airborne) is geometry-conditional: no wedge ⇒ bit-identical grounded physics (enforced by an exact-hover identity gate). Sky patterns retire above 160 m/s ambient (`maxSpeed`) — a looped-wedge trial diluted into an endless safe corridor (bots rode it past 300,000 km), so there is deliberately no skyhook trial. |
+| 6.2 | **Wedge choreography** — beat-locked lip arrivals (launch ritual synergy), moving air furniture, biome-specific deck circuits. | todo | Layer on 6.1 once human playtesting settles the feel numbers (`__ramp` tuner). |
+
 ## The ladder this buys (elo narrative)
 
 - ~500: survives by steering, holds keys, dies to the first fast pattern.
@@ -151,6 +161,12 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 | 2026-07-16 | “Reference line” is renamed “reference distance” unless an actual trajectory/input stream exists. | The baked number is the deepest automated run, not a proof of optimality and not a geometric line. |
 | 2026-07-16 | Strategic forks pay through state-dependent geometry and resources, never a flat risk-lane multiplier. | Refuel, flow, and tempo routes are optimal under different energy, multiplier, timing, and next-position states; a permanent ×3 lane would collapse choice into execution. |
 | 2026-07-16 | Refined Carve remains LAB-only after the synthetic A/B gate. | Against identical seeds/noise, constrained novice retention was ×0.90 mean / ×0.79 median and intermediate performance ×0.46. It increases theoretical control but currently destabilizes policies that have not learned its phase response. |
+| 2026-07-16 | Skyhook ramps ship mainline (not LAB-first), as one `REPLAY_VERSION` 4 → 5 bundle with full recalibration. | The LAB-first principle exists because physics-economy changes destabilize every policy; skyhooks are geometry-conditional — outside a wedge the sim executes bit-identical code (proven by an exact-hover identity gate), and every jump is an optional route above a validator-proven ground line. A LAB flag would also fork generation, which recordings would then have to carry forever. |
+| 2026-07-16 | The "no vertical" principle is amended to "no vertical *input*". | The hardware stays two buttons + boost. Verticality enters as readable track geometry: approach, lip carve, dive, and flare are all responses on the existing verbs — exactly the v2 depth thesis. |
+| 2026-07-16 | Jumps are strictly optional; landing tubes are guaranteed clear but the deck is never the *scoring* line. | Decks block their own lanes so the lane DP's ground-path proof survives untouched. Airtime pays through arc shards, air grazes, and perfect-flare landings — not a flat multiplier — so ground threading (graze economy) remains the income backbone. |
+| 2026-07-16 | The flare is one committed fresh press, quality-graded by timing, voided by chatter. | Continuous quality mirrors Carve pump grading; the CHATTER_GAP void keeps sub-tick PWM cadence (a legitimate steering technique) from accidentally farming perfect landings — anti-macro by construction, verified in simtest. |
+| 2026-07-16 | Un-dived arcs must land clean by construction: `SOFT_VY` > √(VY_MAX² + 2·GRAVITY·lip) for every authored lip (gentest-bounded). | The novice contract: a held key or empty hands over any wedge is a safe, pleasant hop. Risk enters only with the dive (boost held airborne), and the dive is exactly what the flare redeems — ambition prices itself. |
+| 2026-07-16 | No skyhook trial; sky patterns carry `maxSpeed: 160` and retire from any unbounded escalation. | A looped wedge cannot build a wall: its guaranteed-clear tube scales linearly with speed, so the trial escalation diluted into free track (calibration bots exceeded 300,000 km before the cap). Skyhooks are endless-course texture; fixed-seed rating stays on ground disciplines. |
 
 ## Progress log
 
@@ -200,6 +216,40 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
   pass needs browser automation that can drive the local render loop; runtime
   wiring beyond the headless suites remains an automated visual-verification
   task rather than a human baseline.
+- **2026-07-16** — **Skyhook ramps shipped mainline (Pillar 6.1,
+  `REPLAY_VERSION` 5).** The craft gained vertical state that only authored
+  wedges can excite: ride (surface-tracked, `SNAP_UP` side entries), launch
+  (`vy = slope × speed × EFFICIENCY` capped at `VY_MAX`, lateral velocity
+  carried ballistically), airborne steering (×0.25 authority, thin drag —
+  carried carve glides), boost-dive (`DIVE_ACCEL` down + sink-rate → forward
+  speed), and flare-graded touchdowns (one committed fresh press within
+  140 ms, quality-continuous, chatter-voided; perfect = no scrub + the dive
+  transient held as a 2.5 s decaying rush + flow/score/energy, resonant on
+  the beat; hard = −10% speed + 0.35 s numb; un-dived arcs clean by
+  construction, with the gentest bound `√(VY_MAX² + 2·G·lip) < SOFT_VY`
+  enforced per authored wedge). Four patterns ship — `skyRamp` (teaching,
+  normal pool), `skyGateRun` / `canyonVault` / `doubleSky` (set-pieces) —
+  all carrying
+  jump/ground `routes` (telemetry + automatic mutator protection), arc
+  shards, and air rings above the grounded band. Safety is layered: decks
+  block their own lanes (the ground-path proof is untouched), a structural
+  envelope gate audits every landing tube against worst-case flight at
+  every depth (600 decks/run), meteors avoid flight windows, and probe
+  crossings assert the no-input arc never kills. Rendering gained the
+  wedge pool, craft pitch/renderY, soft camera lift, a hull shadow + live
+  ballistic landing reticle (beat-flash when the resonant window aligns),
+  launch/land particles, graded audio (perfect landings strum the pad
+  chord) and haptics, a FLIGHT technique metric, and perfect-landing time
+  kisses. Recalibrated in-bundle: conservative baselines, tier walls
+  (greedy 2 370 m / lookahead 3 449 m / TAS 30 306 m), rating anchors.
+  New simtest gates: grounded-identity (exact hover constant), launch
+  algebra, `VY_MAX` cap, dive trade monotonicity, flare quality/chatter
+  envelopes, landing rush, side-slip, and bit-exact replay of a recorded
+  flight (deck-seeking pilot on a live seed). Existing trials are
+  untouched (trial generation never draws sky patterns), and there is
+  deliberately no skyhook trial (see decision log). Suites green: gentest
+  (incl. the 600-deck envelope audit), simtest, frontier, graphics,
+  eslint, tsc.
 - **2026-07-16** — **Automated mastery pass shipped.** A progressive first
   flight now teaches steer → graze → boost → beat inside the real endless
   run, while the title progressively discloses advanced modes. The control

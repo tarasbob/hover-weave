@@ -36,12 +36,14 @@ import {
 import { SubTickAxis, type InputState } from "../src/game/core/input";
 import {
   CARVE,
+  CRAFT,
   DASH,
   ENERGY,
   FIXED_DT,
   FLOW,
   onBeatAt,
   POOL_SIZES,
+  RAMP,
   RESONANCE,
   RESONANCE_BEAT,
   SPRINT_MODE,
@@ -75,16 +77,17 @@ const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
 
 // --- Conservative-bot survival + pool pressure + first-2km economy gate ----
 
-// Conservative-bot baselines (no boost), recalibrated 2026-07 when the
-// winding course + new obstacle kit (glass/bumper/beam, leviathan, events)
-// reshaped generation. Future economy work must keep the novice-proxy line
-// within ±10% on average against THESE numbers.
+// Conservative-bot baselines (no boost), recalibrated 2026-07-16 with the
+// skyhook mainline (fun-frontier 6.1): ramp patterns joined the pools past
+// ~1500m, so mid-track generation reshuffled at fixed seeds (the first-800m
+// line is nearly untouched — ramps spawn beyond it). Future economy work
+// must keep the novice-proxy line within ±10% on average against THESE.
 const BASELINE_800: Record<string, number> = {
-  "test-0": 2518, "test-1": 3403, "test-2": 2002, "test-3": 2147,
+  "test-0": 2511, "test-1": 3403, "test-2": 2002, "test-3": 2147,
   "test-4": 2530, "test-5": 1746, "test-6": 1962, "test-7": 3150,
 };
 const BASELINE_2KM: Record<string, number> = {
-  "test-0": 6096, "test-1": 5759, "test-4": 3995, "test-6": 3441,
+  "test-0": 6086, "test-1": 5739, "test-4": 3991, "test-6": 3441,
 };
 
 let totalDeaths = 0;
@@ -173,7 +176,7 @@ assert.ok(minDist > 450, `opening is too punishing for the conservative bot (${m
 assert.ok(avgDist > 900, `average survival collapsed to ${avgDist.toFixed(0)}m`);
 assert.ok(avgDist < 9000, `challenge curve is too gentle (${avgDist.toFixed(0)}m average)`);
 assert.ok(peakActive < 500, `active obstacle pressure is unexpectedly high (${peakActive})`);
-for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam"] as const) {
+for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam", "ramp"] as const) {
   assert.ok(
     (peakByKind.get(kind) ?? 0) < POOL_SIZES[kind],
     `${kind} render pool lacks headroom (${peakByKind.get(kind)}/${POOL_SIZES[kind]})`,
@@ -1043,16 +1046,16 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Re-baked 2026-07-15 with the resonance mainline (fun-frontier 2.1): the
-  // beat grid re-times every mover, which made the field more readable for
-  // the reactive greedy tier (+29%) and slightly harder for the TAS at
-  // extreme speed (power-of-two periods align closures). The sim is
-  // deterministic, so these reproduce exactly until tuning constants move —
-  // the loose band catches real difficulty regressions either way.
+  // Re-baked 2026-07-16 with the skyhook mainline (fun-frontier 6.1): ramp
+  // patterns reshuffled mid-track generation at fixed seeds, moving every
+  // tier's band (the physics under the tiers is untouched — none of the
+  // bots ride a wedge). The sim is deterministic, so these reproduce
+  // exactly until tuning constants move — the loose band catches real
+  // difficulty regressions either way.
   const WALL_BASELINE: Record<Tier, number> = {
-    greedy: 2129,
-    lookahead: 3147,
-    superhuman: 33791,
+    greedy: 2370,
+    lookahead: 3449,
+    superhuman: 30306,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);
@@ -1115,7 +1118,7 @@ console.log("edge-case assertions: PASS");
     .map(([kind, count]) => `${kind} ${count}/${POOL_SIZES[kind as keyof typeof POOL_SIZES]}`)
     .join(", ");
   console.log(`deep-overdrive render pool peaks: ${wallPools}, shards ${wallPeakShards}`);
-  for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam"] as const) {
+  for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam", "ramp"] as const) {
     assert.ok(
       (wallPeakByKind.get(kind) ?? 0) < POOL_SIZES[kind],
       `${kind} render pool lacks headroom at max horizon ` +
@@ -1427,7 +1430,10 @@ console.log("edge-case assertions: PASS");
       let movers = 0;
       let gapSum = 0;
       let gaps = 0;
-      for (let seedIdx = 0; seedIdx < 5; seedIdx++) {
+      // 9 seeds: the shield drip is a sparse Bernoulli stream, and the
+      // skyhook pattern mix reshuffled every draw — a wider survey keeps
+      // the heat ratios measuring the heat instead of the reshuffle.
+      for (let seedIdx = 0; seedIdx < 9; seedIdx++) {
         const gen = new TrackGenerator(
           createRng(`heat-gen-${seedIdx}`),
           false,
@@ -1471,11 +1477,14 @@ console.log("edge-case assertions: PASS");
       scarce.shields < plain.shields * 0.55,
       `Scarce Shields must thin the drip (${scarce.shields} vs ${plain.shields})`,
     );
-    // Long wall-ribbon patterns don't scale with the scatter heat, so the
-    // relative gain is smaller than pre-course — the seam shrink below is
-    // the stronger Dense Field signal.
+    // Long wall-ribbon patterns don't scale with the scatter heat, and
+    // skyhook chunks (route-protected — scatter never touches a landing
+    // tube) dilute the eligible pool further, so the relative gain keeps
+    // shrinking as authored content grows. The seam shrink below is the
+    // stronger Dense Field signal; this bound only proves the heat still
+    // adds real geometry.
     assert.ok(
-      dense.obstacles > plain.obstacles * 1.02,
+      dense.obstacles > plain.obstacles * 1.01,
       `Dense Field must add geometry (${dense.obstacles} vs ${plain.obstacles})`,
     );
     assert.ok(
@@ -1545,17 +1554,18 @@ console.log("edge-case assertions: PASS");
 
 // --- Phase 4.4: pilot rating ---------------------------------------------------
 {
-  // Monotone in distance, anchored to the calibrated walls.
+  // Monotone in distance, anchored to the calibrated walls (re-baked
+  // 2026-07-16 with the skyhook mainline).
   let prev = -1;
-  for (const d of [50, 150, 400, 2129, 2500, 3147, 5000, 8000, 20000, 33791, 100000]) {
+  for (const d of [50, 150, 400, 2370, 2500, 3449, 5000, 8000, 20000, 30306, 100000]) {
     const p = runPerformance(d);
     assert.ok(p >= prev, `runPerformance must be monotone (${d}m)`);
     assert.ok(p >= RATING.FLOOR && p <= RATING.CEIL, "performance must stay clamped");
     prev = p;
   }
-  assert.ok(Math.abs(runPerformance(2129) - 1200) < 1, "greedy wall anchor");
-  assert.ok(Math.abs(runPerformance(3147) - 1700) < 1, "lookahead wall anchor");
-  assert.ok(Math.abs(runPerformance(33791) - 3000) < 1, "superhuman wall anchor");
+  assert.ok(Math.abs(runPerformance(2370) - 1200) < 1, "greedy wall anchor");
+  assert.ok(Math.abs(runPerformance(3449) - 1700) < 1, "lookahead wall anchor");
+  assert.ok(Math.abs(runPerformance(30306) - 3000) < 1, "superhuman wall anchor");
   assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
   assert.equal(referencePerformance(0, 5000), RATING.FLOOR);
   assert.equal(referencePerformance(5000, 5000), 3000);
@@ -1574,7 +1584,7 @@ console.log("edge-case assertions: PASS");
   let rating: number = RATING.START;
   const deltas: number[] = [];
   for (let runs = 0; runs < 40; runs++) {
-    const next = updateRating(rating, runs, 3147);
+    const next = updateRating(rating, runs, 3449);
     deltas.push(Math.abs(next - rating));
     rating = next;
   }
@@ -1592,7 +1602,7 @@ console.log("edge-case assertions: PASS");
     assert.ok(RATING_TIERS[i].min > RATING_TIERS[i - 1].min);
   }
   assert.equal(ratingTier(0).name, "DRIFTER");
-  assert.equal(ratingTier(runPerformance(33791)).name, "WEAVER");
+  assert.equal(ratingTier(runPerformance(30306)).name, "WEAVER");
   console.log(`rating gate: PASS (convergence at ${rating}, ${ratingTier(rating).name})`);
 }
 
@@ -2485,5 +2495,408 @@ console.log("edge-case assertions: PASS");
   // the full-lab-stack gate above: stats and pump event streams deep-equal.)
   console.log(
     "carve gate: PASS (flick, continuous pump quality, envelope, mistime, boost-carve, wall-kiss)",
+  );
+}
+
+// --- Fun-frontier 6.1: skyhook ramps (mainline) ------------------------------
+{
+  const freshInput = (): InputState => ({
+    axis: 0, boost: false, dash: false, restart: false, pause: false,
+  });
+  const skyWorld = (seed: string): SimWorld => {
+    const world = new SimWorld();
+    world.start(endless(seed));
+    world.clearField();
+    (world as unknown as { generator: null }).generator = null;
+    return world;
+  };
+  type Spawner = { spawnObstacle(spec: ObstacleSpec, patternId: string): void };
+  /** Wedge on the course centerline (spawnObstacle re-applies the offset). */
+  const placeRamp = (
+    world: SimWorld,
+    s: number,
+    lipHeight: number,
+    deckLen: number,
+    halfW = 8,
+  ): void => {
+    (world as unknown as Spawner).spawnObstacle(
+      { kind: "ramp", x: 0, s: s + deckLen / 2, y: 0, hx: halfW, hy: lipHeight, hs: deckLen / 2 },
+      "skyProbe",
+    );
+  };
+  /** Steer to the winding centerline (where probe wedges live). */
+  const holdCenter = (world: SimWorld, input: InputState): void => {
+    steerToward(world, input, world.courseOffsetAt(world.distance + 6));
+  };
+
+  // Ground identity: with no wedge in the field, the vertical channel is
+  // inert — y pinned to the exact hover constant, no air stats, ever.
+  {
+    const world = skyWorld("sky-identity");
+    const input = freshInput();
+    for (let i = 0; i < 2400; i++) {
+      input.axis = Math.sin(i * 0.013) * 0.9;
+      input.boost = i % 700 < 260;
+      world.update(FIXED_DT, input);
+      assert.equal(world.y, CRAFT.HOVER_HEIGHT, "grounded y must stay the exact constant");
+      assert.equal(world.airborne, false);
+    }
+    assert.equal(world.stats.jumps, 0);
+    assert.equal(world.stats.airTime, 0);
+    assert.equal(world.stats.airGrazes, 0);
+  }
+
+  // Launch algebra + the novice default arc: ride a wedge hands-off (no
+  // boost), read the launch event against the closed form, land CLEAN with
+  // no scrub — by construction (VY_MAX < SOFT_VY) every un-dived arc is safe.
+  {
+    const world = skyWorld("sky-arc");
+    const input = freshInput();
+    const lipHeight = 2.4;
+    const deckLen = lipHeight / 0.145;
+    placeRamp(world, 140, lipHeight, deckLen);
+    let launch: { vy: number; boosted: boolean; s: number } | null = null;
+    let land: { grade: string; impact: number; airTime: number; s: number } | null = null;
+    let speedAtLaunch = 0;
+    world.events.on("launch", (e) => {
+      launch = e;
+      speedAtLaunch = world.speed;
+    });
+    world.events.on("land", (e) => {
+      land = e;
+    });
+    for (let i = 0; i < 1800 && !land; i++) {
+      holdCenter(world, input);
+      world.update(FIXED_DT, input);
+    }
+    assert.ok(launch, "the probe must launch off the lip");
+    assert.ok(land, "the probe must come back down");
+    const arcLaunch = launch!;
+    const arcLand = land!;
+    assert.equal(world.status, "running", "the default arc must never kill");
+    assert.equal(world.stats.jumps, 1);
+    const expectVy = Math.min(
+      (lipHeight / deckLen) * speedAtLaunch * RAMP.EFFICIENCY,
+      RAMP.VY_MAX,
+    );
+    assert.ok(
+      Math.abs(arcLaunch.vy - expectVy) < 0.25,
+      `launch vy must follow slope×speed×EFFICIENCY (${arcLaunch.vy.toFixed(2)} vs ${expectVy.toFixed(2)})`,
+    );
+    assert.ok(!arcLaunch.boosted, "probe launch must be un-boosted");
+    assert.equal(arcLand.grade, "clean", `default arc must land clean (got ${arcLand.grade})`);
+    assert.ok(arcLand.impact <= RAMP.SOFT_VY, "un-dived impact must sit under the soft ceiling");
+    assert.ok(arcLand.airTime > 0.4, `flight should be a real hop (${arcLand.airTime.toFixed(2)}s)`);
+    assert.ok(
+      world.stats.longestFlight > 15,
+      `flight length must register (${world.stats.longestFlight.toFixed(1)}m)`,
+    );
+    assert.equal(world.stats.hardLandings, 0);
+    assert.equal(world.y, CRAFT.HOVER_HEIGHT, "touchdown must restore the exact hover constant");
+  }
+
+  // The launch cap: a steep wedge ridden hot launches at exactly VY_MAX —
+  // airtime is bounded, so flight length stays linear in approach speed.
+  {
+    const world = skyWorld("sky-cap");
+    const input = freshInput();
+    placeRamp(world, 200, 4.5, 10);
+    let vy = 0;
+    world.events.on("launch", (e) => {
+      vy = e.vy;
+    });
+    for (let i = 0; i < 1400 && vy === 0; i++) {
+      holdCenter(world, input);
+      input.boost = world.energy > 4;
+      world.update(FIXED_DT, input);
+    }
+    assert.equal(vy, RAMP.VY_MAX, `steep+hot launches must cap at VY_MAX (${vy.toFixed(2)})`);
+  }
+
+  // Dive: boosting airborne must land sooner AND arrive carrying more speed
+  // (the altitude→speed trade), and an unflared dive grades HARD with a
+  // scrub; floating the same jump lands CLEAN.
+  {
+    const flight = (dive: boolean) => {
+      const world = skyWorld("sky-dive");
+      const input = freshInput();
+      world.energy = 100; // A full tank sustains the dive across the flight.
+      placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      let land: { grade: string; impact: number; s: number } | null = null;
+      let speedAtLand = 0;
+      world.events.on("land", (e) => {
+        land = e;
+        speedAtLand = world.speed;
+      });
+      for (let i = 0; i < 2000 && !land; i++) {
+        if (world.airborne) {
+          input.axis = 0;
+          input.boost = dive;
+        } else {
+          holdCenter(world, input);
+          input.boost = false;
+        }
+        world.update(FIXED_DT, input);
+      }
+      assert.ok(land, "dive probe must land");
+      assert.equal(world.status, "running", "the landing tube is clear — no deaths");
+      return { land: land! as { grade: string; impact: number; s: number }, speedAtLand, world };
+    };
+    const dived = flight(true);
+    const floated = flight(false);
+    assert.ok(
+      dived.land.s < floated.land.s - 4,
+      `diving must shorten the flight (${dived.land.s.toFixed(1)} vs ${floated.land.s.toFixed(1)})`,
+    );
+    assert.ok(
+      dived.speedAtLand > floated.speedAtLand + 2,
+      `a dive must convert altitude into speed even after the hard scrub ` +
+      `(${dived.speedAtLand.toFixed(1)} vs ${floated.speedAtLand.toFixed(1)})`,
+    );
+    assert.equal(dived.land.grade, "hard", "an unflared dive lands hard");
+    assert.ok(dived.land.impact > RAMP.SOFT_VY, "dive impact must exceed the soft ceiling");
+    assert.equal(dived.world.stats.hardLandings, 1);
+    assert.equal(floated.land.grade, "clean", "the floated jump lands clean");
+  }
+
+  // Flare: one committed fresh press just before touchdown cushions the
+  // dive into a PERFECT landing (speed kept, payout, rush); a PWM chatter
+  // cadence voids it; flaring a gentle arc stays merely CLEAN.
+  {
+    const diveFlight = (
+      descent: (world: SimWorld, input: InputState, tToFloor: number) => void,
+      boost = true,
+    ) => {
+      const world = skyWorld("sky-flare");
+      const input = freshInput();
+      world.energy = 100; // A full tank sustains the dive across the flight.
+      placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      let land:
+        | { grade: string; impact: number; flare: number; scoreAward: number; energyAward: number }
+        | null = null;
+      world.events.on("land", (e) => {
+        land = e;
+      });
+      for (let i = 0; i < 2000 && !land; i++) {
+        if (world.airborne) {
+          input.boost = boost;
+          // Predict with the *live* boost state and the signed vy:
+          // 0 = h + vy·t − g/2·t² ⇒ t = (vy + √(vy² + 2gh)) / g.
+          const g = RAMP.GRAVITY + (world.boosting ? RAMP.DIVE_ACCEL : 0);
+          const h = Math.max(0, world.y - CRAFT.HOVER_HEIGHT);
+          const tToFloor = (world.vy + Math.sqrt(world.vy * world.vy + 2 * g * h)) / g;
+          descent(world, input, tToFloor);
+        } else {
+          holdCenter(world, input);
+          input.boost = false;
+        }
+        world.update(FIXED_DT, input);
+      }
+      assert.ok(land, "flare probe must land");
+      assert.equal(world.status, "running");
+      return {
+        land: land! as {
+          grade: string; impact: number; flare: number; scoreAward: number; energyAward: number;
+        },
+        world,
+      };
+    };
+
+    const flared = diveFlight((world, input, tToFloor) => {
+      input.axis = tToFloor <= 0.06 ? -1 : 0;
+    });
+    assert.equal(
+      flared.land.grade,
+      "perfect",
+      `a timed flare must cushion the dive (grade ${flared.land.grade}, q=${flared.land.flare.toFixed(2)})`,
+    );
+    assert.ok(flared.land.flare > RAMP.PERFECT_MIN_Q, "flare quality must register the timing");
+    assert.ok(flared.land.scoreAward > 0, "perfect landings pay score");
+    assert.equal(flared.world.stats.perfectLandings, 1);
+    assert.equal(flared.world.stats.hardLandings, 0);
+    assert.equal(flared.world.stats.flares, 1);
+
+    const chattered = diveFlight((world, input) => {
+      // 20 Hz PWM wiggle all the way down: every press re-arms inside
+      // CHATTER_GAP, so the landing reads it as noise, not a flare.
+      input.axis = Math.floor(world.time / 0.05) % 2 === 0 ? 1 : -1;
+    });
+    assert.equal(chattered.land.flare, 0, "a PWM cadence must never flare");
+    assert.equal(
+      chattered.land.grade,
+      "hard",
+      "a chattered dive still slams",
+    );
+
+    const gentle = diveFlight((world, input, tToFloor) => {
+      input.axis = tToFloor <= 0.06 ? -1 : 0;
+    }, false);
+    assert.equal(
+      gentle.land.grade,
+      "clean",
+      "flaring an un-dived arc must not inflate to perfect",
+    );
+    assert.equal(gentle.world.stats.perfectLandings, 0);
+  }
+
+  // Perfect-landing rush: the dive's speed transient survives touchdown and
+  // decays instead of vanishing — speed sampled mid-rush (0.8 s after the
+  // landing, well inside RUSH_TIME), distance compared at a common end time
+  // (by which both transients have fully decayed).
+  {
+    const runPast = (flare: boolean) => {
+      const world = skyWorld("sky-rush");
+      const input = freshInput();
+      world.energy = 100;
+      placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      let landTime = -1;
+      world.events.on("land", () => {
+        landTime = world.time;
+      });
+      let speedMidRush = 0;
+      for (let i = 0; i < 2600; i++) {
+        if (world.airborne) {
+          input.boost = true;
+          const g = RAMP.GRAVITY + (world.boosting ? RAMP.DIVE_ACCEL : 0);
+          const h = Math.max(0, world.y - CRAFT.HOVER_HEIGHT);
+          const tToFloor = (world.vy + Math.sqrt(world.vy * world.vy + 2 * g * h)) / g;
+          input.axis = flare && tToFloor <= 0.06 ? -1 : 0;
+        } else {
+          holdCenter(world, input);
+          input.boost = false;
+          if (landTime >= 0 && speedMidRush === 0 && world.time >= landTime + 0.8) {
+            speedMidRush = world.speed;
+          }
+          if (landTime >= 0 && world.time > 12) break;
+        }
+        world.update(FIXED_DT, input);
+      }
+      assert.ok(landTime >= 0, "rush probe must land");
+      assert.ok(speedMidRush > 0, "rush probe must sample the mid-rush speed");
+      return { world, speedMidRush };
+    };
+    const kept = runPast(true);
+    const slammed = runPast(false);
+    assert.ok(
+      kept.speedMidRush > slammed.speedMidRush + 3,
+      `the rush must keep dive speed alive after touchdown ` +
+      `(${kept.speedMidRush.toFixed(1)} vs ${slammed.speedMidRush.toFixed(1)} m/s)`,
+    );
+    assert.ok(
+      kept.world.distance > slammed.world.distance + 8,
+      `a perfect landing must buy real distance ` +
+      `(${kept.world.distance.toFixed(0)} vs ${slammed.world.distance.toFixed(0)})`,
+    );
+  }
+
+  // Side-slip: carving off the deck edge mid-ride drops instead of flying —
+  // no launch event, no flight credit, a soft fall back to hover. The carve
+  // starts low on a narrow deck so the craft clears the edge with meters of
+  // deck still ahead (carving from higher up would reach the lip corner
+  // first — which is a legitimate launch, not a slip).
+  {
+    const world = skyWorld("sky-slip");
+    const input = freshInput();
+    placeRamp(world, 160, 2.6, 2.6 / 0.145, 3);
+    let launched = false;
+    let landGrade = "";
+    world.events.on("launch", () => {
+      launched = true;
+    });
+    world.events.on("land", (e) => {
+      landGrade = e.grade;
+    });
+    let slipArmed = false;
+    for (let i = 0; i < 1600; i++) {
+      holdCenter(world, input);
+      if (world.y > CRAFT.HOVER_HEIGHT + 0.5 && !world.airborne) slipArmed = true;
+      if (slipArmed) input.axis = 1; // hard carve off the narrow deck
+      world.update(FIXED_DT, input);
+      if (landGrade) break;
+    }
+    assert.ok(slipArmed, "slip probe must get partway up the deck");
+    assert.ok(!launched, "a side slip is not a launch");
+    assert.equal(world.stats.jumps, 0, "slips must not count as jumps");
+    assert.equal(landGrade, "clean", "a slip falls back softly");
+    assert.equal(world.status, "running");
+  }
+
+  // Replay exactness with flight in the stream: a deck-seeking pilot on a
+  // real generated track must jump, land, and re-simulate bit-exactly.
+  // Sky patterns spawn past difficulty 0.5, so most seeds carry no wedge for
+  // kilometres — a cheap generator-only scan picks seeds with a wedge inside
+  // the lookahead pilot's survivable band before any sim runs.
+  {
+    const candidateSeeds: string[] = [];
+    for (let probe = 0; probe < 60 && candidateSeeds.length < 8; probe++) {
+      const seed = `sky-replay-${probe}`;
+      const gen = new TrackGenerator(createRng(seed), false);
+      let rampAt = Infinity;
+      gen.fill(3200, {
+        chunk: (c) => {
+          for (const o of c.obstacles) {
+            if (o.kind === "ramp") rampAt = Math.min(rampAt, o.s);
+          }
+        },
+      });
+      if (rampAt < 2800) candidateSeeds.push(seed);
+    }
+    assert.ok(candidateSeeds.length > 0, "no seed spawns a wedge within 2.8km — check pool weights");
+
+    let recorded: ReturnType<SimWorld["getRecording"]> = null;
+    let liveStats: SimWorld["stats"] | null = null;
+    let usedSeed = "";
+    for (const seed of candidateSeeds) {
+      if (recorded) break;
+      const world = new SimWorld();
+      const input = freshInput();
+      const mem = { targetX: 0 };
+      world.start(endless(seed));
+      const maxSteps = Math.floor(300 / FIXED_DT);
+      for (let i = 0; i < maxSteps && world.status === "running"; i++) {
+        let deck: { cx: number; cs: number } | null = null;
+        for (const o of world.obstacles) {
+          if (!o.active || o.kind !== "ramp") continue;
+          if (o.cs + o.hs < world.distance - 4) continue;
+          if (!deck || o.cs < deck.cs) deck = o;
+        }
+        if (world.airborne) {
+          input.axis = 0;
+          input.boost = true; // dive every jump: exercises the full state
+        } else if (world.stats.jumps === 0 && deck && deck.cs - world.distance < 200) {
+          // Close beeline onto the deck; long approaches stay on the planner.
+          steerToward(world, input, deck.cx);
+          input.boost = false;
+        } else {
+          lookaheadPilot(world, input, mem);
+          input.boost = false;
+        }
+        world.update(FIXED_DT, input);
+      }
+      if (world.stats.jumps >= 1 && world.stats.airTime > 0.3 && world.status === "dead") {
+        recorded = world.getRecording();
+        liveStats = { ...world.stats };
+        usedSeed = seed;
+      }
+    }
+    assert.ok(recorded && liveStats, "no probe seed produced a recorded flight — re-tune the pilot");
+    const replayed = new SimWorld();
+    resimulate(recorded!, replayed);
+    assert.deepEqual(
+      replayed.stats,
+      liveStats,
+      "a recording with launches, dives, and landings must re-simulate bit-exactly",
+    );
+    assert.ok(replayed.stats.jumps >= 1, "replayed run must keep its jumps");
+    console.log(
+      `skyhook replay: ${usedSeed} jumps=${replayed.stats.jumps} ` +
+      `air=${replayed.stats.airTime.toFixed(2)}s perfect=${replayed.stats.perfectLandings} ` +
+      `hard=${replayed.stats.hardLandings}`,
+    );
+  }
+
+  console.log(
+    "skyhook gate: PASS (identity, launch algebra, vy cap, dive trade, flare quality, " +
+    "chatter void, rush, side-slip, bit-exact flight replay)",
   );
 }
