@@ -96,6 +96,8 @@ interface SettingsState {
   showFps: boolean;
   /** Race a spectral ghost of your best run (roadmap 3.2). */
   showGhost: boolean;
+  /** Gamepad rumble on grazes/threads/boost (fun-frontier 5.4). */
+  haptics: boolean;
   setQuality(q: QualityPreset): void;
   setAutoTier(t: QualityTier): void;
   setMusicVolume(v: number): void;
@@ -106,6 +108,7 @@ interface SettingsState {
   setHighContrast(v: boolean): void;
   setShowFps(v: boolean): void;
   setShowGhost(v: boolean): void;
+  setHaptics(v: boolean): void;
 }
 
 export const useSettings = create<SettingsState>()(
@@ -121,6 +124,7 @@ export const useSettings = create<SettingsState>()(
       highContrast: false,
       showFps: false,
       showGhost: true,
+      haptics: true,
       setQuality: (quality) => set({ quality }),
       setAutoTier: (autoTier) => set({ autoTier }),
       setMusicVolume: (musicVolume) => set({ musicVolume }),
@@ -131,6 +135,7 @@ export const useSettings = create<SettingsState>()(
       setHighContrast: (highContrast) => set({ highContrast }),
       setShowFps: (showFps) => set({ showFps }),
       setShowGhost: (showGhost) => set({ showGhost }),
+      setHaptics: (haptics) => set({ haptics }),
     }),
     { name: "cubefield:settings" },
   ),

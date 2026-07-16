@@ -397,6 +397,7 @@ function GameOverScreen() {
           <Stat label="BEST CHAIN" value={String(s.bestFlowChain)} />
           <Stat label="BOOST TIME" value={`${s.boostTime.toFixed(1)}s`} />
           {s.dashes > 0 && <Stat label="DASHES" value={String(s.dashes)} />}
+          {s.pumps > 0 && <Stat label="PUMPS" value={String(s.pumps)} />}
           {s.resonantPasses > 0 && <Stat label="RESONANT" value={String(s.resonantPasses)} />}
           {s.glassSmashed > 0 && <Stat label="GLASS" value={String(s.glassSmashed)} />}
           {s.bounces > 0 && <Stat label="BOUNCES" value={String(s.bounces)} />}
@@ -582,7 +583,13 @@ function MedalLadder({
   );
 }
 
-/** Trial run result: the medal earned (or missed) + the ladder. */
+/** A run as a percentage of the trial's TAS reference line (fun-frontier 4.1). */
+export function referencePct(trial: TrialDef, distance: number): number {
+  return (distance / trial.reference) * 100;
+}
+
+/** Trial run result: the medal earned (or missed), the ladder, and the
+ *  reference line — how much of what this track provably allows you flew. */
 function TrialResult({
   trial,
   distance,
@@ -593,6 +600,7 @@ function TrialResult({
   medal: Medal | null;
 }) {
   const next = nextMedalFor(trial, distance);
+  const pct = referencePct(trial, distance);
   return (
     <div className="mt-5 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
       {medal ? (
@@ -614,6 +622,21 @@ function TrialResult({
       )}
       <div className="mt-2.5">
         <MedalLadder trial={trial} distance={distance} />
+      </div>
+      <div className="mt-2.5">
+        <div className="flex items-baseline justify-between text-[10px] tracking-[0.24em] text-white/45">
+          <span>REFERENCE LINE</span>
+          <span className="tabular-nums text-white/70">{pct.toFixed(1)}%</span>
+        </div>
+        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-white/10">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-cyan-300/70 to-fuchsia-300/70"
+            style={{ width: `${Math.min(100, pct)}%` }}
+          />
+        </div>
+        <div className="mt-1 text-[10px] text-white/40">
+          the proven-possible line reaches {trial.reference.toLocaleString()} m
+        </div>
       </div>
     </div>
   );
@@ -847,6 +870,14 @@ function TrialsOverlay() {
                 <div className="text-[10px] tabular-nums text-white/45">
                   {best ? `PB ${best.distance.toLocaleString()} m` : "NOT FLOWN"}
                 </div>
+                {best && (
+                  <div
+                    className="text-[10px] tabular-nums text-cyan-200/70"
+                    title={`The TAS reference line reaches ${trial.reference.toLocaleString()} m`}
+                  >
+                    {referencePct(trial, best.distance).toFixed(1)}% OF REF
+                  </div>
+                )}
                 <button
                   className={`${btnGhost} !px-4 !py-1.5 !text-xs`}
                   onClick={() => {
@@ -1121,6 +1152,9 @@ function SettingsOverlay() {
         <Row label="PB GHOST" hint="Race a hologram of your best run">
           <Toggle label="PB ghost" value={s.showGhost} onChange={s.setShowGhost} />
         </Row>
+        <Row label="GAMEPAD RUMBLE" hint="Graze ticks, boost floor, and impact haptics">
+          <Toggle label="Gamepad rumble" value={s.haptics} onChange={s.setHaptics} />
+        </Row>
         <Row label="REDUCE MOTION" hint="Softer camera shake and FOV kicks">
           <Toggle label="Reduce motion" value={s.reduceMotion} onChange={s.setReduceMotion} />
         </Row>
@@ -1206,7 +1240,14 @@ function HelpOverlay() {
         <div>
           <span className="font-bold text-cyan-200">Near misses build FLOW.</span> Graze obstacles
           to raise your multiplier — Close, Razor, and Perfect passes pay increasingly more.
-          Chain precise passes before Flow decays to reach the highest scores.
+          Chain precise passes before Flow decays to reach the highest scores; every chain climbs
+          the melody.
+        </div>
+        <div>
+          <span className="font-bold text-fuchsia-300">The world moves on the beat.</span> Every
+          crusher, pendulum, and beam is phase-locked to the soundtrack&apos;s tempo — you can
+          time gaps by ear. A Perfect pass landed exactly on the beat rings{" "}
+          <span className="font-bold text-fuchsia-300">RESONANT</span> and pays ×1.25.
         </div>
         <div>
           <span className="font-bold text-cyan-200">Shards are fuel.</span> Collect them quickly to

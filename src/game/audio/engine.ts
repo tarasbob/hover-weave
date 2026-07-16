@@ -69,7 +69,6 @@ export class AudioEngine {
   private seqs: (Tone.Sequence | Tone.Loop)[] = [];
   private started = false;
   private musicActive = false;
-  private bpmClock = 0;
   private initPromise: Promise<void> | null = null;
   private mediaKicked = false;
 
@@ -284,8 +283,10 @@ export class AudioEngine {
       }
     };
 
+    // The transport is pinned to the sim's beat grid (fun-frontier 2.1):
+    // movers, the resonant grading window, and the music share one tempo.
     const t = Tone.getTransport();
-    t.bpm.value = 116;
+    t.bpm.value = RESONANCE.BPM;
 
     // Chords: one per 2 bars; sections of 4 chords alternate A/B, with a
     // noise swell through the last chord announcing the turn.
@@ -522,25 +523,11 @@ export class AudioEngine {
     }
 
     // Flow brightens the bass, speed opens the master filter, boost cranks it.
+    // Tempo never moves — the transport is pinned to the beat grid, and
+    // intensity lives in the stem mix and the graze melody instead.
     this.bassSynth.filterEnvelope.baseFrequency = 80 + tier * 18 + speed * 120;
     const cutoff = 1400 + (speed * 0.75 + world.boostCharge * 0.25) * 12000;
     this.musicFilter.frequency.value = damp(this.musicFilter.frequency.value as number, cutoff, 3, dt);
-
-    // BPM follows speed in occasional quantized ramps (per-frame writes make
-    // the transport emit duplicate ticks, which mono synths reject).
-    this.bpmClock += dt;
-    if (this.bpmClock > 2) {
-      this.bpmClock = 0;
-      const t = Tone.getTransport();
-      // Rhythm resonance (lab 5.4) pins the tempo to the sim's beat grid —
-      // the adaptive speed/flow drift would detune it from the movers.
-      const targetBpm = world.labFx.resonance
-        ? RESONANCE.BPM
-        : 116 + speed * 12 + Math.min(world.flowTier, 8);
-      if (Math.abs(t.bpm.value - targetBpm) > 1.5) {
-        t.bpm.rampTo(targetBpm, 1.2);
-      }
-    }
   }
 
   // --- One-shots ---------------------------------------------------------
@@ -556,26 +543,52 @@ export class AudioEngine {
     }
   }
 
-  nearMiss(side: number, grade: PrecisionGrade, precision: number): void {
+  /**
+   * Grazes play music (fun-frontier 5.1): the whoosh carries the physics
+   * and a pitched voice carries the skill — the chain index walks up the
+   * pentatonic (perfects ring an octave higher, brightness follows
+   * precision), so a sustained graze chain is literally a melody climbing
+   * over the generative bed.
+   */
+  nearMiss(side: number, grade: PrecisionGrade, precision: number, chain = 1): void {
     this.oneShot(() => {
       this.whooshPanner.pan.rampTo(Math.max(-1, Math.min(1, side)) * 0.82, 0.025);
       const gradeLift = grade === "perfect" ? 1400 : grade === "razor" ? 700 : 0;
       this.whooshFilter.frequency.value = 850 + gradeLift + precision * 900;
       this.whoosh.triggerAttackRelease("8n", undefined, 0.62 + precision * 0.38);
-      const zipHz = grade === "perfect" ? 1560 : grade === "razor" ? 1170 : 780;
-      this.zip.triggerAttackRelease(zipHz + precision * 220, "16n", undefined, 0.35 + precision * 0.4);
+      const step = Math.min(this.pentatonic.length - 1, Math.max(0, chain - 1));
+      const note = Tone.Frequency(this.pentatonic[step]).transpose(grade === "perfect" ? 12 : 0);
+      this.zip.triggerAttackRelease(note.toFrequency(), "16n", undefined, 0.35 + precision * 0.45);
     });
   }
 
-  /** Both-sides needle: centered whoosh + a rising two-note sting. */
+  /** Both-sides needle: centered whoosh + the current harmony rung as a chord. */
   thread(tightness: number): void {
     this.oneShot(() => {
       this.whooshPanner.pan.rampTo(0, 0.02);
       this.whooshFilter.frequency.value = 2400 + tightness * 1600;
       this.whoosh.triggerAttackRelease("8n", undefined, 0.8);
       const now = Tone.now();
-      this.chime.triggerAttackRelease("A5", "16n", now, 0.5 + tightness * 0.4);
-      this.chime.triggerAttackRelease("D6", "16n", now + 0.07, 0.6 + tightness * 0.4);
+      // Strum the pad's current chord two octaves up — a thread resolves
+      // *inside* the music instead of on top of it.
+      this.currentChord.forEach((n, i) => {
+        this.chime.triggerAttackRelease(
+          Tone.Frequency(n).transpose(24).toNote(),
+          "16n",
+          now + i * 0.045,
+          0.42 + tightness * 0.4,
+        );
+      });
+    });
+  }
+
+  /** Carve pump (lab "carve"): a low kinetic bite, panned with the rebound. */
+  pump(dir: number, strength: number, wall = false): void {
+    this.oneShot(() => {
+      this.whooshPanner.pan.rampTo(Math.max(-1, Math.min(1, dir)) * 0.75, 0.02);
+      this.whooshFilter.frequency.value = wall ? 480 : 900 + strength * 800;
+      this.whoosh.triggerAttackRelease("16n", undefined, 0.4 + strength * 0.35);
+      this.impact.triggerAttackRelease(wall ? "G1" : "C2", "32n", undefined, 0.22 + strength * 0.3);
     });
   }
 
@@ -637,7 +650,7 @@ export class AudioEngine {
     });
   }
 
-  /** Resonant perfect (lab 5.4): a high bell exactly on the beat. */
+  /** Resonant perfect (mainline, fun-frontier 2.1): a bell exactly on the beat. */
   resonant(): void {
     this.oneShot(() => this.chime.triggerAttackRelease("D7", "32n", undefined, 0.5));
   }

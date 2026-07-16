@@ -52,6 +52,14 @@ export interface TrialDef {
   skills: PatternSkill[];
   /** Distance thresholds (m), strictly increasing. */
   medals: Record<Medal, number>;
+  /**
+   * The reference line (fun-frontier 4.1): the deepest *proven* line on this
+   * trial's exact seed — max of the TAS rollout wall, the lookahead planner
+   * wall, and 1.2 × the author medal — from `scripts/refcal.ts`.
+   * Deterministic; it only moves when tuning moves. The death screen reports
+   * a run as a percentage of this line; nobody is expected to reach 100%.
+   */
+  reference: number;
   difficultyAt(s: number): number;
   speedAt(s: number): number;
   pressureAt(s: number): number;
@@ -68,6 +76,7 @@ function defineTrial(
   name: string,
   desc: string,
   medals: Record<Medal, number>,
+  reference: number,
 ): TrialDef {
   const pattern = PATTERN_POOL.find((p) => p.id === patternId);
   if (!pattern) throw new Error(`Trial pattern missing from registry: ${patternId}`);
@@ -80,6 +89,7 @@ function defineTrial(
     pattern,
     skills: pattern.skills ?? [],
     medals,
+    reference,
     difficultyAt: (s) => lerp(floor, 1, clamp01(s / TRIAL.RAMP)),
     speedAt: trialSpeedAt,
     pressureAt: trialPressureAt,
@@ -95,47 +105,62 @@ function defineTrial(
  * (humans can), below it for the raw-speed patterns where a target-chaser
  * out-reacts humans. Bronze ≈ a few clean pattern reps; Author is a
  * statement (~1.5× gold, trial speed 130+ m/s). Drift alarms in simtest.
+ *
+ * Reference lines from `scripts/refcal.ts` — the deepest proven line per
+ * seed: max(TAS rollout wall, lookahead wall, 1.2 × author). The authored
+ * floor covers mover-heavy trials where every bot under-times what humans
+ * can. Re-baked 2026-07-15 with the resonance-mainline track.
  */
 export const TRIALS: TrialDef[] = [
   defineTrial(
     "slalomGates", "Slalom", "Wide gates, honest rhythm. Learn to carry speed.",
     { bronze: 400, silver: 800, gold: 1400, author: 2200 },
+    3148,
   ),
   defineTrial(
     "sCurveCanyon", "Canyon Weave", "Commit early — the canyon does not wait.",
     { bronze: 700, silver: 1800, gold: 3600, author: 5400 },
+    6480,
   ),
   defineTrial(
     "narrowGates", "Needle Row", "Tight gates. Thread them or bleed speed wide.",
     { bronze: 400, silver: 800, gold: 1400, author: 2200 },
+    4484,
   ),
   defineTrial(
     "combTeeth", "Comb Teeth", "Staggered teeth. Read two rows ahead.",
     { bronze: 400, silver: 850, gold: 1500, author: 2300 },
+    7078,
   ),
   defineTrial(
     "pendulumAlley", "Pendulums", "Swinging wrecking balls. Time the gaps, not the bobs.",
     { bronze: 500, silver: 1200, gold: 2200, author: 3400 },
+    9608,
   ),
   defineTrial(
     "pistonCorridor", "Crusher Lane", "Pistons slam on a beat. Find it and stay on it.",
     { bronze: 700, silver: 2000, gold: 4000, author: 6000 },
+    7200,
   ),
   defineTrial(
     "bladeRotors", "Rotors", "Spinning blades own the center. Steal it back.",
     { bronze: 600, silver: 1400, gold: 2700, author: 4100 },
+    12544,
   ),
   defineTrial(
     "precisionLadder", "The Ladder", "Each rung tighter than the last. Pure line discipline.",
     { bronze: 400, silver: 800, gold: 1400, author: 2200 },
+    5505,
   ),
   defineTrial(
     "chaosField", "Debris Field", "No pattern to memorize. Improvise at speed.",
     { bronze: 450, silver: 900, gold: 1600, author: 2500 },
+    6334,
   ),
   defineTrial(
     "splitDecision", "Split Second", "Forks at speed. Choose once, commit forever.",
     { bronze: 400, silver: 750, gold: 1300, author: 2000 },
+    5919,
   ),
 ];
 

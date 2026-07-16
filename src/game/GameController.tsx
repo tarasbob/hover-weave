@@ -8,7 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import { SimWorld } from "./core/world";
+import { CARVE } from "./core/constants";
 import { GhostDriver } from "./core/ghost";
+import { GamepadHaptics } from "./core/haptics";
 import { InputManager } from "./core/input";
 import { lockLandscape } from "./core/orientation";
 import { EnvState } from "./render/env";
@@ -28,6 +30,7 @@ export interface GameBundle {
   input: InputManager;
   env: EnvState;
   audio: AudioEngine;
+  haptics: GamepadHaptics;
   /** Ambient scroll distance used on the title screen. */
   ambient: { value: number };
   startRun(mode: GameMode, trialId?: string): void;
@@ -52,6 +55,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const input = new InputManager();
     const env = new EnvState();
     const audio = new AudioEngine();
+    const haptics = new GamepadHaptics();
     const ambient = { value: 0 };
 
     // The active run's identity, captured at launch: restart replays the
@@ -138,21 +142,23 @@ export function GameProvider({ children }: { children: ReactNode }) {
       audio.pauseMusic();
     };
 
-    return { world, ghost, input, env, audio, ambient, startRun, restart, togglePause, backToTitle };
+    return { world, ghost, input, env, audio, haptics, ambient, startRun, restart, togglePause, backToTitle };
   }, []);
 
   // Dev-only console handle (assigned post-commit so Strict Mode's discarded
-  // bundle never leaks here).
+  // bundle never leaks here). `__carve` is the carve-physics feel-tuning
+  // harness: mutate values live, restart the run, re-feel.
   useEffect(() => {
     if (process.env.NODE_ENV === "development") {
       (window as unknown as { __game: unknown }).__game = bundle;
       (window as unknown as { __stores: unknown }).__stores = { useGame, useSettings, useMeta };
+      (window as unknown as { __carve: unknown }).__carve = CARVE;
     }
   }, [bundle]);
 
   // Wire world events -> stores + audio (render/FX layers subscribe separately).
   useEffect(() => {
-    const { world, audio, env } = bundle;
+    const { world, audio, env, haptics } = bundle;
 
     // Daily quest tracking (roadmap 4.5). Counters cover the event-only
     // signals; everything else reads live run stats. Completion banks the
@@ -265,6 +271,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.events.on("death", () => {
         env.triggerImpact(1);
         audio.death();
+        haptics.death(world.speedNorm);
         endRun(false);
       }),
       world.events.on("finish", () => {
@@ -274,7 +281,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }),
       world.events.on("nearMiss", (e) => {
         env.triggerNearMiss(e.precision, e.x - world.x);
-        audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision);
+        audio.nearMiss(Math.sign(e.x - world.x), e.grade, e.precision, e.chain);
+        haptics.nearMiss(e.grade);
         if (e.resonant) audio.resonant();
         const label = e.resonant
           ? "RESONANT PASS"
@@ -299,6 +307,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         env.triggerNearMiss(1, 0);
         env.triggerFlow(0.9);
         audio.thread(e.tightness);
+        haptics.thread(e.tightness);
         useGame.getState().setSkillMoment(
           "THREAD THE NEEDLE",
           `+${e.scoreAward.toLocaleString()} · BOTH SIDES`,
@@ -322,6 +331,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         env.triggerBoost(0.6);
         env.triggerNearMiss(0.8, 0);
         audio.shatter();
+        haptics.shatter();
         useGame.getState().setSkillMoment(
           "GLASS BREACH",
           `+${e.scoreAward.toLocaleString()} · +${e.energyAward.toFixed(1)} ENERGY`,
@@ -332,6 +342,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.events.on("bounce", (e) => {
         env.triggerImpact(0.28);
         audio.bounce(e.dir);
+        haptics.bounce();
         useGame.getState().setSkillMoment(
           "KINETIC BOUNCE",
           `+${e.scoreAward.toLocaleString()} · FLUNG ${e.dir > 0 ? "RIGHT" : "LEFT"}`,
@@ -357,10 +368,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
         env.triggerShield(0.7);
         env.triggerImpact(0.55);
         audio.shieldBreak();
+        haptics.shieldBreak();
       }),
       world.events.on("boostStart", () => {
         env.triggerBoost(1);
         audio.boostStart();
+        haptics.boostStart();
       }),
       world.events.on("surge", () => {
         env.triggerBoost(0.8);
@@ -369,6 +382,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
       world.events.on("dash", (e) => {
         env.triggerBoost(0.7);
         audio.dash(e.dir);
+        haptics.dash();
+      }),
+      world.events.on("pump", (e) => {
+        env.triggerBoost(0.35 + e.strength * 0.3);
+        audio.pump(e.dir, e.strength, e.wall);
+        haptics.pump(e.strength, e.wall);
       }),
       world.events.on("boostEnd", () => {
         env.triggerBoost(0.45);
@@ -433,6 +452,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       bundle.audio.setVolumes(s.musicVolume, s.sfxVolume);
       bundle.env.reduceFlash = s.reduceFlash;
       bundle.env.highContrast = s.highContrast;
+      bundle.haptics.enabled = s.haptics;
     };
     apply();
     return useSettings.subscribe(apply);

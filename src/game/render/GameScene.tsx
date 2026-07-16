@@ -27,9 +27,25 @@ import { SUN_DIRECTION } from "./visualConstants";
 
 const HUD_INTERVAL = 1 / 12;
 
+/**
+ * Time kiss (fun-frontier 5.2): a sub-100ms wall-clock slow-mo on perfect
+ * passes and threads — flow state made mechanical, grazing well makes the
+ * next graze reachable. Applied at the dt boundary exactly like the death
+ * slow-mo, so the sim's fixed steps (and with them replays and ghosts) are
+ * untouched: only the rate at which wall time feeds the sim dips.
+ */
+const KISS = {
+  /** Seconds of full dip. */
+  HOLD: 0.07,
+  /** Seconds easing back to full speed. */
+  RELEASE: 0.16,
+  /** Timescale floor during the dip. */
+  FLOOR: 0.55,
+} as const;
+
 export function GameScene() {
   const bundle = useGameBundle();
-  const { world, ghost, input, env, audio, ambient } = bundle;
+  const { world, ghost, input, env, audio, haptics, ambient } = bundle;
   const scene = useThree((s) => s.scene);
   const setDpr = useThree((s) => s.setDpr);
   const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
@@ -38,6 +54,7 @@ export function GameScene() {
   const quality = QUALITY_CONFIGS[tier];
   const sensitivity = useSettings((s) => s.sensitivity);
   const showGhost = useSettings((s) => s.showGhost);
+  const reduceMotion = useSettings((s) => s.reduceMotion);
 
   const hudClock = useRef(0);
   const fpsEma = useRef(16.7);
@@ -45,11 +62,23 @@ export function GameScene() {
   const perfSample = useRef({ calls: 0, triangles: 0, frames: 0, sampledFrames: 0 });
   /** Highest medal rank celebrated this run (trial medal callouts). */
   const medalRank = useRef(0);
+  /** Time-kiss countdown (seconds left of dip + release). */
+  const kiss = useRef(0);
 
   useEffect(() => {
-    return world.events.on("runStart", () => {
-      medalRank.current = 0;
-    });
+    const offs = [
+      world.events.on("runStart", () => {
+        medalRank.current = 0;
+        kiss.current = 0;
+      }),
+      world.events.on("nearMiss", (e) => {
+        if (e.grade === "perfect") kiss.current = KISS.HOLD + KISS.RELEASE;
+      }),
+      world.events.on("thread", () => {
+        kiss.current = KISS.HOLD + KISS.RELEASE;
+      }),
+    ];
+    return () => offs.forEach((off) => off());
   }, [world]);
 
   useEffect(() => {
@@ -128,7 +157,14 @@ export function GameScene() {
     const throttled = rawDt > 0.25;
     if (throttled && g.phase === "running") bundle.togglePause();
     if ((g.phase === "running" || g.phase === "dead") && !throttled) {
-      world.update(dt, input.state);
+      // Time kiss: dip the wall-clock rate briefly after a perfect/thread.
+      let kissScale = 1;
+      if (kiss.current > 0 && world.status === "running" && !reduceMotion) {
+        const release = Math.min(1, kiss.current / KISS.RELEASE);
+        kissScale = 1 - (1 - KISS.FLOOR) * release;
+      }
+      kiss.current = Math.max(0, kiss.current - rawDt);
+      world.update(dt * kissScale, input.state);
       ghost.sync(world.time);
     } else if (g.phase === "title") {
       ambient.value += dt * 9;
@@ -137,6 +173,7 @@ export function GameScene() {
     // --- Environment + audio ----------------------------------------------
     env.update(world, dt, ambient.value);
     audio.update(world, dt);
+    haptics.update(world, dt);
     const lightX = world.status === "idle" ? 0 : world.renderX * 0.28;
     dirLight.target.position.set(lightX, 0, -46);
     dirLight.position.set(

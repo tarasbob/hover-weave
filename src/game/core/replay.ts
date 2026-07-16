@@ -16,10 +16,12 @@ import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
 /**
- * v2: the winding course, glass/bumper/beam obstacles, the Leviathan, and
- * run events changed sim behavior — v1 recordings no longer re-simulate.
+ * v3: rhythm resonance went mainline (fun-frontier 2.1) — every mover now
+ * rides the 116 BPM beat grid and perfects grade resonant on every run, so
+ * v2 streams no longer re-simulate. (v2: the winding course, glass/bumper/
+ * beam obstacles, the Leviathan, and run events.)
  */
-export const REPLAY_VERSION = 2;
+export const REPLAY_VERSION = 3;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;

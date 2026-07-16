@@ -5,7 +5,6 @@
 import assert from "node:assert/strict";
 import { COURSE, overdriveAt, RESONANCE, SPEED } from "../src/game/core/constants";
 import { HEATS, normalizeHeat, resolveHeat } from "../src/game/core/heat";
-import { normalizeLab, resolveLab, type LabEffects } from "../src/game/core/lab";
 import { createRng } from "../src/game/core/rng";
 import { Motion } from "../src/game/core/types";
 import { Course } from "../src/game/track/course";
@@ -311,107 +310,68 @@ console.log("\n== full heat stack: 2 × 30km ==");
   );
 }
 
-// Rhythm resonance (roadmap 5.4, lab): the beat-grid pass must re-time
-// movers and change NOTHING else — same chunk stream, same geometry, same
-// validation outcomes — and every mover must land on the grid
-// (period = beat × 2^k, phases on quarter cycles).
-console.log("\n== rhythm resonance: timing-only re-quantization, 2 × 10km ==");
+// Rhythm resonance (fun-frontier 2.1, mainline): every mover the generator
+// emits must ride the beat grid — periods = beat × 2^k, phases on quarter
+// cycles. (Geometry safety is by construction: `resonatePattern` re-times
+// only, and validation runs after it, so every accepted chunk was proven
+// with its final timing.)
+console.log("\n== rhythm resonance: mainline beat grid, 2 × 10km ==");
 {
-  const resonanceFx = resolveLab(normalizeLab(["resonance"]));
   const beat = 60 / RESONANCE.BPM;
   const onGrid = (beats: number) =>
     Math.abs(Math.log2(beats) - Math.round(Math.log2(beats))) < 1e-9;
   const angularOnGrid = (w: number) => w === 0 || onGrid((2 * Math.PI) / (Math.abs(w) * beat));
   const cyclesOnGrid = (w: number) => w === 0 || onGrid(1 / (Math.abs(w) * beat));
+  const quarterOf = (v: number, cycle: number) =>
+    Math.abs(v / (cycle / 4) - Math.round(v / (cycle / 4))) < 1e-9;
   let movers = 0;
-  let retimed = 0;
   let chunksTotal = 0;
   for (let seedIndex = 0; seedIndex < 2; seedIndex++) {
-    const seed = `resonance-${seedIndex}`;
-    const collect = (lab?: LabEffects) => {
-      const gen = new TrackGenerator(createRng(seed), false, null, undefined, lab);
-      const chunks: GeneratedChunk[] = [];
-      while (gen.generatedUpTo < 10000) {
-        const before = gen.generatedUpTo;
-        gen.fill(10000, { chunk: (c) => chunks.push(c) });
-        assert.ok(gen.generatedUpTo > before, "resonance generator stalled");
-      }
-      return { chunks, fallbacks: gen.fallbacks, rejections: gen.rejections };
-    };
-    const plain = collect();
-    const reso = collect(resonanceFx);
-    assert.equal(reso.chunks.length, plain.chunks.length, "resonance must not change the chunk stream");
-    assert.equal(reso.fallbacks, plain.fallbacks, "resonance must not change validation outcomes");
-    assert.equal(reso.rejections, plain.rejections, "resonance must not change retry pressure");
-    chunksTotal += reso.chunks.length;
-    for (let i = 0; i < plain.chunks.length; i++) {
-      const a = plain.chunks[i];
-      const b = reso.chunks[i];
-      assert.equal(b.patternId, a.patternId);
-      assert.equal(b.s0, a.s0);
-      assert.equal(b.s1, a.s1);
-      assert.equal(b.obstacles.length, a.obstacles.length, `chunk ${i} geometry drifted`);
-      for (let j = 0; j < a.obstacles.length; j++) {
-        const oa = a.obstacles[j];
-        const ob = b.obstacles[j];
-        // Geometry (and thus validator envelopes) must be untouched.
-        assert.equal(ob.kind, oa.kind);
-        assert.equal(ob.x, oa.x);
-        assert.equal(ob.s, oa.s);
-        assert.equal(ob.hx, oa.hx);
-        assert.equal(ob.hs, oa.hs);
-        assert.equal(ob.motion ?? Motion.None, oa.motion ?? Motion.None);
-        switch (ob.motion) {
+    const gen = new TrackGenerator(createRng(`resonance-${seedIndex}`), false);
+    const chunks: GeneratedChunk[] = [];
+    while (gen.generatedUpTo < 10000) {
+      const before = gen.generatedUpTo;
+      gen.fill(10000, { chunk: (c) => chunks.push(c) });
+      assert.ok(gen.generatedUpTo > before, "resonance generator stalled");
+    }
+    chunksTotal += chunks.length;
+    for (const c of chunks) {
+      for (const o of c.obstacles) {
+        switch (o.motion) {
           case Motion.SweepX:
             movers++;
-            assert.ok(angularOnGrid(ob.m0 ?? 0), `sweep rate off grid (${ob.m0})`);
-            assert.equal(ob.m2, oa.m2, "sweep amplitude must be untouched");
-            if (ob.m0 !== oa.m0) retimed++;
+            assert.ok(angularOnGrid(o.m0 ?? 0), `sweep rate off grid (${o.m0})`);
+            assert.ok(quarterOf(o.m1 ?? 0, 2 * Math.PI), `sweep phase off grid (${o.m1})`);
             break;
           case Motion.Piston:
             movers++;
-            assert.ok(cyclesOnGrid(ob.m0 ?? 0), `piston rate off grid (${ob.m0})`);
-            assert.equal(ob.m2, oa.m2, "piston throw must be untouched");
-            if (ob.m0 !== oa.m0) retimed++;
+            assert.ok(cyclesOnGrid(o.m0 ?? 0), `piston rate off grid (${o.m0})`);
+            assert.ok(quarterOf(o.m1 ?? 0, 1), `piston phase off grid (${o.m1})`);
             break;
           case Motion.Blink:
             movers++;
-            assert.ok(cyclesOnGrid(ob.m0 ?? 0), `beam rate off grid (${ob.m0})`);
-            assert.equal(ob.m2, oa.m2, "beam duty must be untouched");
-            if (ob.m0 !== oa.m0) retimed++;
+            assert.ok(cyclesOnGrid(o.m0 ?? 0), `beam rate off grid (${o.m0})`);
+            assert.ok(quarterOf(o.m1 ?? 0, 1), `beam phase off grid (${o.m1})`);
             break;
           case Motion.RotateYaw:
             movers++;
-            assert.ok(angularOnGrid(ob.m0 ?? 0), `rotor rate off grid (${ob.m0})`);
-            if (ob.m0 !== oa.m0) retimed++;
+            assert.ok(angularOnGrid(o.m0 ?? 0), `rotor rate off grid (${o.m0})`);
             break;
           case Motion.OrbitXZ:
             movers++;
-            assert.ok(angularOnGrid(ob.m1 ?? 0), `orbit rate off grid (${ob.m1})`);
-            assert.equal(ob.m0, oa.m0, "orbit radius must be untouched");
-            if (ob.m1 !== oa.m1) retimed++;
+            assert.ok(angularOnGrid(o.m1 ?? 0), `orbit rate off grid (${o.m1})`);
+            assert.ok(quarterOf(o.m2 ?? 0, 2 * Math.PI), `orbit phase off grid (${o.m2})`);
             break;
           case Motion.Pendulum:
             movers++;
-            assert.ok(angularOnGrid(ob.m2 ?? 0), `pendulum rate off grid (${ob.m2})`);
-            assert.equal(ob.m0, oa.m0, "pendulum length must be untouched");
-            assert.equal(ob.m1, oa.m1, "pendulum swing must be untouched");
-            if (ob.m2 !== oa.m2) retimed++;
+            assert.ok(angularOnGrid(o.m2 ?? 0), `pendulum rate off grid (${o.m2})`);
             break;
-          default:
-            // Static / distance-driven obstacles must be fully identical.
-            assert.equal(ob.m0 ?? 0, oa.m0 ?? 0);
-            assert.equal(ob.m1 ?? 0, oa.m1 ?? 0);
-            assert.equal(ob.m2 ?? 0, oa.m2 ?? 0);
         }
       }
     }
   }
   assert.ok(movers > 40, `resonance survey needs movers to prove anything (${movers})`);
-  assert.ok(retimed > movers * 0.5, `re-timing must actually move rates (${retimed}/${movers})`);
-  console.log(
-    `chunks=${chunksTotal}, movers=${movers}, retimed=${retimed} — geometry identical, all rates on the beat grid`,
-  );
+  console.log(`chunks=${chunksTotal}, movers=${movers} — every rate on the beat grid`);
 }
 
 // Trial-mode generation (roadmap 4.1): each roster trial loops its forced

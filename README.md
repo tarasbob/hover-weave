@@ -11,16 +11,25 @@ zero textures, zero models, zero audio files.
 
 ## Play
 
-- **Steer** — ← → or A / D · touch-drag on mobile · gamepad stick
+- **Steer** — ← → or A / D · left/right screen halves on touch · gamepad
+  d-pad / stick. Steering is two buttons, but input is integrated sub-tick:
+  tap cadence is a true analog channel, and a tap can never fall between
+  frames.
 - **Boost** — hold Shift / Space (second finger on touch). Spends shard
   energy; steering authority drops while boosting.
 - **Restart** — R or Enter, instantly.
 - **Pause** — Esc or P.
 
 Close, Razor, and Perfect passes build the **Flow multiplier** — tighter
-clearance earns more, precision chains raise the payout, and Flow decays if
-you play safe. **Shards** refill boost energy and build short collection
-combos. **Shields** (increasingly scarce) forgive one collision.
+clearance earns more, precision chains raise the payout (and climb a
+melody), and Flow decays if you play safe. **Shards** refill boost energy
+and build short collection combos. **Shields** (increasingly scarce) forgive
+one collision.
+
+**The world runs on the beat.** Every mover — crushers, pendulums, rotors,
+beams — is phase-locked to the soundtrack's fixed 116 BPM grid, so gaps can
+be timed by ear. A Perfect pass landed exactly on the beat grades
+**RESONANT** and pays ×1.25.
 
 **Daily Course** runs the same seed for every player each UTC day, with its
 own personal best. Distance, flow streaks, lifetime totals and daily play
@@ -31,6 +40,13 @@ deterministic sim): a **spectral PB ghost** races beside you — line-for-line
 on the daily, best-run pace on endless — and death opens a scrubbable
 **kill-cam** showing your flown line against the generator's proven safe
 path, plus per-section S/A/B/C line grades and repeat-death notes.
+
+**Trials** report every run as a percentage of the **reference line** — the
+deepest line a TAS-grade rollout search has proven possible on that exact
+seed. The **Lab** hosts unranked physics prototypes; the current headline is
+**Carve Physics**: flick taps that bite harder, pump reversals that rebound
+a full carve past the steering cap into a glide, and track edges that kiss
+back. Gamepads get skill-graded rumble.
 
 ## Development
 

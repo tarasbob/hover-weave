@@ -1,7 +1,7 @@
 /**
- * Lab prototypes (roadmap Phase 5): flag-gated experiments, default off.
- * Pure registry + resolver, modeled on heat — the sim reads a resolved
- * `LabEffects`, never the ids.
+ * Lab prototypes (roadmap Phase 5 / fun-frontier): flag-gated experiments,
+ * default off. Pure registry + resolver, modeled on heat — the sim reads a
+ * resolved `LabEffects`, never the ids.
  *
  * Design rules:
  * - Endless only, and every effect is the exact identity when its flag is
@@ -11,9 +11,13 @@
  *   no PBs, no rating, no streaks, and never persist as ghosts (unlike heat,
  *   which makes runs harder and pays on the real ladder, lab flags change
  *   the physics economy — their scores are play money).
+ *
+ * Graduates and cuts: "resonance" (5.4) was promoted to the mainline in
+ * fun-frontier 2.1 — every run rides the beat grid now, so the flag is
+ * retired (stale persisted selections are dropped by `normalizeLab`).
  */
 
-export type LabId = "surge" | "dash" | "resonance";
+export type LabId = "surge" | "dash" | "carve";
 
 export interface LabDef {
   id: LabId;
@@ -33,9 +37,9 @@ export const LABS: LabDef[] = [
     desc: "A third verb: tap S / ↓ (gamepad X, third finger) while steering to blink sideways. Costs energy, 2 s cooldown, no mercy frames.",
   },
   {
-    id: "resonance",
-    name: "Rhythm Resonance",
-    desc: "Every mover phase-locks to the soundtrack's beat grid; perfect passes landed on the beat ring out and pay ×1.25.",
+    id: "carve",
+    name: "Carve Physics",
+    desc: "The craft becomes an instrument: taps bite harder, reversing at full carve pumps extra speed, pumped momentum glides past the steering cap, and track edges kiss back.",
   },
 ];
 
@@ -62,14 +66,14 @@ export interface LabEffects {
   surge: boolean;
   /** Third verb: short lateral displacement on a cooldown (roadmap 5.3). */
   dash: boolean;
-  /** Movers lock to the beat grid; on-beat perfects pay extra (roadmap 5.4). */
-  resonance: boolean;
+  /** Flick / pump / glide / wall-kiss steering dynamics (fun-frontier 1.2). */
+  carve: boolean;
 }
 
 export const NO_LAB: LabEffects = Object.freeze({
   surge: false,
   dash: false,
-  resonance: false,
+  carve: false,
 });
 
 export function resolveLab(lab: readonly LabId[] | undefined): LabEffects {
@@ -77,6 +81,6 @@ export function resolveLab(lab: readonly LabId[] | undefined): LabEffects {
   return {
     surge: lab.includes("surge"),
     dash: lab.includes("dash"),
-    resonance: lab.includes("resonance"),
+    carve: lab.includes("carve"),
   };
 }

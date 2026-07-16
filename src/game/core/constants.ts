@@ -345,9 +345,10 @@ export const DASH = {
 } as const;
 
 /**
- * Rhythm resonance (roadmap 5.4, lab prototype — default off): movers
- * phase-lock to a fixed tempo's beat grid (the audio transport pins to the
- * same BPM), and perfect passes confirmed on the beat grade "resonant".
+ * Rhythm resonance (fun-frontier 2.1 — mainline since v2, formerly lab 5.4):
+ * every mover phase-locks to a fixed tempo's beat grid, the audio transport
+ * pins to the same BPM, and perfect passes confirmed on the beat grade
+ * "resonant". The world is a moving timetable; elites arrive on the beat.
  */
 export const RESONANCE = {
   /** Fixed tempo (BPM) shared by the sim's beat grid and the transport. */
@@ -357,6 +358,50 @@ export const RESONANCE = {
   /** Extra score multiplier on resonant perfects. */
   BONUS: 1.25,
 } as const;
+
+/**
+ * Carve physics (fun-frontier 1.2, lab prototype "carve" — default off).
+ * Four interlocking techniques on the same two steer buttons:
+ *
+ * - Flick: the first moments of a fresh committed press bite harder, so
+ *   micro-taps are snappier than holds (cadence becomes accel control).
+ * - Pump: reversing the press while carrying enough lateral speed rebounds
+ *   the carve — carried speed mirrors into the new direction and gains a
+ *   bonus bite (stronger while boosting). Mistimed flips get plain physics
+ *   and bleed everything to drag.
+ * - Glide: pump chains may push lateral speed past the steering ratio, up
+ *   to OVER_RATIO × the cap. Only the excess decays (slowly), and steering
+ *   *into* the glide adds nothing — pumps are the only fuel.
+ * - Wall-kiss: pressing away from the lateral clamp at the moment of
+ *   contact reflects the into-wall component instead of absorbing it.
+ *
+ * Not `as const`: the dev console exposes this object (`__carve`) as the
+ * feel-tuning harness — mutate values live, restart the run, re-feel.
+ */
+export const CARVE = {
+  /** Seconds of boosted acceleration after a fresh committed press. */
+  FLICK_WINDOW: 0.09,
+  /** Acceleration multiplier inside the flick window. */
+  FLICK_BOOST: 1.6,
+  /** |latVel| >= this × maxLat at the reversal for a pump to fire. */
+  PUMP_MIN_FRAC: 0.55,
+  /** Fraction of carried speed mirrored into the new direction. */
+  PUMP_KEEP: 0.9,
+  /** Extra bite, as a fraction of maxLat, added on top of the mirror. */
+  PUMP_BONUS: 0.3,
+  /** Pump bonus multiplier while boosting (boost-carve sequencing). */
+  PUMP_BOOST_GAIN: 1.3,
+  /** Seconds between pump payouts. */
+  PUMP_COOLDOWN: 0.24,
+  /** Lateral speed hard cap as a multiple of maxLat. */
+  OVER_RATIO: 1.45,
+  /** Per-second decay of the excess above maxLat while gliding. */
+  GLIDE_DRAG: 1.6,
+  /** Fraction of the into-wall velocity component a wall-kiss reflects. */
+  WALL_KISS_KEEP: 0.8,
+  /** Committed-direction threshold on the quantized axis. */
+  COMMIT: 0.25,
+};
 
 /** Beat length in seconds at the resonance tempo. */
 export const RESONANCE_BEAT = 60 / RESONANCE.BPM;

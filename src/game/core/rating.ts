@@ -15,13 +15,16 @@
 
 import { clamp } from "./mathUtils";
 
-/** (distance m, rating) anchors — bot walls from the simtest calibration. */
+/**
+ * (distance m, rating) anchors — bot walls from the simtest calibration.
+ * Re-baked 2026-07-15 with the resonance mainline (fun-frontier 2.1).
+ */
 const ANCHORS: readonly [number, number][] = [
   [150, 400], // barely off the launch ramp
-  [1133, 1200], // greedy band-scan wall
-  [2686, 1700], // lookahead planner wall
+  [2129, 1200], // greedy band-scan wall
+  [3147, 1700], // lookahead planner wall
   [8000, 2200], // overdrive threshold — beyond every heuristic tier
-  [31547, 3000], // TAS rollout searcher wall
+  [33791, 3000], // TAS rollout searcher wall
 ];
 
 export const RATING = {

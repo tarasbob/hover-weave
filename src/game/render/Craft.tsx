@@ -234,6 +234,9 @@ export function Craft() {
   const shieldAnim = useRef(0);
   const shieldKick = useRef(0);
   const trailFlash = useRef(0);
+  /** Line-smoothness EMA (trail calligraphy): carves widen, jitter thins. */
+  const smoothness = useRef(1);
+  const prevBank = useRef(0);
   const deathSpin = useRef(new THREE.Vector3(2.3, 3.1, Math.PI * 2.4));
 
   useEffect(() => {
@@ -248,6 +251,9 @@ export function Craft() {
       }),
       world.events.on("boostStart", () => {
         trailFlash.current = Math.max(trailFlash.current, 0.6);
+      }),
+      world.events.on("pump", (event) => {
+        trailFlash.current = Math.max(trailFlash.current, 0.5 + event.strength * 0.4);
       }),
       world.events.on("shieldPickup", () => {
         shieldKick.current = 1;
@@ -316,10 +322,17 @@ export function Craft() {
 
     trailFlash.current = Math.max(0, trailFlash.current - frameDt * 3.4);
     shieldKick.current += (0 - shieldKick.current) * Math.min(1, frameDt * 5.5);
+    // Trail calligraphy (fun-frontier 5.3): a steady bank reads as a clean
+    // stroke, twitchy corrections thin the ink, a glide paints wide.
+    const bankRate = Math.abs(bank - prevBank.current) / Math.max(frameDt, 1e-4);
+    prevBank.current = bank;
+    const steady = Math.max(0, 1 - bankRate * 0.55);
+    smoothness.current += (steady - smoothness.current) * Math.min(1, frameDt * 3);
     engineLight.intensity =
       10 + world.speedNorm * 14 + world.boostCharge * 26 + env.uBoostPulse.value * 12;
     uTrailBoost.value =
-      world.boostCharge + env.uFlow.value * 0.25 + trailFlash.current * (reduceFlash ? 0.2 : 0.65);
+      world.boostCharge + env.uFlow.value * 0.25 + world.glide * 0.5 +
+      trailFlash.current * (reduceFlash ? 0.2 : 0.65);
 
     // Shield bubble scale animation.
     const target = world.hasShield ? 1 : 0;
@@ -338,7 +351,9 @@ export function Craft() {
       trails.right.push(x + off * c, podY + off * s, dist - 0.55 * sz);
     }
     const trailWidth =
-      0.09 + world.boostCharge * 0.1 + env.uFlow.value * 0.025 + trailFlash.current * 0.035;
+      (0.09 + world.boostCharge * 0.1 + env.uFlow.value * 0.025 + trailFlash.current * 0.035 +
+        world.glide * 0.12) *
+      (0.7 + smoothness.current * 0.3);
     trails.left.write(dist, trailWidth);
     trails.right.write(dist, trailWidth);
   });

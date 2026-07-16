@@ -1,6 +1,5 @@
 import { OVERDRIVE, overdriveAt, RESONANCE, SPEED, TRACK } from "../core/constants";
 import { NO_HEAT, type HeatEffects } from "../core/heat";
-import { NO_LAB, type LabEffects } from "../core/lab";
 import { clamp, clamp01, lerp } from "../core/mathUtils";
 import type { Rng } from "../core/rng";
 import type {
@@ -90,8 +89,6 @@ export class TrackGenerator {
   private readonly trial: TrialDef | null;
   /** Resolved heat stack (identity when unheated — bit-identical streams). */
   private readonly heat: HeatEffects;
-  /** Resolved lab flags (resonance re-times movers; all-off = untouched). */
-  private readonly lab: LabEffects;
   generatedUpTo = 0;
   private exitLanes: Uint8Array;
   private sinceSetpiece = 0;
@@ -116,13 +113,11 @@ export class TrackGenerator {
     debug = false,
     trial: TrialDef | null = null,
     heat: HeatEffects = NO_HEAT,
-    lab: LabEffects = NO_LAB,
   ) {
     this.rng = rng;
     this.debug = debug;
     this.trial = trial;
     this.heat = heat;
-    this.lab = lab;
     this.exitLanes = openLanes();
     this.nextSetpieceAt = rng.range(620, 900);
     this.nextFieldAt = rng.range(240, 440) * heat.fieldCadenceScale;
@@ -202,10 +197,11 @@ export class TrackGenerator {
         this.pressureFor(s0),
         this.heat,
       );
-      // Rhythm resonance (lab 5.4): re-time movers onto the beat grid after
-      // all mutation. Timing only — geometry, envelopes, validation, and the
-      // rng stream are identical to the same seed unflagged.
-      if (this.lab.resonance) resonatePattern(built, RESONANCE.BPM);
+      // Rhythm resonance (fun-frontier 2.1, mainline): re-time every mover
+      // onto the beat grid after all mutation. Timing only — geometry,
+      // envelopes, validation, and the rng stream are unaffected, so the
+      // validator still proves exactly what it proved before the re-grid.
+      resonatePattern(built, RESONANCE.BPM);
       const v = validatePattern(
         built.obstacles,
         s0,

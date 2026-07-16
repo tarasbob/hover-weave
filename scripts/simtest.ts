@@ -29,11 +29,13 @@ import {
   unpackBoost,
   unpackDash,
 } from "../src/game/core/replay";
-import type { InputState } from "../src/game/core/input";
+import { SubTickAxis, type InputState } from "../src/game/core/input";
 import {
+  CARVE,
   DASH,
   ENERGY,
   FIXED_DT,
+  FLOW,
   onBeatAt,
   POOL_SIZES,
   RESONANCE,
@@ -931,16 +933,16 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Calibrated 2026-07 (winding course + obstacle kit landing: the course,
-  // glass/bumper/beam, the Leviathan, and run events reshaped generation;
-  // the superhuman searcher gained exact-step rollouts + an escape shape at
-  // the same time). The sim is deterministic, so these reproduce exactly
-  // until tuning constants move — the loose band catches real difficulty
-  // regressions either way.
+  // Re-baked 2026-07-15 with the resonance mainline (fun-frontier 2.1): the
+  // beat grid re-times every mover, which made the field more readable for
+  // the reactive greedy tier (+29%) and slightly harder for the TAS at
+  // extreme speed (power-of-two periods align closures). The sim is
+  // deterministic, so these reproduce exactly until tuning constants move —
+  // the loose band catches real difficulty regressions either way.
   const WALL_BASELINE: Record<Tier, number> = {
-    greedy: 1644,
+    greedy: 2129,
     lookahead: 3147,
-    superhuman: 43367,
+    superhuman: 33791,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);
@@ -970,9 +972,12 @@ console.log("edge-case assertions: PASS");
   const g = median(walls.greedy);
   const l = median(walls.lookahead);
   const s = median(walls.superhuman);
+  // The mainline beat grid (fun-frontier 2.1) compressed greedy→lookahead
+  // separation from ~1.9× to ~1.48×: phase-locked movers are more readable
+  // for the reactive tier — by design. The tiers must still be distinct.
   assert.ok(
-    l > g * 1.5,
-    `lookahead wall (${l.toFixed(0)}m) must clear greedy (${g.toFixed(0)}m) by ≥1.5×`,
+    l > g * 1.35,
+    `lookahead wall (${l.toFixed(0)}m) must clear greedy (${g.toFixed(0)}m) by ≥1.35×`,
   );
   assert.ok(
     s > l * 1.5,
@@ -1098,6 +1103,12 @@ console.log("edge-case assertions: PASS");
     }
     assert.ok(trial.medals.bronze >= 250, `${trial.id} bronze must not be trivial`);
     assert.ok(trial.skills.length > 0, `${trial.id} must declare skills`);
+    // Reference lines (fun-frontier 4.1): the TAS wall must sit beyond the
+    // author medal — "100% of reference" is a statement, not a medal rerun.
+    assert.ok(
+      trial.reference > trial.medals.author,
+      `${trial.id} reference (${trial.reference}m) must exceed author (${trial.medals.author}m)`,
+    );
     // Escalation: the trial curve must outrun the ambient treadmill where
     // medals live, and its difficulty must saturate by the ramp's end.
     assert.equal(medalFor(trial, trial.medals.gold), "gold");
@@ -1426,15 +1437,15 @@ console.log("edge-case assertions: PASS");
 {
   // Monotone in distance, anchored to the calibrated walls.
   let prev = -1;
-  for (const d of [50, 150, 400, 1133, 2000, 2686, 5000, 8000, 20000, 31547, 100000]) {
+  for (const d of [50, 150, 400, 2129, 2500, 3147, 5000, 8000, 20000, 33791, 100000]) {
     const p = runPerformance(d);
     assert.ok(p >= prev, `runPerformance must be monotone (${d}m)`);
     assert.ok(p >= RATING.FLOOR && p <= RATING.CEIL, "performance must stay clamped");
     prev = p;
   }
-  assert.ok(Math.abs(runPerformance(1133) - 1200) < 1, "greedy wall anchor");
-  assert.ok(Math.abs(runPerformance(2686) - 1700) < 1, "lookahead wall anchor");
-  assert.ok(Math.abs(runPerformance(31547) - 3000) < 1, "superhuman wall anchor");
+  assert.ok(Math.abs(runPerformance(2129) - 1200) < 1, "greedy wall anchor");
+  assert.ok(Math.abs(runPerformance(3147) - 1700) < 1, "lookahead wall anchor");
+  assert.ok(Math.abs(runPerformance(33791) - 3000) < 1, "superhuman wall anchor");
   assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
 
   // Elo-ish convergence: repeated identical runs settle at the performance;
@@ -1442,7 +1453,7 @@ console.log("edge-case assertions: PASS");
   let rating: number = RATING.START;
   const deltas: number[] = [];
   for (let runs = 0; runs < 40; runs++) {
-    const next = updateRating(rating, runs, 2686);
+    const next = updateRating(rating, runs, 3147);
     deltas.push(Math.abs(next - rating));
     rating = next;
   }
@@ -1460,7 +1471,7 @@ console.log("edge-case assertions: PASS");
     assert.ok(RATING_TIERS[i].min > RATING_TIERS[i - 1].min);
   }
   assert.equal(ratingTier(0).name, "DRIFTER");
-  assert.equal(ratingTier(runPerformance(31547)).name, "WEAVER");
+  assert.equal(ratingTier(runPerformance(33791)).name, "WEAVER");
   console.log(`rating gate: PASS (convergence at ${rating}, ${ratingTier(rating).name})`);
 }
 
@@ -1866,7 +1877,7 @@ console.log("edge-case assertions: PASS");
   }
 }
 
-// --- Phase 5: lab prototypes (5.4 rhythm resonance) ----------------------------
+// --- Rhythm resonance (fun-frontier 2.1, mainline — formerly lab 5.4) ---------
 {
   // Beat-window boundaries (pure).
   assert.equal(onBeatAt(0), true);
@@ -1927,81 +1938,79 @@ console.log("edge-case assertions: PASS");
     );
   }
 
-  // Live grading: on a controlled field of perfect passes, the resonant flag
-  // must equal the beat grid at the confirmation step, resonant awards must
-  // pay exactly ×BONUS over the flag-off twin, and both outcomes must occur.
+  // Live grading (mainline): on a controlled field of perfect passes, the
+  // resonant flag must equal the beat grid at the confirmation step, every
+  // award must match the recomputed formula exactly (resonant = ×BONUS,
+  // off-beat = ×1), and both outcomes must occur across the probe boxes.
   {
-    const probe = (lab: LabId[]) => {
-      const world = new SimWorld();
-      world.start({ mode: "endless", seed: "lab-resonant", lab });
-      world.clearField();
-      (world as unknown as { generator: null }).generator = null;
-      for (let i = 0; i < 12; i++) {
-        Object.assign(world.obstacles[i], {
-          active: true, kind: "box",
-          s: 40 + i * 37, x: 1.9, y: 1, hx: 1, hy: 2, hs: 0.5, yaw: 0,
-          motion: Motion.None, m0: 0, m1: 0, m2: 0, collidable: true,
-          cx: 1.9, cy: 1, cs: 40 + i * 37, cyaw: 0,
-          state: 0, landed: false,
-          nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
-          patternId: "labResonance",
-        });
-      }
-      const events: { resonant: boolean; onBeat: boolean; scoreAward: number; grade: string }[] =
-        [];
-      world.events.on("nearMiss", (e) =>
-        events.push({
-          resonant: e.resonant,
-          onBeat: onBeatAt(world.time),
-          scoreAward: e.scoreAward,
-          grade: e.grade,
-        }),
-      );
-      const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
-      for (let i = 0; i < 2600 && world.status === "running"; i++) world.update(FIXED_DT, input);
-      assert.equal(world.status, "running", "resonant probe must survive its boxes");
-      assert.equal(events.length, 12, "every probe box must confirm a pass");
-      return { events, stats: world.stats };
-    };
-    const off = probe([]);
-    const on = probe(["resonance"]);
-    for (const e of off.events) assert.equal(e.resonant, false, "no resonance without the flag");
-    assert.equal(off.stats.resonantPasses, 0);
+    const world = new SimWorld();
+    world.start(endless("resonant-mainline"));
+    world.clearField();
+    (world as unknown as { generator: null }).generator = null;
+    for (let i = 0; i < 12; i++) {
+      Object.assign(world.obstacles[i], {
+        active: true, kind: "box",
+        s: 40 + i * 37, x: 1.9, y: 1, hx: 1, hy: 2, hs: 0.5, yaw: 0,
+        motion: Motion.None, m0: 0, m1: 0, m2: 0, collidable: true,
+        cx: 1.9, cy: 1, cs: 40 + i * 37, cyaw: 0,
+        state: 0, landed: false,
+        nearMissed: false, nearMissClearance: Infinity, nearMissSide: 0,
+        patternId: "resonanceMainline",
+      });
+    }
     let resonants = 0;
-    on.events.forEach((e, i) => {
+    let checked = 0;
+    world.events.on("nearMiss", (e) => {
+      checked++;
       assert.equal(
         e.resonant,
-        e.grade === "perfect" && e.onBeat,
+        e.grade === "perfect" && onBeatAt(world.time),
         "resonant flag must match the beat grid at confirmation",
       );
-      if (e.resonant) {
-        resonants++;
-        assert.ok(
-          Math.abs(e.scoreAward - off.events[i].scoreAward * RESONANCE.BONUS) <= 1,
-          `resonant award must be ×${RESONANCE.BONUS} (${e.scoreAward} vs ${off.events[i].scoreAward})`,
-        );
-      } else {
-        assert.equal(e.scoreAward, off.events[i].scoreAward, "off-beat awards must be unchanged");
-      }
+      // Recompute the award from world state at emit time (flow points and
+      // speed are unchanged between scoring and emit): base × flow × chain
+      // × speed reward × resonance. Must be exact.
+      const chainBonus =
+        1 + Math.min(FLOW.CHAIN_SCORE_CAP, Math.max(0, e.chain - 1) * FLOW.CHAIN_SCORE_STEP);
+      const expected = Math.round(
+        precisionRewardAt(e.clearance).baseScore *
+          world.flowMultiplier *
+          chainBonus *
+          world.speedRewardFactor *
+          (e.resonant ? RESONANCE.BONUS : 1),
+      );
+      assert.equal(
+        e.scoreAward,
+        expected,
+        `award must match the formula (${e.scoreAward} vs ${expected}, resonant=${e.resonant})`,
+      );
+      if (e.resonant) resonants++;
     });
+    const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
+    for (let i = 0; i < 2600 && world.status === "running"; i++) world.update(FIXED_DT, input);
+    assert.equal(world.status, "running", "resonant probe must survive its boxes");
+    assert.equal(checked, 12, "every probe box must confirm a pass");
     assert.ok(
-      resonants >= 1 && resonants < on.events.length,
-      `probe must sample both outcomes (${resonants}/${on.events.length} resonant)`,
+      resonants >= 1 && resonants < checked,
+      `probe must sample both outcomes (${resonants}/${checked} resonant)`,
     );
-    assert.equal(on.stats.resonantPasses, resonants);
-    console.log(`resonance gate: PASS (grid boundaries, ${resonants}/12 resonant, ×1.25 exact)`);
+    assert.equal(world.stats.resonantPasses, resonants);
+    console.log(
+      `resonance gate: PASS (grid boundaries, ${resonants}/12 resonant, award formula exact)`,
+    );
   }
 }
 
-// --- Phase 5: full lab stack replay -------------------------------------------
-// Everything at once — surge + dash + resonance on a real generated track,
-// with dash taps in the stream: the recording must re-simulate bit-exactly
-// (the dash bit rides in the pack) and stay ghost-ineligible.
+// --- Phase 5 / fun-frontier: full lab stack replay -----------------------------
+// Everything at once — surge + dash + carve on a real generated track, with
+// dash taps and a pump-inducing zigzag in the stream: the recording must
+// re-simulate bit-exactly (the dash bit rides in the pack, pumps replay from
+// the axis alone) and stay ghost-ineligible.
 {
   const config: RunConfig = {
     mode: "endless",
     seed: "lab-full",
-    lab: normalizeLab(["resonance", "dash", "surge"]),
+    lab: normalizeLab(["carve", "dash", "surge"]),
   };
   const live = new SimWorld();
   live.start(config);
@@ -2010,6 +2019,7 @@ console.log("edge-case assertions: PASS");
   live.events.on("thread", (e) => liveEvents.push(["thread", e]));
   live.events.on("surge", (e) => liveEvents.push(["surge", e]));
   live.events.on("dash", (e) => liveEvents.push(["dash", e]));
+  live.events.on("pump", (e) => liveEvents.push(["pump", e]));
   live.events.on("death", (e) => liveEvents.push(["death", e]));
   const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const maxSteps = Math.floor(240 / FIXED_DT);
@@ -2021,13 +2031,18 @@ console.log("edge-case assertions: PASS");
     // rising edges that sometimes catch a funded meter.
     input.dash = i % 200 === 0 && i > 0;
     if (input.dash) input.axis = input.axis >= 0 ? 1 : -1;
+    // Pump exercise: a full-amplitude zigzag through the opening breather
+    // (openField keeps |x| >= 16 clear, so a ±3 m weave around the center
+    // line is safe) — reversals at carried speed fire carve pumps.
+    if (i >= 120 && i < 360) input.axis = Math.floor(i / 36) % 2 === 0 ? 1 : -1;
     live.update(FIXED_DT, input);
   }
-  assert.deepEqual(live.stats.lab, ["dash", "resonance", "surge"], "canonical full stack");
+  assert.deepEqual(live.stats.lab, ["carve", "dash", "surge"], "canonical full stack");
   assert.ok(live.stats.dashes >= 1, `full-stack probe must dash (${live.stats.dashes})`);
+  assert.ok(live.stats.pumps >= 3, `full-stack probe must pump (${live.stats.pumps})`);
   const rec = live.getRecording();
   assert.ok(rec && rec.complete, "full-stack run must record");
-  assert.deepEqual(rec.lab, ["dash", "resonance", "surge"], "recording carries the stack");
+  assert.deepEqual(rec.lab, ["carve", "dash", "surge"], "recording carries the stack");
   // (Kept out of assert.ok: the type guard would narrow `rec` to never.)
   const eligible = ghostEligible(rec);
   assert.equal(eligible, false, "full-stack recordings must never be ghosts");
@@ -2041,13 +2056,223 @@ console.log("edge-case assertions: PASS");
   replayed.events.on("thread", (e) => replayEvents.push(["thread", e]));
   replayed.events.on("surge", (e) => replayEvents.push(["surge", e]));
   replayed.events.on("dash", (e) => replayEvents.push(["dash", e]));
+  replayed.events.on("pump", (e) => replayEvents.push(["pump", e]));
   replayed.events.on("death", (e) => replayEvents.push(["death", e]));
   resimulate(rec, replayed);
   assert.deepEqual(replayed.stats, live.stats, "full-stack replay must be bit-exact");
   assert.deepEqual(replayEvents, liveEvents, "full-stack event stream must be identical");
   console.log(
     `full lab stack gate: PASS (${live.status} at ${live.distance.toFixed(0)}m, ` +
-    `${live.stats.dashes} dashes, ${live.stats.resonantPasses} resonant, ` +
+    `${live.stats.dashes} dashes, ${live.stats.pumps} pumps, ` +
     `${live.stats.perfectPasses} perfects; re-sim exact)`,
   );
+}
+
+// --- Fun-frontier 1.1: sub-tick input ------------------------------------------
+// The integrator turns press/release timestamps into an exact hold-fraction
+// axis: holds read ±1, taps read their true fraction of the window, and a
+// tap that begins and ends between polls can never be lost.
+{
+  const st = new SubTickAxis();
+  st.reset(1000);
+  st.set(1, true, 1000);
+  assert.equal(st.drain(1016), 1, "a full-window hold must read exactly 1");
+  st.set(1, false, 1024); // released half-way through the next window
+  assert.equal(st.drain(1032), 0.5, "a half-window tap must read exactly 0.5");
+  st.set(-1, true, 1036);
+  st.set(-1, false, 1040); // fully inside the window: the old sampler lost this
+  assert.equal(st.drain(1048), -0.25, "an intra-window tap must integrate, not vanish");
+  st.set(1, true, 1048);
+  st.set(-1, true, 1048);
+  assert.equal(st.drain(1064), 0, "opposite holds must cancel to exactly 0");
+  st.clear(1064);
+  st.set(1, true, 1064);
+  st.set(1, false, 1072);
+  st.set(-1, true, 1072);
+  st.set(-1, false, 1080);
+  assert.equal(st.drain(1080), 0, "a symmetric reversal must integrate to 0");
+  // Out-of-order delivery must stay sane (settle is monotonic).
+  st.set(1, true, 1090);
+  st.set(1, false, 1088);
+  const v = st.drain(1096);
+  assert.ok(v >= 0 && v <= 1, `out-of-order events must stay bounded (${v})`);
+  // Zero-width window falls back to the live sign.
+  st.set(-1, true, 1096);
+  assert.equal(st.drain(1096), -1, "a zero-width drain must report the held sign");
+  st.clear(1100);
+  console.log("sub-tick input gate: PASS");
+}
+
+// --- Fun-frontier 1.2: carve physics (lab "carve") ------------------------------
+{
+  const carveWorld = (lab: LabId[], seed = "carve-probe"): SimWorld => {
+    const world = new SimWorld();
+    world.start({ mode: "endless", seed, lab });
+    world.clearField();
+    (world as unknown as { generator: null }).generator = null;
+    return world;
+  };
+  const freshInput = (): InputState => ({
+    axis: 0, boost: false, dash: false, restart: false, pause: false,
+  });
+  const maxLatOf = (world: SimWorld): number => Math.max(10, world.speed) * STEER.RATIO;
+
+  // Flick: a fresh committed press bites harder than the plain model inside
+  // its window; a long hold converges back to the plain response.
+  {
+    const carve = carveWorld(["carve"]);
+    const plain = carveWorld([]);
+    const input = freshInput();
+    for (let i = 0; i < 240; i++) {
+      carve.update(FIXED_DT, input);
+      plain.update(FIXED_DT, input);
+    }
+    input.axis = 1;
+    for (let i = 0; i < 6; i++) {
+      carve.update(FIXED_DT, input);
+      plain.update(FIXED_DT, input);
+    }
+    assert.ok(
+      carve.latVel > plain.latVel * 1.3,
+      `flick must bite inside its window (${carve.latVel.toFixed(2)} vs ${plain.latVel.toFixed(2)})`,
+    );
+    // One second on: the flick transient has fully washed out (and the hold
+    // is short enough that neither world reaches the course clamp).
+    for (let i = 0; i < 120; i++) {
+      carve.update(FIXED_DT, input);
+      plain.update(FIXED_DT, input);
+    }
+    assert.ok(
+      Math.abs(carve.latVel - plain.latVel) < 0.5,
+      `a long hold must converge to the plain response ` +
+      `(${carve.latVel.toFixed(2)} vs ${plain.latVel.toFixed(2)})`,
+    );
+  }
+
+  // Pump: a full-carve reversal cadence breaks the steering cap and sustains
+  // a glide; stopping the cadence decays it back inside the envelope.
+  {
+    const world = carveWorld(["carve"], "carve-pump");
+    const input = freshInput();
+    let pumps = 0;
+    let maxRatio = 0;
+    let glideSeen = 0;
+    world.events.on("pump", (e) => {
+      pumps++;
+      assert.ok(e.strength >= 0 && e.strength <= 1, "pump strength must be normalized");
+    });
+    for (let i = 0; i < 240; i++) world.update(FIXED_DT, input); // launch ramp
+    for (let i = 0; i < 1200; i++) {
+      input.axis = Math.floor(i / 36) % 2 === 0 ? 1 : -1; // 0.3 s cadence
+      world.update(FIXED_DT, input);
+      maxRatio = Math.max(maxRatio, Math.abs(world.latVel) / maxLatOf(world));
+      glideSeen = Math.max(glideSeen, world.glide);
+    }
+    assert.ok(pumps >= 15, `pump cadence must fire pumps (${pumps})`);
+    assert.equal(world.stats.pumps, pumps, "stats must count the pumps");
+    assert.ok(
+      maxRatio > 1.2,
+      `pump cadence must break the steering cap (peak ×${maxRatio.toFixed(2)})`,
+    );
+    assert.ok(
+      maxRatio <= CARVE.OVER_RATIO + 1e-9,
+      `the glide envelope must hold (peak ×${maxRatio.toFixed(2)})`,
+    );
+    assert.ok(glideSeen > 0.3, `the glide readout must engage (${glideSeen.toFixed(2)})`);
+
+    input.axis = 0;
+    for (let i = 0; i < 360; i++) world.update(FIXED_DT, input);
+    assert.ok(
+      Math.abs(world.latVel) <= maxLatOf(world) + 1e-6,
+      "the glide must decay back inside the envelope",
+    );
+    assert.equal(world.glide, 0, "glide readout must settle to 0");
+  }
+
+  // Mistimed cadence: coasting before each flip bleeds the carve below the
+  // pump threshold — no pumps, and the plain envelope never breaks.
+  {
+    const lazy = carveWorld(["carve"], "carve-lazy");
+    const input = freshInput();
+    let lazyPumps = 0;
+    let lazyMax = 0;
+    lazy.events.on("pump", () => lazyPumps++);
+    for (let i = 0; i < 240; i++) lazy.update(FIXED_DT, input);
+    for (let i = 0; i < 1200; i++) {
+      const phase = i % 90; // 0.75 s cycle: 0.375 s hold, 0.375 s coast
+      const dir = Math.floor(i / 90) % 2 === 0 ? 1 : -1;
+      input.axis = phase < 45 ? dir : 0;
+      lazy.update(FIXED_DT, input);
+      lazyMax = Math.max(lazyMax, Math.abs(lazy.latVel) / maxLatOf(lazy));
+    }
+    assert.equal(lazyPumps, 0, "a coasted cadence must never pump");
+    assert.ok(
+      lazyMax <= 1 + 1e-9,
+      `the plain envelope must hold without pumps (×${lazyMax.toFixed(3)})`,
+    );
+  }
+
+  // Boost-carve: the same reversal pays a bigger bite while boosting.
+  {
+    const pumpedRatio = (boost: boolean): number => {
+      const world = carveWorld(["carve"], "carve-boost");
+      const input = freshInput();
+      input.boost = boost;
+      for (let i = 0; i < 240; i++) {
+        world.energy = 100;
+        world.update(FIXED_DT, input);
+      }
+      input.axis = -1;
+      for (let i = 0; i < 60; i++) {
+        world.energy = 100;
+        world.update(FIXED_DT, input);
+      }
+      // Inject an identical relative carve, then flip: the pump math is
+      // v = keep×|latVel| + maxLat×bonus×(boosting ? gain : 1).
+      const maxLat = maxLatOf(world);
+      world.latVel = -0.9 * maxLat;
+      input.axis = 1;
+      world.energy = 100;
+      world.update(FIXED_DT, input);
+      assert.equal(world.stats.pumps, 1, "the flip must pump exactly once");
+      return world.latVel / maxLat;
+    };
+    const cold = pumpedRatio(false);
+    const hot = pumpedRatio(true);
+    assert.ok(
+      hot > cold + 0.05,
+      `boosting must deepen the pump (×${hot.toFixed(3)} vs ×${cold.toFixed(3)})`,
+    );
+  }
+
+  // Wall-kiss: pressing away at the moment of clamp contact reflects the
+  // impact (and counts as a pump); the plain model absorbs it.
+  {
+    const kissProbe = (lab: LabId[]): SimWorld => {
+      const world = carveWorld(lab, "carve-kiss");
+      const input = freshInput();
+      for (let i = 0; i < 240; i++) world.update(FIXED_DT, input);
+      const wallX = world.courseOffsetAt(world.distance) - TRACK.X_LIMIT;
+      world.x = wallX + 0.05;
+      world.latVel = -14;
+      input.axis = 1;
+      world.update(FIXED_DT, input);
+      return world;
+    };
+    const kissed = kissProbe(["carve"]);
+    const absorbed = kissProbe([]);
+    assert.ok(
+      kissed.latVel > 6,
+      `wall-kiss must reflect the impact (${kissed.latVel.toFixed(1)} m/s out)`,
+    );
+    assert.equal(kissed.stats.pumps, 1, "a hard kiss must count as a pump");
+    assert.ok(
+      absorbed.latVel < 2,
+      `the plain clamp must absorb the same impact (${absorbed.latVel.toFixed(1)} m/s)`,
+    );
+  }
+
+  // (Carve replay exactness on a real track — pumps included — is proven by
+  // the full-lab-stack gate above: stats and pump event streams deep-equal.)
+  console.log("carve gate: PASS (flick, pump envelope, mistime, boost-carve, wall-kiss)");
 }

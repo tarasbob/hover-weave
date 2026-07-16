@@ -133,12 +133,13 @@ export function mutatePattern(
 }
 
 /**
- * Rhythm resonance (lab 5.4): quantize every mover's timing to the musical
- * grid — periods snap to beat × 2^k, phases to quarter cycles — so the whole
- * field phase-locks to the fixed resonance tempo. Timing only: amplitudes,
- * lengths, and radii are untouched, so worst-case validator envelopes (and
- * with them validation outcomes and solved paths) are identical to the same
- * seed unflagged. No rng is drawn — a pure function of the built values.
+ * Rhythm resonance (fun-frontier 2.1, mainline — formerly lab 5.4):
+ * quantize every mover's timing to the musical grid — periods snap to
+ * beat × 2^k, phases to quarter cycles — so the whole field phase-locks to
+ * the fixed resonance tempo. Timing only: amplitudes, lengths, and radii
+ * are untouched, so worst-case validator envelopes (and with them
+ * validation outcomes and solved paths) are unaffected by the re-grid.
+ * No rng is drawn — a pure function of the built values.
  */
 export function resonatePattern(result: PatternResult, bpm: number = RESONANCE.BPM): void {
   const beat = 60 / bpm;

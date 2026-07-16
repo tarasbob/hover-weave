@@ -52,6 +52,15 @@ export type GameEvents = {
   surge: { window: number };
   /** A phase dash fired (lab prototype, roadmap 5.3). */
   dash: { dir: number; x: number };
+  /** A carve pump (or wall-kiss) landed (lab prototype, fun-frontier 1.2). */
+  pump: {
+    dir: number;
+    x: number;
+    /** 0..1 — how much of the glide envelope the pump reached. */
+    strength: number;
+    /** True when the pump was a wall-kiss off the lateral clamp. */
+    wall: boolean;
+  };
   flowTier: { tier: number; prev: number };
   /** A graded chunk was fully traversed (roadmap 3.4). */
   sectionGrade: {

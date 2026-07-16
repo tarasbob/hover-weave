@@ -1,5 +1,6 @@
 import {
   BUMPER,
+  CARVE,
   CRAFT,
   DANGER,
   DASH,
@@ -214,7 +215,9 @@ export interface RunStats {
   threads: number;
   /** Phase dashes fired (lab 5.3 only; 0 otherwise). */
   dashes: number;
-  /** Perfects confirmed on the beat grid (lab 5.4 only; 0 otherwise). */
+  /** Carve pumps + wall-kisses landed (lab "carve" only; 0 otherwise). */
+  pumps: number;
+  /** Perfects confirmed on the beat grid (mainline since fun-frontier 2.1). */
   resonantPasses: number;
   /** Glass panes smashed through while boosting. */
   glassSmashed: number;
@@ -300,6 +303,13 @@ export class SimWorld {
   dashCooldown = 0;
   private dashDir = 0;
   private dashHeld = false;
+  /** Carve state (lab "carve", fun-frontier 1.2). */
+  private pressDir = 0;
+  private lastDir = 0;
+  private pressTimer = 999;
+  private pumpCooldown = 0;
+  /** 0..1 — how far past the steering cap the craft is gliding (FX/HUD). */
+  glide = 0;
   hasShield = false;
   iframes = 0;
   shardCombo = 0;
@@ -395,7 +405,7 @@ export class SimWorld {
     return {
       score: 0, distance: 0, nearMisses: 0, shards: 0,
       closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
-      dashes: 0, resonantPasses: 0,
+      dashes: 0, pumps: 0, resonantPasses: 0,
       glassSmashed: 0, bounces: 0, runEvents: 0,
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0,
@@ -472,6 +482,11 @@ export class SimWorld {
     this.dashCooldown = 0;
     this.dashDir = 0;
     this.dashHeld = false;
+    this.pressDir = 0;
+    this.lastDir = 0;
+    this.pressTimer = 999;
+    this.pumpCooldown = 0;
+    this.glide = 0;
     this.hasShield = false;
     this.iframes = 0;
     this.shardCombo = 0;
@@ -514,7 +529,6 @@ export class SimWorld {
       this.collectDebug,
       this.trial,
       this.heatFx,
-      this.labFx,
     );
     if (skipTo > 0) {
       this.distance = skipTo;
@@ -689,6 +703,8 @@ export class SimWorld {
         this.latVel = this.dashDir * (DASH.DISTANCE / DASH.TIME);
         this.x += this.latVel * dt;
         if (this.dashTimer <= 0) this.latVel *= DASH.EXIT_MOMENTUM;
+      } else if (this.labFx.carve) {
+        this.stepCarve(dt, axis, maxLat);
       } else {
         const authority = this.boosting ? STEER.BOOST_AUTHORITY : 1;
         this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * authority * dt;
@@ -707,10 +723,24 @@ export class SimWorld {
         (courseX - this.course.offsetAt(this.distance - this.speed * dt)) / dt;
       if (this.x < courseX - TRACK.X_LIMIT) {
         this.x = courseX - TRACK.X_LIMIT;
-        this.latVel = wallVel + Math.max(0, this.latVel - wallVel) * 0.4;
+        if (this.labFx.carve && axis >= CARVE.COMMIT) {
+          this.wallKiss(1, wallVel, maxLat);
+        } else {
+          this.latVel = wallVel + Math.max(0, this.latVel - wallVel) * 0.4;
+        }
       } else if (this.x > courseX + TRACK.X_LIMIT) {
         this.x = courseX + TRACK.X_LIMIT;
-        this.latVel = wallVel + Math.min(0, this.latVel - wallVel) * 0.4;
+        if (this.labFx.carve && axis <= -CARVE.COMMIT) {
+          this.wallKiss(-1, wallVel, maxLat);
+        } else {
+          this.latVel = wallVel + Math.min(0, this.latVel - wallVel) * 0.4;
+        }
+      }
+      // Glide readout for FX/HUD (0 everywhere but a carving craft).
+      if (this.labFx.carve) {
+        this.glide = clamp01((Math.abs(this.latVel) / maxLat - 1) / (CARVE.OVER_RATIO - 1));
+      } else if (this.glide !== 0) {
+        this.glide = 0;
       }
     } else {
       this.latVel *= Math.exp(-4 * dt);
@@ -789,6 +819,94 @@ export class SimWorld {
       if (this.timeLimit > 0 && this.time >= this.timeLimit - 1e-9) {
         this.onFinish();
       }
+    }
+  }
+
+  /**
+   * Carve steering (lab "carve", fun-frontier 1.2). Same two buttons, four
+   * techniques: flick (fresh presses bite harder), pump (a reversal at
+   * carried speed rebounds the carve with a bonus), glide (pumped momentum
+   * rides past maxLat; only the excess decays, and steering into the slide
+   * adds nothing — pumps are the only fuel), boost-carve (pump bonus scales
+   * while boosting). Pure holds behave like plain steering outside the
+   * flick window, so the novice line is untouched in feel.
+   */
+  private stepCarve(dt: number, axis: number, maxLat: number): void {
+    const dir = axis >= CARVE.COMMIT ? 1 : axis <= -CARVE.COMMIT ? -1 : 0;
+    if (this.pumpCooldown > 0) this.pumpCooldown = Math.max(0, this.pumpCooldown - dt);
+    this.pressTimer += dt;
+    if (dir !== 0 && dir !== this.pressDir) {
+      // Fresh committed press (from neutral or a reversal).
+      this.pressTimer = 0;
+      if (
+        dir === -this.lastDir &&
+        this.pumpCooldown <= 0 &&
+        this.latVel * dir < 0 &&
+        Math.abs(this.latVel) >= CARVE.PUMP_MIN_FRAC * maxLat
+      ) {
+        // Pump: the carve rebounds — carried speed mirrors into the new
+        // direction plus a bite of maxLat (more while boosting).
+        const bonus = CARVE.PUMP_BONUS * (this.boosting ? CARVE.PUMP_BOOST_GAIN : 1);
+        const v = Math.min(
+          Math.abs(this.latVel) * CARVE.PUMP_KEEP + maxLat * bonus,
+          maxLat * CARVE.OVER_RATIO,
+        );
+        this.latVel = dir * v;
+        this.pumpCooldown = CARVE.PUMP_COOLDOWN;
+        this.stats.pumps++;
+        this.events.emit("pump", {
+          dir,
+          x: this.x,
+          wall: false,
+          strength: clamp01((v / maxLat - CARVE.PUMP_MIN_FRAC) / (CARVE.OVER_RATIO - CARVE.PUMP_MIN_FRAC)),
+        });
+      }
+    }
+    if (dir !== 0) {
+      this.pressDir = dir;
+      this.lastDir = dir;
+    } else {
+      this.pressDir = 0;
+    }
+
+    const gliding = Math.abs(this.latVel) > maxLat + 1e-6;
+    // Glide is pump-fueled only: steering with the slide adds nothing.
+    const pushing = gliding && this.latVel * axis > 0;
+    const flick = this.pressTimer < CARVE.FLICK_WINDOW ? CARVE.FLICK_BOOST : 1;
+    const authority = (this.boosting ? STEER.BOOST_AUTHORITY : 1) * (pushing ? 0 : 1);
+    this.latVel += axis * Math.max(10, this.speed) * STEER.ACCEL_K * flick * authority * dt;
+    if (Math.abs(this.latVel) > maxLat) {
+      // Above the cap only the excess decays (slowly) — the carve rides.
+      const s = Math.sign(this.latVel);
+      const excess = (Math.abs(this.latVel) - maxLat) * Math.exp(-CARVE.GLIDE_DRAG * dt);
+      this.latVel = s * Math.min(maxLat + excess, maxLat * CARVE.OVER_RATIO);
+    } else {
+      const drag = Math.abs(axis) > 0.05 ? STEER.DRAG : STEER.RELEASE_DRAG;
+      this.latVel *= Math.exp(-drag * dt * (this.boosting ? 0.85 : 1));
+      this.latVel = clamp(this.latVel, -maxLat, maxLat);
+    }
+    this.x += this.latVel * dt;
+  }
+
+  /**
+   * Wall-kiss (carve): pressing away from the clamp at the moment of contact
+   * reflects the into-wall velocity component instead of absorbing it — the
+   * track edges become springboards for a carving craft. `away` is the
+   * direction off the wall (+1 off the left wall, -1 off the right).
+   */
+  private wallKiss(away: number, wallVel: number, maxLat: number): void {
+    const rel = (this.latVel - wallVel) * away; // negative = into the wall
+    const out = rel < 0 ? -rel * CARVE.WALL_KISS_KEEP : rel;
+    this.latVel = wallVel + out * away;
+    if (rel < -0.3 * maxLat && this.pumpCooldown <= 0) {
+      this.pumpCooldown = CARVE.PUMP_COOLDOWN;
+      this.stats.pumps++;
+      this.events.emit("pump", {
+        dir: away,
+        x: this.x,
+        wall: true,
+        strength: clamp01(-rel / maxLat),
+      });
     }
   }
 
@@ -1516,10 +1634,9 @@ export class SimWorld {
           : ENERGY.GRAZE_CLOSE;
     const energyAward = this.grantEnergy(grazeEnergy);
 
-    // Rhythm resonance (lab 5.4): a perfect confirmed on the beat grid rings
-    // out and pays extra. Flag off multiplies by the literal 1 — exact.
-    const resonant =
-      this.labFx.resonance && reward.grade === "perfect" && onBeatAt(this.time);
+    // Rhythm resonance (fun-frontier 2.1, mainline): a perfect confirmed on
+    // the beat grid rings out and pays extra — the world runs on the beat.
+    const resonant = reward.grade === "perfect" && onBeatAt(this.time);
     if (resonant) this.stats.resonantPasses++;
 
     const chainBonus = 1 + Math.min(

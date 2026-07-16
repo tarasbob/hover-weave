@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { heatScoreMult, type HeatId } from "../core/heat";
-import type { LabId } from "../core/lab";
+import { normalizeLab, type LabId } from "../core/lab";
 import { RATING, updateRating } from "../core/rating";
 import type { RunStats } from "../core/world";
 import { MEDAL_RANK, medalFor, trialById, type Medal } from "../track/trials";
@@ -492,7 +492,7 @@ export const useMeta = create<MetaState>()(
     }),
     {
       name: "cubefield:meta",
-      version: 6,
+      version: 7,
       migrate: (persisted) => {
         const state = persisted as Partial<MetaState>;
         return {
@@ -515,7 +515,9 @@ export const useMeta = create<MetaState>()(
           bestHeatCleared: state.bestHeatCleared ?? 1,
           selectedHeat: state.selectedHeat ?? [],
           // v6: lab prototype selection (roadmap Phase 5).
-          selectedLab: state.selectedLab ?? [],
+          // v7: "resonance" went mainline (fun-frontier 2.1) — drop retired
+          // lab ids from persisted selections.
+          selectedLab: normalizeLab(state.selectedLab ?? []),
         } as MetaState;
       },
     },
