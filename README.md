@@ -38,16 +38,20 @@ be timed by ear. A Perfect pass landed exactly on the beat grades
 preview challenges several seconds ahead; beyond 20 km, selected movers form
 readable 3:2 and 5:4 polyrhythms.
 
-**The sky is track.** Past the opening kilometres, glowing **skyhook
-ramps** loft the craft into real ballistic flight on the same two buttons:
-boost into the lip to fly far, carve into it to jump diagonally, steer
-(thinly) mid-air, and **hold boost to dive** — trading altitude for speed
-while a live landing reticle drags across the ground. One opposite flick
-just before touchdown **flares** the landing: a perfect flare keeps all the
-dive speed as a decaying rush and pays out (on the beat: RESONANT). Undived
-arcs always land clean; unflared dives slam. Every jump is optional — a
-validated ground line always exists — and air rings and shard arcs make the
-airtime worth earning.
+**The sky is track.** Glowing **skyhook ramps** arrive from the first
+kilometre and keep coming (the generator guarantees one every few hundred
+meters): boost into the lip to fly far, carve into it to jump diagonally,
+steer (thinly) mid-air, and **hold boost to dive** — trading altitude for
+speed while a live landing reticle drags across the ground. **Tap boost
+mid-air to double jump**: one impulse per flight, strongest exactly at the
+arc's apex — tap, *beat*, tap. One opposite flick just before touchdown
+**flares** the landing: a perfect flare keeps all the dive speed as a
+decaying rush and pays out (on the beat: RESONANT). Un-dived arcs always
+land clean, even double-jumped ones; unflared dives slam. Every jump stays
+optional — a validated ground line always exists — but the air pays:
+overflying dense fields keeps the engaged score stream alive, air rings and
+shard arcs line the flight paths, and apex-jump **crowns** wait above the
+kicker lines.
 
 **Daily Course** runs the same seed for every player each UTC day, with its
 own personal best. Distance, flow streaks, lifetime totals and daily play
@@ -97,9 +101,9 @@ The simulation is plain TypeScript stepped at a fixed 120 Hz, fully decoupled
 from rendering; React/R3F is a view layer reading interpolated sim state.
 
 - `src/game/core/` — sim world, steering physics (including skyhook flight:
-  ride/launch/dive/flare with geometry-conditional vertical state), collision,
-  input, events
-- `src/game/track/` — 40 handcrafted generators plus a compound circuit (including long
+  ride/launch/double-jump/dive/flare with geometry-conditional vertical
+  state), collision, input, events
+- `src/game/track/` — 41 handcrafted generators plus a compound circuit (including long
   "chaos field" free-navigation scatter sections), a post-build mutator
   pipeline (mirroring, extra scatter, rhythm jitter, mover speed-ups) that
   keeps layouts unpredictable across runs, a challenge director that rotates

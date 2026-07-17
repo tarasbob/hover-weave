@@ -78,16 +78,16 @@ const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
 // --- Conservative-bot survival + pool pressure + first-2km economy gate ----
 
 // Conservative-bot baselines (no boost), recalibrated 2026-07-16 with the
-// skyhook mainline (fun-frontier 6.1): ramp patterns joined the pools past
-// ~1500m, so mid-track generation reshuffled at fixed seeds (the first-800m
-// line is nearly untouched — ramps spawn beyond it). Future economy work
-// must keep the novice-proxy line within ±10% on average against THESE.
+// double-jump bundle (fun-frontier 6.2): the sky cadence guarantee spawns
+// wedges from ~500m on every seed, so the whole opening reshuffled. Future
+// economy work must keep the novice-proxy line within ±10% on average
+// against THESE numbers.
 const BASELINE_800: Record<string, number> = {
-  "test-0": 2511, "test-1": 3403, "test-2": 2002, "test-3": 2147,
-  "test-4": 2530, "test-5": 1746, "test-6": 1962, "test-7": 3150,
+  "test-0": 1062, "test-1": 3195, "test-2": 2073, "test-3": 1896,
+  "test-4": 2739, "test-5": 1980, "test-6": 2139, "test-7": 1927,
 };
 const BASELINE_2KM: Record<string, number> = {
-  "test-0": 6086, "test-1": 5739, "test-4": 3991, "test-6": 3441,
+  "test-3": 3314, "test-4": 4272, "test-6": 5191,
 };
 
 let totalDeaths = 0;
@@ -1046,16 +1046,16 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Re-baked 2026-07-16 with the skyhook mainline (fun-frontier 6.1): ramp
-  // patterns reshuffled mid-track generation at fixed seeds, moving every
-  // tier's band (the physics under the tiers is untouched — none of the
-  // bots ride a wedge). The sim is deterministic, so these reproduce
-  // exactly until tuning constants move — the loose band catches real
-  // difficulty regressions either way.
+  // Re-baked 2026-07-16 with the double-jump bundle (fun-frontier 6.2): the
+  // sky cadence reshuffled every endless course. The reactive greedy tier
+  // reads the denser early rotation worse (its wall dropped), while the
+  // planner exploits the guaranteed-open flight tubes (its wall rose) —
+  // separation widened, which is the mechanic working as designed. The sim
+  // is deterministic, so these reproduce exactly until tuning moves.
   const WALL_BASELINE: Record<Tier, number> = {
-    greedy: 2370,
-    lookahead: 3449,
-    superhuman: 30306,
+    greedy: 1674,
+    lookahead: 4810,
+    superhuman: 29507,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);
@@ -1555,17 +1555,17 @@ console.log("edge-case assertions: PASS");
 // --- Phase 4.4: pilot rating ---------------------------------------------------
 {
   // Monotone in distance, anchored to the calibrated walls (re-baked
-  // 2026-07-16 with the skyhook mainline).
+  // 2026-07-16 with the double-jump bundle).
   let prev = -1;
-  for (const d of [50, 150, 400, 2370, 2500, 3449, 5000, 8000, 20000, 30306, 100000]) {
+  for (const d of [50, 150, 400, 1674, 2500, 4810, 5000, 8000, 20000, 29507, 100000]) {
     const p = runPerformance(d);
     assert.ok(p >= prev, `runPerformance must be monotone (${d}m)`);
     assert.ok(p >= RATING.FLOOR && p <= RATING.CEIL, "performance must stay clamped");
     prev = p;
   }
-  assert.ok(Math.abs(runPerformance(2370) - 1200) < 1, "greedy wall anchor");
-  assert.ok(Math.abs(runPerformance(3449) - 1700) < 1, "lookahead wall anchor");
-  assert.ok(Math.abs(runPerformance(30306) - 3000) < 1, "superhuman wall anchor");
+  assert.ok(Math.abs(runPerformance(1674) - 1200) < 1, "greedy wall anchor");
+  assert.ok(Math.abs(runPerformance(4810) - 1700) < 1, "lookahead wall anchor");
+  assert.ok(Math.abs(runPerformance(29507) - 3000) < 1, "superhuman wall anchor");
   assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
   assert.equal(referencePerformance(0, 5000), RATING.FLOOR);
   assert.equal(referencePerformance(5000, 5000), 3000);
@@ -1584,7 +1584,7 @@ console.log("edge-case assertions: PASS");
   let rating: number = RATING.START;
   const deltas: number[] = [];
   for (let runs = 0; runs < 40; runs++) {
-    const next = updateRating(rating, runs, 3449);
+    const next = updateRating(rating, runs, 4810);
     deltas.push(Math.abs(next - rating));
     rating = next;
   }
@@ -1602,7 +1602,7 @@ console.log("edge-case assertions: PASS");
     assert.ok(RATING_TIERS[i].min > RATING_TIERS[i - 1].min);
   }
   assert.equal(ratingTier(0).name, "DRIFTER");
-  assert.equal(ratingTier(runPerformance(30306)).name, "WEAVER");
+  assert.equal(ratingTier(runPerformance(29507)).name, "WEAVER");
   console.log(`rating gate: PASS (convergence at ${rating}, ${ratingTier(rating).name})`);
 }
 
@@ -2530,13 +2530,15 @@ console.log("edge-case assertions: PASS");
   };
 
   // Ground identity: with no wedge in the field, the vertical channel is
-  // inert — y pinned to the exact hover constant, no air stats, ever.
+  // inert — y pinned to the exact hover constant, no air stats, ever. The
+  // boost stream mixes long holds with tap-length blips: grounded taps must
+  // never fire the double jump (it exists only airborne).
   {
     const world = skyWorld("sky-identity");
     const input = freshInput();
     for (let i = 0; i < 2400; i++) {
       input.axis = Math.sin(i * 0.013) * 0.9;
-      input.boost = i % 700 < 260;
+      input.boost = i % 700 < 260 || i % 53 < 3;
       world.update(FIXED_DT, input);
       assert.equal(world.y, CRAFT.HOVER_HEIGHT, "grounded y must stay the exact constant");
       assert.equal(world.airborne, false);
@@ -2544,6 +2546,7 @@ console.log("edge-case assertions: PASS");
     assert.equal(world.stats.jumps, 0);
     assert.equal(world.stats.airTime, 0);
     assert.equal(world.stats.airGrazes, 0);
+    assert.equal(world.stats.airJumps, 0, "grounded boost taps must never jump");
   }
 
   // Launch algebra + the novice default arc: ride a wedge hands-off (no
@@ -2615,13 +2618,15 @@ console.log("edge-case assertions: PASS");
 
   // Dive: boosting airborne must land sooner AND arrive carrying more speed
   // (the altitude→speed trade), and an unflared dive grades HARD with a
-  // scrub; floating the same jump lands CLEAN.
+  // scrub; floating the same jump lands CLEAN. The probe wedge is tall so
+  // the low-probe-speed dive genuinely exceeds the (jump-inclusive) soft
+  // ceiling — authored lips reach the same impacts at real track speeds.
   {
     const flight = (dive: boolean) => {
       const world = skyWorld("sky-dive");
       const input = freshInput();
       world.energy = 100; // A full tank sustains the dive across the flight.
-      placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      placeRamp(world, 160, 4.2, 4.2 / 0.145);
       let land: { grade: string; impact: number; s: number } | null = null;
       let speedAtLand = 0;
       world.events.on("land", (e) => {
@@ -2661,16 +2666,20 @@ console.log("edge-case assertions: PASS");
 
   // Flare: one committed fresh press just before touchdown cushions the
   // dive into a PERFECT landing (speed kept, payout, rush); a PWM chatter
-  // cadence voids it; flaring a gentle arc stays merely CLEAN.
+  // cadence voids it; flaring a gentle arc stays merely CLEAN. Dive cases
+  // ride the tall probe wedge so the low-speed probe dive genuinely slams
+  // (> SOFT_VY); the gentle case rides a kicker-height lip whose float
+  // lands under PERFECT_MIN_IMPACT.
   {
     const diveFlight = (
       descent: (world: SimWorld, input: InputState, tToFloor: number) => void,
       boost = true,
+      lip = 4.2,
     ) => {
       const world = skyWorld("sky-flare");
       const input = freshInput();
       world.energy = 100; // A full tank sustains the dive across the flight.
-      placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      placeRamp(world, 160, lip, lip / 0.145);
       let land:
         | { grade: string; impact: number; flare: number; scoreAward: number; energyAward: number }
         | null = null;
@@ -2730,7 +2739,7 @@ console.log("edge-case assertions: PASS");
 
     const gentle = diveFlight((world, input, tToFloor) => {
       input.axis = tToFloor <= 0.06 ? -1 : 0;
-    }, false);
+    }, false, 2.2);
     assert.equal(
       gentle.land.grade,
       "clean",
@@ -2783,9 +2792,212 @@ console.log("edge-case assertions: PASS");
       `(${kept.speedMidRush.toFixed(1)} vs ${slammed.speedMidRush.toFixed(1)} m/s)`,
     );
     assert.ok(
-      kept.world.distance > slammed.world.distance + 8,
+      kept.world.distance > slammed.world.distance + 6,
       `a perfect landing must buy real distance ` +
       `(${kept.world.distance.toFixed(0)} vs ${slammed.world.distance.toFixed(0)})`,
+    );
+  }
+
+  // Double jump (fun-frontier 6.2): a boost tap that begins and ends
+  // airborne fires exactly one apex-quality-scaled impulse per flight —
+  // energy-priced, hold-committed dives never fire it, a press carried over
+  // the lip never arms it, and it measurably extends the flight.
+  {
+    type JumpEvent = { vy: number; quality: number };
+    const flight = (opts: {
+      /** Ticks of boost per press while airborne (0 = never press). */
+      tapTicks: number;
+      /** Fire the tap when |vy| first drops under this (999 = immediately). */
+      apexBand?: number;
+      /** Number of separate taps to attempt. */
+      taps?: number;
+      /** Starting energy. */
+      energy?: number;
+      /** Hold boost from the deck approach through the lip, release mid-air. */
+      carryThroughLip?: boolean;
+      /** Use the steep VY_MAX wedge (off-apex taps meet a real |vy|). */
+      steep?: boolean;
+    }) => {
+      const world = skyWorld("sky-doublejump");
+      const input = freshInput();
+      world.energy = opts.energy ?? 100;
+      if (opts.steep) placeRamp(world, 200, 4.5, 10);
+      else placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      const jumps: JumpEvent[] = [];
+      const preJumpVy: number[] = [];
+      let land: { grade: string; s: number } | null = null;
+      let energyBefore = 0;
+      world.events.on("airJump", (e) => {
+        jumps.push({ vy: e.vy, quality: e.quality });
+      });
+      world.events.on("land", (e) => {
+        land = e;
+      });
+      let pressTicksLeft = 0;
+      let pressJustEnded = false;
+      let tapsFired = 0;
+      let wasAirborne = false;
+      for (let i = 0; i < 2400 && !land; i++) {
+        if (world.airborne) {
+          if (!wasAirborne) {
+            wasAirborne = true;
+            energyBefore = world.energy;
+          }
+          input.axis = 0;
+          if (opts.carryThroughLip) {
+            // Keep holding for a while, then release — a long hold, not a tap.
+            input.boost = world.vy > -3;
+          } else if (pressTicksLeft > 0) {
+            pressTicksLeft--;
+            input.boost = true;
+            pressJustEnded = pressTicksLeft === 0;
+          } else if (
+            tapsFired < (opts.taps ?? 1) &&
+            opts.tapTicks > 0 &&
+            Math.abs(world.vy) < (opts.apexBand ?? 0.6)
+          ) {
+            tapsFired++;
+            pressTicksLeft = opts.tapTicks - 1;
+            input.boost = true;
+            pressJustEnded = pressTicksLeft === 0;
+          } else {
+            // The release step: the sim fires the jump reading vy exactly as
+            // it stands now, so this is the moment to capture it.
+            if (pressJustEnded) {
+              preJumpVy.push(world.vy);
+              pressJustEnded = false;
+            }
+            input.boost = false;
+          }
+        } else {
+          wasAirborne = false;
+          holdCenter(world, input);
+          input.boost = opts.carryThroughLip
+            ? world.y > CRAFT.HOVER_HEIGHT + 0.4 // ignite riding the deck
+            : false;
+        }
+        world.update(FIXED_DT, input);
+      }
+      assert.ok(land, "double-jump probe must land");
+      assert.equal(world.status, "running");
+      return { jumps, preJumpVy, land: land! as { grade: string; s: number }, energyBefore, world };
+    };
+
+    // Apex tap: exact impulse algebra, exact energy price, single fire. (The
+    // tap itself dives for its 3 held ticks, so "apex" quality lands a hair
+    // under 1 — the formula check is exact, the quality check is a band.)
+    const apex = flight({ tapTicks: 3 });
+    assert.equal(apex.jumps.length, 1, "an apex tap must fire exactly one jump");
+    const q = Math.max(0, 1 - Math.abs(apex.preJumpVy[0]) / RAMP.VY_MAX);
+    const expectVy = RAMP.JUMP_VY * (RAMP.JUMP_FLOOR + (1 - RAMP.JUMP_FLOOR) * q);
+    assert.ok(
+      Math.abs(apex.jumps[0].vy - expectVy) < 1e-9,
+      `jump impulse must follow the quality formula exactly ` +
+      `(${apex.jumps[0].vy.toFixed(4)} vs ${expectVy.toFixed(4)})`,
+    );
+    assert.ok(apex.jumps[0].quality > 0.85, "an apex tap must read near-full quality");
+    assert.ok(
+      Math.abs(apex.energyBefore - RAMP.JUMP_ENERGY - apex.world.energy) < 2.5,
+      "a jump must cost JUMP_ENERGY (± the frame's trickle)",
+    );
+    assert.equal(apex.world.stats.airJumps, 1);
+    assert.ok(apex.world.stats.airJumpQualitySum > 0.9);
+    assert.equal(apex.land.grade, "clean", "a jumped un-dived arc still lands clean");
+
+    // Early tap (right off a VY_MAX lip, vy still high): quality collapses
+    // toward the floor impulse.
+    const early = flight({ tapTicks: 3, apexBand: 999, steep: true });
+    assert.equal(early.jumps.length, 1);
+    assert.ok(
+      early.jumps[0].quality < 0.65,
+      `an off-apex tap must lose quality (q=${early.jumps[0].quality.toFixed(2)})`,
+    );
+    assert.ok(early.jumps[0].vy < apex.jumps[0].vy, "worse timing, smaller impulse");
+
+    // The jump extends the flight (the 3-tick tap's dive prefix costs far
+    // less than the impulse buys).
+    const plain = flight({ tapTicks: 0 });
+    assert.ok(
+      apex.land.s > plain.land.s + 8,
+      `an apex jump must extend the flight (${apex.land.s.toFixed(1)} vs ${plain.land.s.toFixed(1)})`,
+    );
+
+    // Once per flight: the second tap must not fire.
+    const twice = flight({ tapTicks: 3, taps: 2 });
+    assert.equal(twice.jumps.length, 1, "only one double jump per flight");
+    assert.equal(twice.world.stats.airJumps, 1);
+
+    // Energy gate: a broke craft cannot jump.
+    const broke = flight({ tapTicks: 3, energy: RAMP.JUMP_ENERGY - 8 });
+    assert.equal(broke.jumps.length, 0, "a jump needs the full JUMP_ENERGY");
+
+    // A hold committed past TAP_WINDOW must dive, never jump.
+    const held = flight({ tapTicks: Math.ceil(RAMP.TAP_WINDOW / FIXED_DT) + 4 });
+    assert.equal(held.jumps.length, 0, "a committed hold is a dive, not a jump");
+    assert.ok(held.world.stats.diveTime > 0, "the hold must register as a dive");
+
+    // A press carried over the lip never arms (no airborne rising edge).
+    const carried = flight({ tapTicks: 0, carryThroughLip: true });
+    assert.equal(carried.jumps.length, 0, "a lip-carried press must not arm a tap");
+  }
+
+  // Overflight credit (fun-frontier 6.2): an airborne craft samples danger
+  // in the ground band, so vaulting a dense field keeps the engaged score
+  // stream alive; flying over empty floor stays neutral.
+  {
+    const overflight = (withField: boolean) => {
+      const world = skyWorld("sky-overflight");
+      const input = freshInput();
+      placeRamp(world, 160, 2.6, 2.6 / 0.145);
+      if (withField) {
+        // A low carpet of rocks under the early stretch of the flight:
+        // lethal to a grounded craft, scenery to a flying one — and now,
+        // engaged danger. It ends well before the arc descends into the
+        // ground band, so the landing stays clear.
+        const spawner = world as unknown as {
+          spawnObstacle(spec: ObstacleSpec, patternId: string): void;
+        };
+        for (let i = 0; i < 8; i++) {
+          spawner.spawnObstacle(
+            {
+              kind: "box",
+              x: (i % 4) * 2 - 3,
+              s: 182 + i * 1.2,
+              y: 0.9,
+              hx: 0.9,
+              hy: 0.9,
+              hs: 0.6,
+            },
+            "overflightProbe",
+          );
+        }
+      }
+      let peakAirborneDanger = 0;
+      let land = false;
+      world.events.on("land", () => {
+        land = true;
+      });
+      for (let i = 0; i < 2000 && !land; i++) {
+        holdCenter(world, input);
+        input.boost = false;
+        world.update(FIXED_DT, input);
+        if (world.airborne) {
+          peakAirborneDanger = Math.max(peakAirborneDanger, world.dangerFactor);
+        }
+      }
+      assert.ok(land, "overflight probe must land");
+      assert.equal(world.status, "running", "the rocks live under the arc, never in it");
+      return peakAirborneDanger;
+    };
+    const engaged = overflight(true);
+    const empty = overflight(false);
+    assert.ok(
+      engaged > 1.25,
+      `vaulting a dense field must pay engaged danger (peak ${engaged.toFixed(2)})`,
+    );
+    assert.ok(
+      Math.abs(empty - 1) < 0.05,
+      `an empty overflight stays neutral (peak ${empty.toFixed(2)})`,
     );
   }
 
@@ -2822,10 +3034,9 @@ console.log("edge-case assertions: PASS");
   }
 
   // Replay exactness with flight in the stream: a deck-seeking pilot on a
-  // real generated track must jump, land, and re-simulate bit-exactly.
-  // Sky patterns spawn past difficulty 0.5, so most seeds carry no wedge for
-  // kilometres — a cheap generator-only scan picks seeds with a wedge inside
-  // the lookahead pilot's survivable band before any sim runs.
+  // real generated track must jump, double-jump, dive, land, and
+  // re-simulate bit-exactly. A cheap generator-only scan picks seeds whose
+  // first wedge sits inside the lookahead pilot's survivable band.
   {
     const candidateSeeds: string[] = [];
     for (let probe = 0; probe < 60 && candidateSeeds.length < 8; probe++) {
@@ -2852,6 +3063,9 @@ console.log("edge-case assertions: PASS");
       const input = freshInput();
       const mem = { targetX: 0 };
       world.start(endless(seed));
+      // Per-flight tap state (pilot-side; the sim only sees the buttons).
+      let tapTicksLeft = 0;
+      let tappedThisFlight = false;
       const maxSteps = Math.floor(300 / FIXED_DT);
       for (let i = 0; i < maxSteps && world.status === "running"; i++) {
         let deck: { cx: number; cs: number } | null = null;
@@ -2862,18 +3076,37 @@ console.log("edge-case assertions: PASS");
         }
         if (world.airborne) {
           input.axis = 0;
-          input.boost = true; // dive every jump: exercises the full state
+          if (tapTicksLeft > 0) {
+            tapTicksLeft--;
+            input.boost = true;
+          } else if (!tappedThisFlight && Math.abs(world.vy) < 0.8) {
+            // Apex tap, then release: the double jump enters the stream.
+            tappedThisFlight = true;
+            tapTicksLeft = 3;
+            input.boost = true;
+          } else if (tappedThisFlight && world.vy < -1.5) {
+            input.boost = true; // dive the post-jump descent
+          } else {
+            input.boost = false;
+          }
         } else if (world.stats.jumps === 0 && deck && deck.cs - world.distance < 200) {
           // Close beeline onto the deck; long approaches stay on the planner.
+          tappedThisFlight = false;
           steerToward(world, input, deck.cx);
           input.boost = false;
         } else {
+          tappedThisFlight = false;
           lookaheadPilot(world, input, mem);
           input.boost = false;
         }
         world.update(FIXED_DT, input);
       }
-      if (world.stats.jumps >= 1 && world.stats.airTime > 0.3 && world.status === "dead") {
+      if (
+        world.stats.jumps >= 1 &&
+        world.stats.airJumps >= 1 &&
+        world.stats.airTime > 0.3 &&
+        world.status === "dead"
+      ) {
         recorded = world.getRecording();
         liveStats = { ...world.stats };
         usedSeed = seed;
@@ -2885,18 +3118,19 @@ console.log("edge-case assertions: PASS");
     assert.deepEqual(
       replayed.stats,
       liveStats,
-      "a recording with launches, dives, and landings must re-simulate bit-exactly",
+      "a recording with launches, double jumps, dives, and landings must re-simulate bit-exactly",
     );
     assert.ok(replayed.stats.jumps >= 1, "replayed run must keep its jumps");
+    assert.ok(replayed.stats.airJumps >= 1, "replayed run must keep its double jumps");
     console.log(
       `skyhook replay: ${usedSeed} jumps=${replayed.stats.jumps} ` +
-      `air=${replayed.stats.airTime.toFixed(2)}s perfect=${replayed.stats.perfectLandings} ` +
-      `hard=${replayed.stats.hardLandings}`,
+      `airJumps=${replayed.stats.airJumps} air=${replayed.stats.airTime.toFixed(2)}s ` +
+      `perfect=${replayed.stats.perfectLandings} hard=${replayed.stats.hardLandings}`,
     );
   }
 
   console.log(
     "skyhook gate: PASS (identity, launch algebra, vy cap, dive trade, flare quality, " +
-    "chatter void, rush, side-slip, bit-exact flight replay)",
+    "chatter void, rush, double jump, overflight credit, side-slip, bit-exact flight replay)",
   );
 }

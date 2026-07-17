@@ -256,6 +256,9 @@ export function Craft() {
       world.events.on("pump", (event) => {
         trailFlash.current = Math.max(trailFlash.current, 0.5 + event.strength * 0.4);
       }),
+      world.events.on("airJump", (event) => {
+        trailFlash.current = Math.max(trailFlash.current, 0.45 + event.quality * 0.45);
+      }),
       world.events.on("shieldPickup", () => {
         shieldKick.current = 1;
       }),

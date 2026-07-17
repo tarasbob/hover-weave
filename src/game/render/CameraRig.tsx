@@ -66,6 +66,9 @@ export function CameraRig() {
       world.events.on("launch", (e) => {
         state.current.launchKick = Math.min(1, 0.4 + e.vy * 0.05);
       }),
+      world.events.on("airJump", (e) => {
+        state.current.launchKick = Math.max(state.current.launchKick, 0.25 + e.quality * 0.2);
+      }),
       world.events.on("land", (e) => {
         if (e.grade === "hard") {
           state.current.trauma = Math.max(state.current.trauma, 0.42);

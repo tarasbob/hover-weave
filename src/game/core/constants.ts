@@ -422,6 +422,13 @@ export const CARVE = {
  * - Dive: holding boost while airborne pitches down (DIVE_ACCEL) and
  *   converts descent into forward speed (DIVE_SPEED_GAIN × sink rate) —
  *   land sooner, faster, on a spot steered continuously.
+ * - Double jump (fun-frontier 6.2, UT-style): a boost TAP that begins and
+ *   ends airborne within TAP_WINDOW fires one upward impulse per flight,
+ *   priced at JUMP_ENERGY. The impulse is continuous in timing quality —
+ *   full JUMP_VY exactly at the apex (|vy| ≈ 0), decaying toward
+ *   JUMP_FLOOR × JUMP_VY for sloppy timing — so the UT rhythm (jump,
+ *   *beat*, jump) is the skill. Same button as the dive: tap to jump,
+ *   hold to dive, so the verb set stays two buttons + boost.
  * - Flare: one committed fresh press within FLARE_WINDOW of touchdown
  *   forgives impact by FLARE_KEEP × timing quality. A flared dive grades
  *   PERFECT: no scrub, the dive's over-target speed is held as a decaying
@@ -429,10 +436,12 @@ export const CARVE = {
  *   Chattered presses (two fresh presses inside CHATTER_GAP) void the flare,
  *   so PWM steering macros can never farm landings.
  *
- * Landing grades: |vy| ≤ SOFT_VY lands CLEAN (VY_MAX < SOFT_VY, so every
- * un-dived arc — a novice's default flight — is clean by construction).
- * An unflared dive lands HARD: HARD_SCRUB of speed and NUMB_TIME of halved
- * steering authority. Risk scales exactly with ambition.
+ * Landing grades: |vy| ≤ SOFT_VY lands CLEAN. SOFT_VY exceeds the worst
+ * boost-free impact *including a full apex double jump* (the gentest bound
+ * per authored wedge), so every un-dived arc — a novice's default flight,
+ * jumped or not — is clean by construction. An unflared dive lands HARD:
+ * HARD_SCRUB of speed and NUMB_TIME of halved steering authority. Risk
+ * scales exactly with ambition.
  *
  * Not `as const`: the dev console exposes this object (`__ramp`) as the
  * feel-tuning harness — mutate values live, restart the run, re-feel.
@@ -454,14 +463,24 @@ export const RAMP = {
   DIVE_SPEED_GAIN: 0.55,
   /** Rate at which the craft snaps up onto a ramp surface entered mid-slope. */
   SNAP_UP: 14,
+  /** Max boost hold (s) that still reads as a double-jump tap mid-air. */
+  TAP_WINDOW: 0.14,
+  /** Full-quality double-jump impulse (m/s, sets vy). */
+  JUMP_VY: 8.5,
+  /** Fraction of JUMP_VY a zero-quality (badly timed) jump still gets. */
+  JUMP_FLOOR: 0.55,
+  /** Energy price of a double jump (the full amount is required to fire). */
+  JUMP_ENERGY: 20,
   /**
    * Impact |vy| at or below this lands clean. Must exceed the worst
-   * un-dived impact — a capped launch falling the tallest authored lip:
-   * sqrt(VY_MAX² + 2·GRAVITY·lipHeight) ≈ 16.3 at lipHeight 3 — so every
-   * boost-free arc lands clean by construction (gentest proves the bound
-   * for each authored wedge). Dives (DIVE_ACCEL) blow well past it.
+   * boost-free impact — a full apex double jump falling from the capped
+   * launch apex of the tallest authored lip:
+   * sqrt(JUMP_VY² + 2·GRAVITY·(lip + VY_MAX²/(2·GRAVITY))) ≈ 18.4 at
+   * lip 3 — so every un-dived arc, jumped or not, lands clean by
+   * construction (gentest proves the bound per wedge). Dives (DIVE_ACCEL)
+   * blow well past it.
    */
-  SOFT_VY: 16.6,
+  SOFT_VY: 19,
   /** Fraction of forward speed scrubbed by a hard landing. */
   HARD_SCRUB: 0.1,
   /** Seconds of halved steering authority after a hard landing. */
@@ -472,6 +491,12 @@ export const RAMP = {
   FLARE_KEEP: 0.75,
   /** Minimum flare quality for a cushioned dive to grade perfect. */
   PERFECT_MIN_Q: 0.4,
+  /**
+   * Minimum raw impact for a flared landing to grade perfect: the flare
+   * must be redeeming a real descent (a dived kicker, a jumped arc), not a
+   * feather-fall. Below it a flare still cushions — it just grades clean.
+   */
+  PERFECT_MIN_IMPACT: 14.5,
   /** A fresh press closer than this to the previous one voids the flare. */
   CHATTER_GAP: 0.45,
   /** Committed-direction threshold on the quantized axis (flare detection). */
@@ -499,6 +524,18 @@ export function rampAirTime(vy: number, lipHeight: number): number {
 }
 
 /**
+ * Worst-case airtime for a launch at `vy` from `lipHeight`: ride the arc to
+ * its apex, then fire a full-quality double jump (the airtime-maximal spot —
+ * greatest height, zero wasted upward velocity) and fall from there.
+ */
+export function rampMaxAirTime(vy: number, lipHeight: number): number {
+  const g = RAMP.GRAVITY;
+  const apex = lipHeight + (vy * vy) / (2 * g);
+  const j = RAMP.JUMP_VY;
+  return vy / g + (j + Math.sqrt(j * j + 2 * g * apex)) / g;
+}
+
+/**
  * Speed ceiling for flight-envelope planning: full boost over the flow
  * speed-bonus ceiling, plus headroom for a landing rush carried into a
  * chained lip. Diving only ever shortens a flight, so the floaty full-boost
@@ -508,11 +545,14 @@ export function rampMaxAirSpeed(speed: number): number {
   return speed * SPEED.BOOST_MULT * 1.22 + 16;
 }
 
-/** Worst-case flight length off a wedge at ambient (pre-boost) `speed`. */
+/**
+ * Worst-case flight length off a wedge at ambient (pre-boost) `speed`,
+ * including one apex double jump.
+ */
 export function rampMaxFlight(lipHeight: number, deckLen: number, speed: number): number {
   const v = rampMaxAirSpeed(speed);
   const vy = rampLaunchVy(lipHeight, deckLen, v);
-  return v * rampAirTime(vy, lipHeight);
+  return v * rampMaxAirTime(vy, lipHeight);
 }
 
 /**
@@ -572,7 +612,7 @@ export const POOL_SIZES = {
   glass: 140,
   bumper: 130,
   beam: 90,
-  ramp: 24,
+  ramp: 48,
   shard: 340,
   shield: 18,
   decor: 380,

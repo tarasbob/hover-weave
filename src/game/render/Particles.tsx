@@ -281,6 +281,28 @@ export function Particles({ max }: { max: number }) {
           });
         }
       }),
+      world.events.on("airJump", (e) => {
+        // Double jump: a downward-blown pressure ring under the hull —
+        // apex-quality taps flash brighter and wider.
+        c.copy(env.uAccent.value);
+        const count = Math.max(6, Math.round((8 + e.quality * 8) * burstScale));
+        for (let i = 0; i < count; i++) {
+          const ang = (i / count) * Math.PI * 2;
+          sys.spawn({
+            x: e.x + Math.cos(ang) * 0.5,
+            y: e.y - 0.35,
+            s: e.s + Math.sin(ang) * 0.5,
+            vx: Math.cos(ang) * rng.range(2, 5 + e.quality * 3),
+            vy: rng.range(-6, -2.5),
+            vs: Math.sin(ang) * rng.range(2, 5) - 6,
+            grav: -4, drag: 1.8, life: rng.range(0.25, 0.5),
+            size0: rng.range(0.08, 0.2), size1: 0.02,
+            r: c.r * (1.6 + e.quality) * brightness,
+            g: c.g * (1.6 + e.quality) * brightness,
+            b: c.b * (1.6 + e.quality) * brightness,
+          });
+        }
+      }),
       world.events.on("land", (e) => {
         // Touchdown wash: ground dust ring, sized by impact; a perfect flare
         // flashes accent, a slam churns warn-colored debris.

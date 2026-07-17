@@ -716,20 +716,26 @@ export function techniqueReport(stats: RunStats): {
   }
   if (stats.jumps > 0) {
     // Flight quality: landings resolved (perfect > clean > hard), sweetened
-    // by airborne grazes — dead airtime is the thing to coach away.
+    // by airborne grazes and apex-timed double jumps — dead airtime is the
+    // thing to coach away.
     const landings = Math.max(1, stats.perfectLandings + stats.hardLandings +
       (stats.jumps - stats.perfectLandings - stats.hardLandings));
+    const jumpQuality = stats.airJumps > 0 ? stats.airJumpQualitySum / stats.airJumps : 0;
     const flight = Math.min(
       1,
       (stats.perfectLandings + (landings - stats.perfectLandings - stats.hardLandings) * 0.45) /
         landings +
-        Math.min(0.25, stats.airGrazes * 0.05),
+        Math.min(0.25, stats.airGrazes * 0.05) +
+        Math.min(0.15, stats.airJumps * 0.05) * jumpQuality,
     );
     metrics.push({
       label: "FLIGHT",
-      value: `${stats.perfectLandings}/${stats.jumps}${stats.airGrazes > 0 ? ` · A${stats.airGrazes}` : ""}`,
+      value: `${stats.perfectLandings}/${stats.jumps}` +
+        `${stats.airJumps > 0 ? ` · J${stats.airJumps}` : ""}` +
+        `${stats.airGrazes > 0 ? ` · A${stats.airGrazes}` : ""}`,
       score: flight,
-      advice: "Dive with boost to place the reticle, then flick opposite just before touchdown.",
+      advice:
+        "Tap boost at the arc's peak to double jump; hold it to dive, then flick opposite just before touchdown.",
     });
   }
   if (stats.routeChoices.length > 0) {

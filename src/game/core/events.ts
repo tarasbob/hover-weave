@@ -114,6 +114,16 @@ export type GameEvents = {
   beamFire: { x: number; s: number };
   /** The craft left a skyhook ramp lip (fun-frontier 6.1). */
   launch: { x: number; s: number; vy: number; boosted: boolean };
+  /** A mid-air double jump fired (fun-frontier 6.2). */
+  airJump: {
+    x: number;
+    s: number;
+    y: number;
+    /** Post-impulse upward velocity (m/s). */
+    vy: number;
+    /** 0..1 timing quality — 1 exactly at the apex. */
+    quality: number;
+  };
   /** Airborne touchdown, graded by impact velocity and flare quality. */
   land: {
     x: number;

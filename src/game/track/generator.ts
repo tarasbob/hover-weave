@@ -14,7 +14,7 @@ import type {
 import { biomeIndexAt } from "./biomes";
 import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
 import { SETPIECES } from "./setpieces";
-import { SKY_NORMAL } from "./skyhooks";
+import { SKY_PATTERNS } from "./skyhooks";
 import { mutatePattern, resonatePattern } from "./mutators";
 import type { TrialDef } from "./trials";
 import {
@@ -77,8 +77,13 @@ export interface GeneratorEmit {
   chunk(chunk: GeneratedChunk): void;
 }
 
-/** Rotating everyday pool: classic normals plus the teaching skyhook. */
-const GROUND_NORMALS: PatternDef[] = [...NORMAL_PATTERNS, ...SKY_NORMAL];
+/**
+ * Skyhook ids, for the sky cadence guarantee (fun-frontier 6.2). Sky normals
+ * spawn *only* through the cadence (sky setpieces also rotate with the
+ * set-piece cadence): presence is guaranteed by the metronome, so the
+ * classic ground rotation keeps its exact competitive composition.
+ */
+const SKY_IDS = new Set(SKY_PATTERNS.map((p) => p.id));
 
 /**
  * Streams patterns ahead of the craft. Every chunk — including all random
@@ -100,6 +105,7 @@ export class TrackGenerator {
   private exitLanes: Uint8Array;
   private sinceSetpiece = 0;
   private sinceField = 0;
+  private sinceSky = 0;
   private forceBreather = true;
   private recoveryDue = false;
   private peakStreak = 0;
@@ -108,6 +114,8 @@ export class TrackGenerator {
   private shieldCooldown = 900;
   private nextSetpieceAt: number;
   private nextFieldAt: number;
+  /** Sky cadence guarantee: jumping is core, never seed luck (6.2). */
+  private nextSkyAt: number;
   /** Track distance at which each pattern was last used (novelty weighting). */
   private lastUsedAt = new Map<string, number>();
   readonly debug: boolean;
@@ -128,6 +136,12 @@ export class TrackGenerator {
     this.exitLanes = openLanes();
     this.nextSetpieceAt = rng.range(620, 900);
     this.nextFieldAt = rng.range(240, 440) * heat.fieldCadenceScale;
+    // Low first draw: the wedge must land inside the first-flight jump
+    // lesson window (600–1400 m) even after the gentle sub-500 m opening.
+    // Trials never draw (nor fire) the sky cadence: their fixed-seed rng
+    // streams — and with them every baked medal and reference distance —
+    // stay byte-identical to the pre-skyhook bake.
+    this.nextSkyAt = trial ? Infinity : rng.range(420, 560);
   }
 
   fill(target: number, emit: GeneratorEmit): void {
@@ -268,6 +282,14 @@ export class TrackGenerator {
     } else {
       this.sinceField += span;
     }
+    if (SKY_IDS.has(usedPattern.id)) {
+      this.sinceSky = 0;
+      // A wedge every ~8–14 s of play: ever-present, but never so dense
+      // that the ground disciplines starve (the mix survey guards this).
+      this.nextSkyAt = this.rng.range(650, 1100) * lerp(1, 0.9, difficulty);
+    } else {
+      this.sinceSky += span;
+    }
     this.lastPatternId = usedPattern.id;
     this.lastUsedAt.set(usedPattern.id, s0);
     const usedIntensity = patternIntensity(usedPattern);
@@ -332,7 +354,7 @@ export class TrackGenerator {
     // A short low-intensity weave follows stacked peaks. Late recovery keeps
     // the player steering instead of dropping into a long empty breather.
     if (this.recoveryDue) {
-      const recovery = GROUND_NORMALS.filter(
+      const recovery = NORMAL_PATTERNS.filter(
         (p) => eligible(p) && patternIntensity(p) <= 2,
       );
       if (recovery.length > 0) {
@@ -342,20 +364,19 @@ export class TrackGenerator {
       return BREATHER;
     }
 
-    // Cadence guarantees: set-pieces trump, then overdue field sections.
+    // Cadence guarantees: set-pieces trump, then overdue skyhooks (jumping
+    // is a core verb, never seed luck), then overdue field sections. Each
+    // due-but-ineligible cadence falls through to the next (an early stuck
+    // "setpiece due" must not shadow the sky guarantee for a kilometre).
     const setpieceDue = this.sinceSetpiece > this.nextSetpieceAt;
+    const skyDue = this.sinceSky > this.nextSkyAt;
     const fieldDue = this.sinceField > this.nextFieldAt;
-    let pool: PatternDef[];
-    if (setpieceDue) {
-      pool = SETPIECES.filter(eligible);
-      if (pool.length === 0) {
-        pool = [...GROUND_NORMALS, ...FIELD_PATTERNS].filter(eligible);
-      }
-    } else if (fieldDue) {
-      pool = FIELD_PATTERNS.filter(eligible);
-      if (pool.length === 0) pool = [...GROUND_NORMALS, ...FIELD_PATTERNS].filter(eligible);
-    } else {
-      pool = [...GROUND_NORMALS, ...FIELD_PATTERNS].filter(eligible);
+    let pool: PatternDef[] = [];
+    if (setpieceDue) pool = SETPIECES.filter(eligible);
+    if (pool.length === 0 && skyDue) pool = SKY_PATTERNS.filter(eligible);
+    if (pool.length === 0 && fieldDue) pool = FIELD_PATTERNS.filter(eligible);
+    if (pool.length === 0) {
+      pool = [...NORMAL_PATTERNS, ...FIELD_PATTERNS].filter(eligible);
     }
     if (pool.length === 0) return BREATHER;
 

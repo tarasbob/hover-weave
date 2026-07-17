@@ -105,7 +105,8 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 6.1 | **Skyhook ramps** — authored wedges loft the craft into ballistic flight on the same two buttons + boost: approach speed sets the launch (vy = slope × speed, capped), lateral carry jumps diagonally, air steering is thin (×0.25 authority), holding boost dives (altitude → forward speed, reticle-steered), and one committed flick inside 140 ms of touchdown flares the landing — perfect flares keep the dive speed as a decaying rush and pay flow/score/energy (RESONANT ×1.25 on the beat). Un-dived arcs land clean by construction (`SOFT_VY` exceeds the capped launch falling the tallest authored lip, √(VY_MAX² + 2·G·lip) — gentest bounds every wedge); unflared dives land hard (−10% speed, 0.35 s numb). PWM chatter voids the flare, so cadence macros can't farm landings. | done | Mainline under `REPLAY_VERSION` 5. Every jump is optional: decks block their own lanes, so the lane DP still proves a pure ground line, and a structural gate (gentest + probe crossings in simtest) proves the landing tube clear at worst-case (full-boost, floaty) flight for every wedge, every mutation, every depth. Mutators skip sky layouts (they carry `routes`); the drama director keeps meteors out of flight windows. Air rings/arc shards make airtime scoring-alive (`airGrazes`); the FLIGHT technique metric + a one-shot HUD callout teach the verb set. New sim state (`y`/`vy`/airborne) is geometry-conditional: no wedge ⇒ bit-identical grounded physics (enforced by an exact-hover identity gate). Sky patterns retire above 160 m/s ambient (`maxSpeed`) — a looped-wedge trial diluted into an endless safe corridor (bots rode it past 300,000 km), so there is deliberately no skyhook trial. |
-| 6.2 | **Wedge choreography** — beat-locked lip arrivals (launch ritual synergy), moving air furniture, biome-specific deck circuits. | todo | Layer on 6.1 once human playtesting settles the feel numbers (`__ramp` tuner). |
+| 6.2 | **The double jump + ramps everywhere** — jumping graduates from set-piece garnish to a core verb. A boost **tap** that begins and ends airborne within 140 ms fires one upward impulse per flight (UT-style), priced at 20 energy and continuous in timing quality: full `JUMP_VY` exactly at the apex, decaying to a 55% floor — tap, *beat*, tap is the skill. Same button as the dive (tap = jump, hold = dive), so the input surface is untouched. The generator now **guarantees** wedges: first lip inside the first-flight jump-lesson window (~500–900 m), then one sky pattern every ~650–1100 m at every depth (gentest cadence gate) — never seed luck. New `kickerLine` pattern chains two low wedges with a **double-jump crown** (non-magnetic apex shard, 1.6× risk payout); `skyGateRun` gains a third ring on the apex-jump arc; `canyonVault` a crown over the field. **Overflight credit**: an airborne craft samples danger in the ground band, so vaulting dense geometry keeps the engaged score stream (up to ×1.8) alive — flying over the thickest line pays like threading it. `SOFT_VY` raised to 19 so a jumped-but-un-dived arc still lands clean by construction (bound: √(JUMP_VY² + 2·G·(lip + VY_MAX²/2G)) per wedge); PERFECT decoupled onto `PERFECT_MIN_IMPACT` so flared full arcs and dives both grade perfect while feather-falls stay clean. | done | Mainline under `REPLAY_VERSION` 6. Sky patterns spawn *only* via the cadence metronome (sky set-pieces also rotate with the set-piece cadence), so the classic ground rotation keeps its exact competitive mix. Trials never draw the sky cadence — their fixed-seed rng streams, medals, and references stay byte-identical. First flight teaches a fifth lesson (`jump`, 600 m → first touchdown). Simtest gates: tap fires / hold dives / lip-carried press never arms / once per flight / energy-gated / exact impulse formula / apex-vs-early quality / flight extension / grounded-tap identity / overflight engaged-vs-neutral / bit-exact replay with a double jump in the stream. Re-baked: conservative baselines, walls (greedy 1 674 m — the denser early rotation reads worse reactively; lookahead 4 810 m — the planner exploits guaranteed-open tubes; TAS 29 507 m), rating anchors. |
+| 6.3 | **Wedge choreography** — beat-locked lip arrivals (launch ritual synergy), moving air furniture, biome-specific deck circuits. | todo | Layer on 6.1/6.2 once human playtesting settles the feel numbers (`__ramp` tuner). |
 
 ## The ladder this buys (elo narrative)
 
@@ -167,8 +168,45 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 | 2026-07-16 | The flare is one committed fresh press, quality-graded by timing, voided by chatter. | Continuous quality mirrors Carve pump grading; the CHATTER_GAP void keeps sub-tick PWM cadence (a legitimate steering technique) from accidentally farming perfect landings — anti-macro by construction, verified in simtest. |
 | 2026-07-16 | Un-dived arcs must land clean by construction: `SOFT_VY` > √(VY_MAX² + 2·GRAVITY·lip) for every authored lip (gentest-bounded). | The novice contract: a held key or empty hands over any wedge is a safe, pleasant hop. Risk enters only with the dive (boost held airborne), and the dive is exactly what the flare redeems — ambition prices itself. |
 | 2026-07-16 | No skyhook trial; sky patterns carry `maxSpeed: 160` and retire from any unbounded escalation. | A looped wedge cannot build a wall: its guaranteed-clear tube scales linearly with speed, so the trial escalation diluted into free track (calibration bots exceeded 300,000 km before the cap). Skyhooks are endless-course texture; fixed-seed rating stays on ground disciplines. |
+| 2026-07-16 | The double jump maps to a mid-air boost **tap** (release inside 140 ms), not a new button. | Every device already has the button (keyboard/touch/gamepad feed one boolean), the recorded stream already carries it, and tap-vs-hold is response depth on an existing verb — the v2 thesis. A dedicated jump key would break touch (steer taps are sub-tick steering technique) and the two-buttons-plus-boost identity. |
+| 2026-07-16 | Jump timing quality is continuous (full impulse exactly at the apex, 55% floor), and the impulse *sets* vy rather than adding. | Setting vy makes jumping out of a committed dive expensive (the dive's downward speed is forfeit, quality-clamped to the floor) instead of a free escape, and the apex peak recreates the UT double-jump rhythm as a learnable timing skill with unbounded refinement. |
+| 2026-07-16 | Sky patterns spawn only through a generator cadence guarantee (first lip ~500–900 m, then every ~650–1100 m), never through the everyday rotation. | Frequency must be a design constant, not seed luck — but adding sky entries to the shared weighted pool starved low-weight classics (`pulseWeave`, `splitDecision` vanished from the mix survey). The metronome guarantees presence while the classic rotation keeps its exact competitive composition. Trials draw `nextSkyAt = ∞`, preserving their baked rng streams. |
+| 2026-07-16 | Overflight credit: an airborne craft samples the danger economy in the ground band. | Without it, vaulting a dense field scored *neutral* (the lifted band sees nothing) while threading it paid ×1.8 — the economy punished the new verb. Sampling the ground band makes "fly over the thickest line" a real scoring read; empty overflights stay neutral, and grounded sampling is untouched. |
+| 2026-07-16 | `SOFT_VY` 16.6 → 19 (jump-inclusive clean bound) and PERFECT moves to `PERFECT_MIN_IMPACT` 14.5. | The novice contract must survive the new verb: a first-timer's apex tap with no dive lands from higher, so the clean ceiling absorbs √(JUMP_VY² + 2·G·apex). Perfect stays "a real committed descent redeemed by the flare" — now including flared full jumped arcs — while feather-fall flares grade merely clean. |
 
 ## Progress log
+
+- **2026-07-16** — **Double jump + ramps everywhere shipped (Pillar 6.2,
+  `REPLAY_VERSION` 6).** Jumping is now a core verb, not a rare set-piece:
+  a generator cadence guarantees the first wedge inside the first-flight
+  jump-lesson window (worst first lip 771 m across the gate's seed sweep)
+  and one sky pattern every ~650–1100 m at every depth, with sky patterns
+  spawning *only* via the metronome so the classic rotation keeps its exact
+  mix (trials draw none — their baked streams/medals/references are
+  untouched). The **double jump**: a mid-air boost tap (press + release
+  airborne within 140 ms) fires one impulse per flight at 20 energy,
+  quality-continuous around the apex (sets vy to `JUMP_VY × (0.55 + 0.45q)`,
+  q = 1 − |vy|/VY_MAX) — tap-to-jump, hold-to-dive on the same button, no
+  new input. Content: `kickerLine` (two chained low wedges, everyday pool
+  via cadence) with a non-magnetic **double-jump crown** at the apex-tap
+  altitude (1.6× risk payout), a third `skyGateRun` ring on the jump arc, a
+  `canyonVault` crown. **Overflight credit** samples danger in the ground
+  band while airborne, so vaulting dense geometry holds the engaged score
+  stream. Landing algebra: `SOFT_VY` 19 (jumped un-dived arcs clean by
+  construction, gentest-bounded per wedge), PERFECT gated on
+  `PERFECT_MIN_IMPACT` 14.5 (flared dives *and* flared full arcs redeem;
+  feather-falls stay clean). First flight gains the `jump` lesson (600 m →
+  first touchdown, distance fallback 1400 m); the skyhook callout teaches
+  tap/hold; FX: quality-scaled chirp + pressure ring + haptics + trail
+  flash + camera kick, APEX JUMP skill moment at q ≥ 0.85; the FLIGHT
+  technique metric folds in air-jump count and quality. Envelope helpers
+  now include one full apex jump (`rampMaxAirTime`), widening every audited
+  landing tube. Re-baked in-bundle: conservative baselines, tier walls
+  (greedy 1 674 m / lookahead 4 810 m / TAS 29 507 m — separation widened to
+  ×2.87, the guaranteed-open tubes reward planning), rating anchors. New
+  gates: sky cadence (gentest), jump-inclusive clean bound, eleven
+  double-jump/overflight simtest assertions, and the flight replay probe
+  now records a double jump in its bit-exact stream. All suites green.
 
 - **2026-07-15** — Roadmap v2 created from the fun-frontier brainstorm.
   Implementation started on Tier 1.

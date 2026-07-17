@@ -10,7 +10,7 @@ import type { Medal } from "../track/trials";
 
 export type GamePhase = "boot" | "title" | "running" | "paused" | "dead";
 export type { GameMode };
-export type FlightLessonStep = "steer" | "graze" | "boost" | "rhythm";
+export type FlightLessonStep = "steer" | "graze" | "boost" | "rhythm" | "jump";
 
 export interface HudSnapshot {
   score: number;

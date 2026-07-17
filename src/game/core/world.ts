@@ -259,6 +259,10 @@ export interface RunStats {
   airGrazes: number;
   /** Longest single flight, lip to touchdown (m). */
   longestFlight: number;
+  /** Double jumps fired (fun-frontier 6.2). */
+  airJumps: number;
+  /** Sum of double-jump timing quality, for the technique sheet. */
+  airJumpQualitySum: number;
   /** Glass panes smashed through while boosting. */
   glassSmashed: number;
   /** Bumper flings survived. */
@@ -342,6 +346,11 @@ export class SimWorld {
   private airPressDir = 0;
   private airPressAge = 999;
   private airPressGap = 999;
+  /** Double jump (fun-frontier 6.2): impulses left this flight, tap tracking. */
+  private airJumpsLeft = 0;
+  private airTapArmed = false;
+  private airTapTimer = 999;
+  private prevAirBoost = false;
   /** Seconds of halved steering authority after a hard landing. */
   private numbTimer = 0;
   /** Perfect-landing rush: captured over-target speed, decaying. */
@@ -478,6 +487,7 @@ export class SimWorld {
       dashes: 0, pumps: 0, pumpQualitySum: 0, glideTime: 0, resonantPasses: 0,
       jumps: 0, airTime: 0, diveTime: 0, flares: 0,
       perfectLandings: 0, hardLandings: 0, airGrazes: 0, longestFlight: 0,
+      airJumps: 0, airJumpQualitySum: 0,
       glassSmashed: 0, bounces: 0, runEvents: 0,
       bestShardCombo: 0, bestFlowChain: 0,
       maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0, boostChargeTime: 0,
@@ -551,6 +561,10 @@ export class SimWorld {
     this.airPressDir = 0;
     this.airPressAge = 999;
     this.airPressGap = 999;
+    this.airJumpsLeft = 0;
+    this.airTapArmed = false;
+    this.airTapTimer = 999;
+    this.prevAirBoost = false;
     this.numbTimer = 0;
     this.rushTimer = 0;
     this.rushBonus = 0;
@@ -887,7 +901,9 @@ export class SimWorld {
       }
 
       // --- Skyhook vertical state (ride / launch / fly / land) ------------
-      this.stepVertical(dt, axis);
+      // The raw recorded button (not the energy-gated ignition) drives the
+      // double-jump tap: replays carry the identical stream.
+      this.stepVertical(dt, axis, input.boost);
     } else {
       this.latVel *= Math.exp(-4 * dt);
     }
@@ -1083,7 +1099,7 @@ export class SimWorld {
    * integrates until the craft meets its floor: the ground, or the surface
    * of the next wedge in a chain.
    */
-  private stepVertical(dt: number, axis: number): void {
+  private stepVertical(dt: number, axis: number, boostRaw: boolean): void {
     if (this.liveRamps === 0 && !this.airborne) return;
 
     // Flare detection: a fresh committed press while airborne arms the
@@ -1097,6 +1113,41 @@ export class SimWorld {
       }
       this.airPressDir = dir;
       this.airPressAge += dt;
+
+      // Double jump (fun-frontier 6.2): a boost press that begins AND ends
+      // in the air within TAP_WINDOW fires one upward impulse per flight.
+      // A press carried over the lip shows no airborne rising edge, so it
+      // stays a dive; holding past the window commits to the dive too.
+      if (boostRaw && !this.prevAirBoost) {
+        this.airTapArmed = true;
+        this.airTapTimer = 0;
+      }
+      if (boostRaw) {
+        this.airTapTimer += dt;
+        if (this.airTapTimer > RAMP.TAP_WINDOW) this.airTapArmed = false;
+      }
+      if (!boostRaw && this.prevAirBoost && this.airTapArmed) {
+        this.airTapArmed = false;
+        if (this.airJumpsLeft > 0 && this.energy >= RAMP.JUMP_ENERGY) {
+          this.airJumpsLeft--;
+          this.energy -= RAMP.JUMP_ENERGY;
+          // Timing quality peaks exactly at the apex (|vy| ≈ 0) — the UT
+          // rhythm. A dive-accelerated |vy| beyond VY_MAX clamps to the
+          // floor impulse: jumping out of a committed dive is expensive.
+          const quality = clamp01(1 - Math.abs(this.vy) / RAMP.VY_MAX);
+          this.vy = RAMP.JUMP_VY * (RAMP.JUMP_FLOOR + (1 - RAMP.JUMP_FLOOR) * quality);
+          this.stats.airJumps++;
+          this.stats.airJumpQualitySum += quality;
+          this.events.emit("airJump", {
+            x: this.x,
+            s: this.distance,
+            y: this.y,
+            vy: this.vy,
+            quality,
+          });
+        }
+      }
+      this.prevAirBoost = boostRaw;
     }
 
     // The floor under the craft: the ground, or the tallest ridden surface.
@@ -1140,6 +1191,12 @@ export class SimWorld {
         this.airPressDir = 0;
         this.airPressAge = 999;
         this.airPressGap = 999;
+        // One double jump per flight; a press held through the lip never
+        // arms a tap (no airborne rising edge is possible for it).
+        this.airJumpsLeft = 1;
+        this.airTapArmed = false;
+        this.airTapTimer = 999;
+        this.prevAirBoost = boostRaw;
         if (lipLaunch && this.vy >= RAMP.EVENT_MIN_VY) {
           this.stats.jumps++;
           this.events.emit("launch", {
@@ -1184,9 +1241,11 @@ export class SimWorld {
         ? clamp01(1 - this.airPressAge / RAMP.FLARE_WINDOW)
         : 0;
     const effective = impact * (1 - RAMP.FLARE_KEEP * flare);
+    // Perfect = a real committed descent (deep dive or a full jumped arc)
+    // redeemed by the flare; feather-falls flare into plain clean.
     const grade: LandingGrade =
       effective <= RAMP.SOFT_VY
-        ? flare >= RAMP.PERFECT_MIN_Q && impact > RAMP.SOFT_VY
+        ? flare >= RAMP.PERFECT_MIN_Q && impact > RAMP.PERFECT_MIN_IMPACT
           ? "perfect"
           : "clean"
         : "hard";
@@ -1891,13 +1950,18 @@ export class SimWorld {
       // Danger sample. Availability: is there anything to dodge in this
       // stretch at all? Engagement: is the craft's line actually near it?
       // Only geometry in the craft's vertical band counts — an arch crossbar
-      // overhead is scenery, not danger.
+      // overhead is scenery, not danger. Overflight credit (fun-frontier
+      // 6.2): an AIRBORNE craft samples the ground band instead, so vaulting
+      // dense geometry keeps the engaged score stream alive — choosing to
+      // fly over the thickest line pays like threading it.
       if (Math.abs(dS) < DANGER.S_WINDOW) {
         // Rings gauge danger by their tube band (hy): a grounded ring rim
         // fills the craft band exactly as before, while a skyhook air ring
         // far overhead never inflates ground availability.
         const vHalf = o.hy;
-        if (o.cy - vHalf < yHi && o.cy + vHalf > yLo) {
+        const dLo = this.airborne ? CRAFT.Y_MIN : yLo;
+        const dHi = this.airborne ? CRAFT.Y_MAX : yHi;
+        if (o.cy - vHalf < dHi && o.cy + vHalf > dLo) {
           const ws = 1 - Math.abs(dS) / DANGER.S_WINDOW;
           availDensity += ws;
           const effHx = o.kind === "ring"

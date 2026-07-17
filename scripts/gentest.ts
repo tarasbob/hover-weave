@@ -130,14 +130,16 @@ console.log("\n== skyhook envelopes: landing tubes stay clear ==");
       assert.ok(ramps.length > 0, `${p.id} authored no wedge`);
       for (const deck of ramps) {
         decks++;
-        // The novice contract: a capped launch falling this wedge's full
-        // lip height must still land under the clean ceiling.
+        // The novice contract, double-jump inclusive (fun-frontier 6.2): a
+        // capped launch off this lip, apex-jumped at full quality and left
+        // un-dived, must still land under the clean ceiling.
+        const jumpApexH = deck.hy + (RAMP.VY_MAX * RAMP.VY_MAX) / (2 * RAMP.GRAVITY);
         const worstUndivedImpact = Math.sqrt(
-          RAMP.VY_MAX * RAMP.VY_MAX + 2 * RAMP.GRAVITY * deck.hy,
+          RAMP.JUMP_VY * RAMP.JUMP_VY + 2 * RAMP.GRAVITY * jumpApexH,
         );
         assert.ok(
           worstUndivedImpact < RAMP.SOFT_VY,
-          `${p.id}: lip ${deck.hy.toFixed(1)}m makes an un-dived arc land hard ` +
+          `${p.id}: lip ${deck.hy.toFixed(1)}m makes a jumped un-dived arc land hard ` +
           `(${worstUndivedImpact.toFixed(1)} ≥ ${RAMP.SOFT_VY})`,
         );
         const lip = deck.s + deck.hs;
@@ -176,6 +178,43 @@ console.log("\n== skyhook envelopes: landing tubes stay clear ==");
     }
   }
   console.log(`skyhook envelope gate: PASS (${decks} decks, ${airRings} air rings audited)`);
+}
+
+// --- Sky cadence (fun-frontier 6.2) -----------------------------------------
+// Jumping is a core verb: the generator guarantees a wedge early (inside the
+// first-flight jump-lesson window) and keeps them coming at every depth —
+// never seed luck.
+console.log("\n== sky cadence: wedges from the first kilometre ==");
+{
+  let worstFirst = 0;
+  let worstGap = 0;
+  for (let i = 0; i < 14; i++) {
+    const seed = `sky-cadence-${i}`;
+    const gen = new TrackGenerator(createRng(seed));
+    let prevLip = 0;
+    let first = Infinity;
+    let maxGap = 0;
+    gen.fill(12000, {
+      chunk: (c) => {
+        for (const o of c.obstacles) {
+          if (o.kind !== "ramp") continue;
+          const lip = o.s + o.hs;
+          if (lip < first) first = lip;
+          if (lip - prevLip > maxGap) maxGap = lip - prevLip;
+          if (lip > prevLip) prevLip = lip;
+        }
+      },
+    });
+    maxGap = Math.max(maxGap, 12000 - prevLip);
+    assert.ok(first < 1200, `${seed}: first wedge at ${first.toFixed(0)}m (must be < 1200m)`);
+    assert.ok(maxGap < 2600, `${seed}: ${maxGap.toFixed(0)}m stretch with no wedge`);
+    worstFirst = Math.max(worstFirst, first);
+    worstGap = Math.max(worstGap, maxGap);
+  }
+  console.log(
+    `sky cadence gate: PASS (worst first wedge ${worstFirst.toFixed(0)}m, ` +
+    `worst dry stretch ${worstGap.toFixed(0)}m)`,
+  );
 }
 
 let orbitMutationCovered = false;

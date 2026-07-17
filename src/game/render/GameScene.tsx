@@ -220,6 +220,11 @@ export function GameScene() {
           } else if (g.lesson === "boost" && world.distance >= 480) {
             g.setLesson("rhythm");
           } else if (g.lesson === "rhythm" && world.distance >= 600) {
+            // The sky cadence guarantees a wedge in the 600–1400 m window.
+            g.setLesson("jump");
+          } else if (g.lesson === "jump" && world.distance >= 1400) {
+            // Distance fallback only — the usual graduation is the first
+            // touchdown (see the "land" listener in GameController).
             meta.completeOnboarding();
             g.setLesson(null);
             g.setCallout("FLIGHT SYSTEMS ONLINE", "THE OPEN TRACK IS YOURS");

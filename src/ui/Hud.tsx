@@ -372,6 +372,12 @@ function FlightLesson({ step }: { step: FlightLessonStep }) {
       title: "MOVERS FOLLOW THE BEAT",
       detail: "WATCH, LISTEN, THEN ARRIVE IN THE OPENING",
     },
+    jump: {
+      title: "RIDE THE GLOWING RAMP",
+      detail: touch
+        ? "TAP THE BOOST FINGER MID-AIR TO DOUBLE JUMP · HOLD IT TO DIVE"
+        : "TAP BOOST MID-AIR TO DOUBLE JUMP · HOLD IT TO DIVE",
+    },
   };
   const message = copy[step];
   return (

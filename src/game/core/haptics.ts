@@ -72,6 +72,11 @@ export class GamepadHaptics {
     this.pulse(0.25 + energy * 0.3, 0.6 + energy * 0.3, 90);
   }
 
+  /** Double jump (6.2): a short bright pop, crisper at apex quality. */
+  airJump(quality: number): void {
+    this.pulse(0.2 + quality * 0.25, 0.55 + quality * 0.35, 60);
+  }
+
   /** Touchdown: perfect rings light and bright, hard slams the strong motor. */
   land(grade: "clean" | "hard" | "perfect", impact: number): void {
     if (grade === "perfect") this.pulse(0.4, 0.9, 90);

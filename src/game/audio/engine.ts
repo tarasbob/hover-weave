@@ -656,6 +656,21 @@ export class AudioEngine {
   }
 
   /**
+   * Double jump (fun-frontier 6.2): a two-note upward chirp plus a punch of
+   * air — brighter and tighter the closer the tap sat to the apex.
+   */
+  airJump(quality: number): void {
+    this.oneShot(() => {
+      const now = Tone.now();
+      this.chime.triggerAttackRelease("A5", "32n", now, 0.32 + quality * 0.25);
+      this.chime.triggerAttackRelease(quality > 0.7 ? "E6" : "C6", "32n", now + 0.04, 0.3 + quality * 0.3);
+      this.whooshPanner.pan.rampTo(0, 0.02);
+      this.whooshFilter.frequency.value = 1100 + quality * 1100;
+      this.whoosh.triggerAttackRelease("16n", undefined, 0.35 + quality * 0.3);
+    });
+  }
+
+  /**
    * Skyhook launch (fun-frontier 6.1): a rising whoosh that opens with the
    * jump's energy — boosted lips get the full riser sweep.
    */

@@ -462,11 +462,30 @@ export function GameProvider({ children }: { children: ReactNode }) {
           skyhookSeen.current = true;
           useGame.getState().setCallout(
             "SKYHOOK",
-            "BOOST INTO THE LIP TO FLY FAR · HOLD BOOST TO DIVE · FLICK OPPOSITE TO LAND",
+            "TAP BOOST MID-AIR TO DOUBLE JUMP · HOLD IT TO DIVE · FLICK OPPOSITE TO LAND",
+          );
+        }
+      }),
+      world.events.on("airJump", (e) => {
+        env.triggerBoost(0.3 + e.quality * 0.3);
+        audio.airJump(e.quality);
+        haptics.airJump(e.quality);
+        if (e.quality >= 0.85) {
+          useGame.getState().setSkillMoment(
+            "APEX JUMP",
+            "FULL IMPULSE · TAPPED AT THE PEAK",
+            "perfect",
           );
         }
       }),
       world.events.on("land", (e) => {
+        const game = useGame.getState();
+        if (game.lesson === "jump") {
+          // First touchdown graduates the first flight.
+          useMeta.getState().completeOnboarding();
+          game.setLesson(null);
+          game.setCallout("FLIGHT SYSTEMS ONLINE", "THE OPEN TRACK IS YOURS");
+        }
         audio.land(e.grade, Math.min(1, e.impact / 24));
         haptics.land(e.grade, Math.min(1, e.impact / 24));
         if (e.grade === "hard") {
