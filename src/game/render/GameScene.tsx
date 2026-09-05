@@ -19,6 +19,7 @@ import { ObstacleField } from "./ObstacleField";
 import { Particles } from "./Particles";
 import { Pickups } from "./Pickups";
 import { PostFX } from "./PostFX";
+import { PerformanceMonitor } from "./PerformanceMonitor";
 import { SkyAids } from "./SkyAids";
 import { SkyDome } from "./SkyDome";
 import { Terrain } from "./Terrain";
@@ -47,7 +48,6 @@ export function GameScene() {
   const bundle = useGameBundle();
   const { world, ghost, input, env, audio, haptics, ambient } = bundle;
   const scene = useThree((s) => s.scene);
-  const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
 
   const tier = useSettings((s) => resolveTier(s));
   const quality = QUALITY_CONFIGS[tier];
@@ -55,8 +55,6 @@ export function GameScene() {
   const showGhost = useSettings((s) => s.showGhost);
 
   const hudClock = useRef(0);
-  const fpsEma = useRef(16.7);
-  const drs = useRef({ scale: 1, cooldown: 0 });
   /** Highest medal rank celebrated this run (trial medal callouts). */
   const medalRank = useRef(0);
   /** Time-kiss countdown (seconds left of dip + release). */
@@ -81,12 +79,6 @@ export function GameScene() {
     ];
     return () => offs.forEach((off) => off());
   }, [world]);
-
-  useEffect(() => {
-    drs.current = { scale: 1, cooldown: 2 };
-    env.uDrsScale.value = 1;
-    useGame.getState().setGraphics({ drsScale: 1 });
-  }, [env, tier]);
 
   // Height-aware exponential fog from env uniforms (denser near the ground,
   // thinning overhead so the sky stays crisp — but never so thin that tall
@@ -133,6 +125,15 @@ export function GameScene() {
     light.position.set(-32, 20, 28);
     return light;
   }, []);
+
+  // R3F does not dispose objects supplied through <primitive>. In particular,
+  // replacing the key light on a tier change otherwise retains its shadow
+  // targets and the renderer's shadow-node listeners.
+  useEffect(() => () => dirLight.dispose(), [dirLight]);
+  useEffect(() => () => {
+    hemisphereLight.dispose();
+    rimLight.dispose();
+  }, [hemisphereLight, rimLight]);
 
   useFrame((state, rawDt) => {
     const dt = Math.min(rawDt, 0.25);
@@ -287,35 +288,13 @@ export function GameScene() {
           ghostDelta: showGhost ? ghost.deltaTo(world.distance) : null,
         });
       }
-      // FPS + dynamic resolution.
-      fpsEma.current = fpsEma.current * 0.9 + rawDt * 1000 * 0.1;
-      g.setFps(Math.round(1000 / fpsEma.current));
-      const d = drs.current;
-      const info = renderer.info;
-      g.setGraphics({
-        dpr: renderer.getPixelRatio(),
-        drsScale: d.scale,
-        textures: info.memory.textures,
-      });
-      d.cooldown -= HUD_INTERVAL;
-      if (d.cooldown <= 0) {
-        if (fpsEma.current > 20 && d.scale > quality.minDprScale) {
-          d.scale = Math.max(quality.minDprScale, d.scale - 0.1);
-          d.cooldown = 1.5;
-          env.uDrsScale.value = d.scale;
-          g.setGraphics({ drsScale: d.scale });
-        } else if (fpsEma.current < 18 && d.scale < 1) {
-          d.scale = Math.min(1, d.scale + 0.1);
-          d.cooldown = 2.5;
-          env.uDrsScale.value = d.scale;
-          g.setGraphics({ drsScale: d.scale });
-        }
-      }
+
     }
   });
 
   return (
     <>
+      <PerformanceMonitor tier={tier} />
       <primitive object={dirLight} />
       <primitive object={dirLight.target} />
       <primitive object={hemisphereLight} />

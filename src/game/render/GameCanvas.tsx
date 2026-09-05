@@ -1,7 +1,7 @@
 "use client";
 
-import { Canvas } from "@react-three/fiber";
-import { Suspense, useSyncExternalStore } from "react";
+import { Canvas, type GLProps } from "@react-three/fiber";
+import { Suspense, useMemo, useSyncExternalStore } from "react";
 import * as THREE from "three/webgpu";
 import { useGame } from "../state/game";
 import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
@@ -29,37 +29,53 @@ export function GameCanvas() {
   // a separate imperative value inside the scene would be overwritten.
   const dpr = Math.min(pixelRatio, QUALITY_CONFIGS[tier].maxDpr) * scale;
 
+  const createRenderer = useMemo(() => {
+    const pending = new WeakMap<object, Promise<THREE.WebGPURenderer>>();
+    const factory: GLProps = (props) => {
+      // R3F can configure again while async initialization is pending. Both
+      // calls must receive the same renderer: otherwise the later instance
+      // misses the already-applied canvas resize and retains a 300×150 depth
+      // buffer. Publishing backend state only after registration also avoids
+      // a parent rerender in the middle of initialization.
+      let ready = pending.get(props.canvas);
+      if (!ready) {
+        ready = (async () => {
+          const forceWebGL = new URLSearchParams(location.search).get("gl") === "webgl";
+          const renderer = new THREE.WebGPURenderer({
+            canvas: props.canvas as HTMLCanvasElement,
+            antialias: false,
+            powerPreference: "high-performance",
+            trackTimestamp: true,
+            forceWebGL,
+          });
+          await renderer.init();
+          renderer.toneMapping = THREE.ACESFilmicToneMapping;
+          renderer.toneMappingExposure = 1.1;
+          renderer.shadowMap.enabled = true;
+          renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+          return renderer;
+        })();
+        pending.set(props.canvas, ready);
+      }
+      return ready;
+    };
+    return factory;
+  }, []);
+
   return (
     <Canvas
       className="!fixed inset-0"
       camera={{ fov: 68, near: 0.1, far: CAMERA_FAR, position: [0, 4.6, 9] }}
-      gl={async (props) => {
-        // `?gl=webgl` forces the WebGL2 backend (also what non-WebGPU
-        // browsers get automatically).
-        const forceWebGL =
-          typeof location !== "undefined" &&
-          new URLSearchParams(location.search).get("gl") === "webgl";
-        const renderer = new THREE.WebGPURenderer({
-          canvas: props.canvas as HTMLCanvasElement,
-          antialias: false,
-          powerPreference: "high-performance",
-          forceWebGL,
-        });
-        await renderer.init();
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.1;
-        renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        const backend = (renderer as unknown as { backend: { isWebGPUBackend?: boolean } }).backend;
-        useGame.getState().setWebgpu(backend.isWebGPUBackend === true);
-        return renderer;
-      }}
+      gl={createRenderer}
       frameloop="always"
       dpr={dpr}
       shadows
       flat={false}
-      onCreated={({ scene }) => {
+      onCreated={({ scene, gl }) => {
         scene.background = new THREE.Color("#030208");
+        const renderer = gl as unknown as THREE.WebGPURenderer;
+        const backend = renderer.backend as typeof renderer.backend & { isWebGPUBackend?: boolean };
+        useGame.getState().setWebgpu(backend.isWebGPUBackend === true);
       }}
     >
       <Suspense fallback={null}>

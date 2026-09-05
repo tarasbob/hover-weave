@@ -10,10 +10,16 @@ import {
 import { QUALITY_CONFIGS, type QualityTier } from "../src/game/state/settings";
 import { createHullGeometry, createWingGeometry } from "../src/game/render/craftGeometry";
 import { TrailRibbon } from "../src/game/render/TrailRibbon";
+import { GpuFrameTimer, ResolutionController, TimingWindow } from "../src/game/render/performance";
+import { createDepthOfField, disposePostResources } from "../src/game/render/disposePostResources";
+import { PerspectiveCamera, Scene, type Node, type RenderTarget } from "three/webgpu";
+import { pass, rtt } from "three/tsl";
+import { bloom } from "three/addons/tsl/display/BloomNode.js";
+import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
 
 /**
- * Static render-budget guard. Runtime GPU timings are exposed through the
- * in-game FPS overlay; this keeps preset costs monotonic and prevents premium
+ * Static render-budget guard. These costs are not GPU measurements; the
+ * in-game overlay reports those separately. This keeps preset costs monotonic and prevents premium
  * passes from accidentally leaking into lower tiers.
  */
 const tiers: QualityTier[] = [0, 1, 2];
@@ -179,4 +185,203 @@ console.log("Graphics quality budgets valid.");
     wing.dispose();
   }
   console.log("Sculpted craft geometry is correctly wound and within its triangle budget.");
+}
+
+// Frame tails must include every frame and keep bounded storage. One hitch
+// must not disappear just because it landed between HUD publication frames.
+{
+  const timings = new TimingWindow(100);
+  for (let frame = 0; frame < 100; frame++) timings.add(frame < 95 ? 10 : 40);
+  assert.deepEqual(timings.snapshot(), { samples: 100, mean: 11.5, p95: 10, p99: 40 });
+  for (let frame = 0; frame < 100; frame++) timings.add(12);
+  timings.add(NaN);
+  timings.add(-1);
+  assert.deepEqual(timings.snapshot(), { samples: 100, mean: 12, p95: 12, p99: 12 });
+  timings.clear();
+  assert.equal(timings.snapshot().samples, 0);
+}
+
+// Resolution reacts to sustained GPU pressure, recovers with headroom, and
+// never mistakes focus loss, one shader stall, or a CPU-bound frame for it.
+{
+  for (const fps of [30, 60, 144, 240]) {
+    const drs = new ResolutionController(0.75);
+    for (let frame = 0; frame < fps; frame++) drs.update(1000 / fps, 30, true);
+    assert.equal(drs.scale, 1, `startup warmup at ${fps} Hz`);
+    for (let frame = 0; frame < fps * 12; frame++) drs.update(1000 / fps, 30, true);
+    assert.equal(drs.scale, 0.75, `bounded GPU pressure at ${fps} Hz`);
+    for (let frame = 0; frame < fps * 24; frame++) drs.update(1000 / fps, 8, true);
+    assert.equal(drs.scale, 1, `recovery at ${fps} Hz`);
+  }
+  const drs = new ResolutionController(0.85);
+  for (let frame = 0; frame < 600; frame++) drs.update(1000 / 30, 8, true);
+  assert.equal(drs.scale, 1, "cheap GPU work on a 30 Hz display must stay crisp");
+  drs.update(5000, null, true);
+  drs.update(16, null, false);
+  for (let frame = 0; frame < 30; frame++) drs.update(33, null, true);
+  assert.equal(drs.scale, 1, "resume has a warmup, rather than an immediate downscale");
+  for (let frame = 0; frame < 400; frame++) drs.update(33, null, true);
+  assert.equal(drs.scale, 0.85, "unsupported GPU timers retain frame-cadence fallback");
+  console.log("Frame tails and dynamic resolution are bounded, time-based, and GPU-aware.");
+}
+
+async function testGpuSampling() {
+  let tracking = false;
+  let resolveCount = 0;
+  let complete: (ms: number | undefined) => void = () => undefined;
+  const timer = new GpuFrameTimer({
+    supported: true,
+    setTracking: (enabled) => { tracking = enabled; },
+    resolve: () => {
+      assert.equal(tracking, true, "resolve begins while timestamp tracking is enabled");
+      resolveCount++;
+      return new Promise((resolve) => { complete = resolve; });
+    },
+  });
+  timer.begin(0, true);
+  assert.equal(tracking, true);
+  timer.end();
+  assert.equal(tracking, false, "stop query allocation during asynchronous readback");
+  timer.begin(1000, true);
+  timer.end();
+  assert.equal(resolveCount, 1, "at most one readback may be in flight");
+  complete(7);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(timer.latest(1000), 7);
+  assert.equal(timer.latest(1600), null, "stale GPU timings cannot drive resolution");
+  assert.equal(timer.status, "available");
+  timer.begin(2000, false);
+  assert.equal(tracking, false, "inactive scenes do not issue timestamp queries");
+  timer.begin(2000, true);
+  assert.equal(tracking, true, "completed readbacks allow the next sample");
+  assert.equal(timer.latest(2000), null, "new queries cannot make old results fresh");
+  timer.end();
+  assert.equal(resolveCount, 2);
+  timer.resetSamples();
+  complete(10);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(timer.latest(2000), null, "tier changes reject readbacks from the old pipeline");
+  assert.equal(timer.timings.snapshot().samples, 0);
+  timer.begin(3000, true);
+  timer.end();
+  timer.dispose();
+  complete(10);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(timer.timings.snapshot().samples, 0, "unmounted monitors ignore late readbacks");
+  const unsupported = new GpuFrameTimer({
+    supported: false,
+    setTracking: () => undefined,
+    resolve: () => { throw new Error("unsupported timer must never resolve"); },
+  });
+  unsupported.begin(0, true);
+  unsupported.end();
+  assert.equal(unsupported.status, "unsupported");
+  assert.equal(unsupported.latest(0), null);
+  const failed = new GpuFrameTimer({
+    supported: true,
+    setTracking: () => undefined,
+    resolve: async () => { throw new Error("device lost"); },
+  });
+  failed.begin(0, true);
+  failed.end();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(failed.status, "unavailable");
+  assert.equal(failed.latest(0), null);
+  console.log("GPU queries are nonblocking, bounded, capability-gated, and reject stale results.");
+}
+
+void testGpuSampling().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+
+// A shared post graph has cycles (pass textures refer back to their pass).
+// Quality changes must release targets exactly once without touching scenery.
+{
+  const scene = new Scene();
+  const scenePass = pass(scene, new PerspectiveCamera());
+  const color = scenePass.getTextureNode("output");
+  const glow = bloom(color);
+  const texture = rtt(glow.add(color));
+  const output = texture.add(texture);
+  let sceneDisposals = 0;
+  let textureDisposals = 0;
+  scenePass.renderTarget.addEventListener("dispose", () => sceneDisposals++);
+  texture.renderTarget!.addEventListener("dispose", () => textureDisposals++);
+  disposePostResources(output);
+  assert.equal(sceneDisposals, 1, "shared scene target must be released once");
+  assert.equal(textureDisposals, 1, "implicit render-to-texture target must be released once");
+  console.log("Post graph cleanup releases shared offscreen targets exactly once.");
+}
+
+// DOF constructs a Gaussian blur inside a private material only when setup
+// runs. Disposing that material alone leaves both blur textures allocated.
+{
+  const scenePass = pass(new Scene(), new PerspectiveCamera());
+  const effect = dof(scenePass.getTextureNode("output"), scenePass.getViewZNode());
+  effect.setup({ getSharedContext: () => ({}) } as unknown as Parameters<typeof effect.setup>[0]);
+  const privateEffect = effect as unknown as {
+    _CoCBlurredMaterial: { colorNode: Node & { _horizontalRT: RenderTarget; _verticalRT: RenderTarget } };
+  };
+  const blur = privateEffect._CoCBlurredMaterial.colorNode;
+  assert.equal(blur.type, "GaussianBlurNode", "probe uses the installed DOF ownership path");
+  let horizontalDisposals = 0;
+  let verticalDisposals = 0;
+  blur._horizontalRT.addEventListener("dispose", () => horizontalDisposals++);
+  blur._verticalRT.addEventListener("dispose", () => verticalDisposals++);
+  disposePostResources(effect);
+  assert.equal(horizontalDisposals, 1, "DOF's private horizontal blur target must be released once");
+  assert.equal(verticalDisposals, 1, "DOF's private vertical blur target must be released once");
+  console.log("Post graph cleanup releases DOF's private Gaussian blur targets.");
+}
+
+// Three can setup the same DOF more than once, replacing its material's blur
+// node. Both generations own GPU textures even though only the latest remains
+// reachable through the material after the second setup.
+{
+  const scenePass = pass(new Scene(), new PerspectiveCamera());
+  const effect = createDepthOfField(scenePass.getTextureNode("output"), scenePass.getViewZNode());
+  const builder = { getSharedContext: () => ({}) } as unknown as Parameters<typeof effect.setup>[0];
+  const generations: Array<{ horizontal: number; vertical: number }> = [];
+  const blurs: Node[] = [];
+  for (let generation = 0; generation < 2; generation++) {
+    effect.setup(builder);
+    const blur = (effect as unknown as {
+      _CoCBlurredMaterial: { colorNode: Node & { _horizontalRT: RenderTarget; _verticalRT: RenderTarget } };
+    })._CoCBlurredMaterial.colorNode;
+    blurs.push(blur);
+    const disposals = { horizontal: 0, vertical: 0 };
+    generations.push(disposals);
+    blur._horizontalRT.addEventListener("dispose", () => disposals.horizontal++);
+    blur._verticalRT.addEventListener("dispose", () => disposals.vertical++);
+  }
+  assert.notEqual(blurs[0], blurs[1], "installed DOF setup replaces its private blur node");
+  disposePostResources(effect);
+  assert.deepEqual(generations, [{ horizontal: 1, vertical: 1 }, { horizontal: 1, vertical: 1 }],
+    "each setup's blur targets must be released once, including the overwritten generation");
+
+  // React can replay an effect's cleanup and setup without replacing its
+  // memoized post graph. Ownership must register again after the first dispose.
+  const reusedDisposals: Array<{ horizontal: number; vertical: number }> = [];
+  for (let generation = 0; generation < 2; generation++) {
+    effect.setup(builder);
+    const blur = (effect as unknown as {
+      _CoCBlurredMaterial: { colorNode: Node & { _horizontalRT: RenderTarget; _verticalRT: RenderTarget } };
+    })._CoCBlurredMaterial.colorNode;
+    const disposals = { horizontal: 0, vertical: 0 };
+    reusedDisposals.push(disposals);
+    blur._horizontalRT.addEventListener("dispose", () => disposals.horizontal++);
+    blur._verticalRT.addEventListener("dispose", () => disposals.vertical++);
+  }
+  disposePostResources(effect);
+  assert.deepEqual(reusedDisposals, [{ horizontal: 1, vertical: 1 }, { horizontal: 1, vertical: 1 }],
+    "a reused DOF graph retains every new setup generation after cleanup");
+  assert.deepEqual(generations, [{ horizontal: 2, vertical: 2 }, { horizontal: 2, vertical: 2 }],
+    "previous blur generations remain owned if a cached compiled graph reuses them");
+  disposePostResources(effect);
+  assert.deepEqual(generations, [{ horizontal: 3, vertical: 3 }, { horizontal: 3, vertical: 3 }],
+    "cleanup without another setup still reaches the original compiled blur resources once");
+  assert.deepEqual(reusedDisposals, [{ horizontal: 2, vertical: 2 }, { horizontal: 2, vertical: 2 }],
+    "each retained target is disposed once per cleanup, including cached-graph reuse");
+  console.log("Post graph cleanup retains and releases every DOF setup generation.");
 }

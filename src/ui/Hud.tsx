@@ -153,11 +153,22 @@ export function Hud() {
           </div>
         )}
         {showFps && (
-          <div className="mt-1 font-mono text-[10px] tabular-nums text-emerald-300/80">
+          <div
+            className="mt-1 font-mono text-[10px] tabular-nums text-emerald-300/80"
+            data-performance={JSON.stringify(graphics)}
+          >
             <div>{fps} FPS · DPR {graphics.dpr.toFixed(2)} · DRS {graphics.drsScale.toFixed(2)}</div>
             <div>
+              Frame {graphics.frameMs.toFixed(1)}ms · p95 {graphics.frameP95Ms.toFixed(1)} · p99 {graphics.frameP99Ms.toFixed(1)}
+            </div>
+            <div>
+              CPU {graphics.cpuMs.toFixed(2)}ms · GPU {graphics.gpuMs === null
+                ? graphics.gpuStatus
+                : `${graphics.gpuMs.toFixed(2)}ms · p95 ${graphics.gpuP95Ms?.toFixed(2)}`}
+            </div>
+            <div>
               {graphics.drawCalls} calls · {(graphics.triangles / 1000).toFixed(0)}k tris ·{" "}
-              {graphics.textures} tex · {graphics.postCpuMs.toFixed(2)}ms post
+              {graphics.textures} tex
             </div>
           </div>
         )}

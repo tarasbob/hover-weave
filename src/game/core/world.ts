@@ -2,10 +2,8 @@ import {
   BUMPER,
   CARVE,
   CRAFT,
-  DANGER,
   DASH,
   ENERGY,
-  EVENTS,
   FIXED_DT,
   FLOW,
   GLASS,
@@ -13,10 +11,8 @@ import {
   MAX_STEPS_PER_FRAME,
   onBeatAt,
   RAMP,
-  rampMaxFlight,
   RESONANCE,
   RUN,
-  SERPENT,
   SPEED,
   SPRINT_MODE,
   STEER,
@@ -25,25 +21,21 @@ import {
   TRACK,
 } from "./constants";
 import { Emitter } from "./events";
-import { NO_HEAT, normalizeHeat, resolveHeat, type HeatEffects, type HeatId } from "./heat";
-import { NO_LAB, normalizeLab, resolveLab, type LabEffects, type LabId } from "./lab";
+import { NO_HEAT, normalizeHeat, resolveHeat, type HeatEffects } from "./heat";
+import { NO_LAB, normalizeLab, resolveLab, type LabEffects } from "./lab";
 import type { InputState } from "./input";
-import { circleObbDistSq, clamp, clamp01, lerp, pistonPulse } from "./mathUtils";
+import { FixedTickActions } from "./actionInput";
+import { clamp, clamp01, lerp } from "./mathUtils";
 import type { GameMode, RunConfig } from "./modes";
 import { InputRecorder, quantizeAxis, type RunRecording } from "./replay";
-import { createRng, type Rng } from "./rng";
+import { createRng } from "./rng";
 import {
-  Motion,
   type LandingGrade,
-  type MotionType,
   type Obstacle,
-  type ObstacleKind,
   type ObstacleSpec,
   type Pickup,
-  type PatternSkill,
   type PrecisionGrade,
   type RouteChoiceSpec,
-  type RouteReward,
   type RunEventKind,
   type RunStatus,
 } from "./types";
@@ -52,133 +44,25 @@ import { Course } from "../track/course";
 import { speedAt, TrackGenerator, type GeneratedChunk } from "../track/generator";
 import { trialById, type TrialDef } from "../track/trials";
 
-// Sized for the LOOKAHEAD.MAX horizon (~2.2× the 720 m baseline peaks).
-const OBSTACLE_CAP = 2600;
-const PICKUP_CAP = 420;
+import { EntityPools } from "./simulation/entityPools";
+import { EventDirector } from "./simulation/eventDirector";
+import { ObstacleSystem } from "./simulation/obstacleSystem";
+import { GRADE_MIN_INTENSITY, RunAnalysis } from "./simulation/runAnalysis";
+import {
+  emptyStats,
+  type ChunkRecord,
+  type DeathForensics,
+  type RouteChoiceResult,
+  type RunStats,
+  type TraceSample,
+} from "./simulation/runStats";
 
-export function obstacleTrailingEdge(o: Obstacle): number {
-  if (o.motion === Motion.RotateYaw) return o.cs + Math.hypot(o.hx, o.hs);
-  if (o.motion === Motion.OrbitXZ) {
-    return o.s + Math.abs(o.m0) + Math.max(o.hx, o.hs);
-  }
-  const extent = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
-  return o.cs + extent;
-}
-
-export interface DeathCause {
-  patternId: string;
-  obstacleKind: ObstacleKind;
-  motion: MotionType;
-}
-
-// --- Section grades (roadmap 3.4) ------------------------------------------
-
-export type SectionGrade = "S" | "A" | "B" | "C";
-
-export interface SectionResult {
-  patternId: string;
-  intensity: number;
-  s0: number;
-  s1: number;
-  grade: SectionGrade;
-  /** 0..1 blended line quality (precision / flow uptime / pace). */
-  composite: number;
-  events: number;
-  flowUptime: number;
-  /** Fraction of in-chunk steps spent boosting (quest fuel, roadmap 4.5). */
-  boostUptime: number;
-  pace: number;
-}
-
-export interface SectionMetrics {
-  intensity: number;
-  /** Precision events (near misses + 2x threads) while inside the chunk. */
-  events: number;
-  /** Meters actually traversed inside the chunk. */
-  traversed: number;
-  /** Fraction of in-chunk steps spent at flow tier 1+. */
-  flowUptime: number;
-  /** Average speed inside vs. the ambient target here. */
-  avgSpeed: number;
-  baseSpeed: number;
-}
-
-/**
- * Grade a traversed chunk. Precision demand scales with the chunk's authored
- * intensity, pace pays for holding boost through it, flow uptime for keeping
- * the meter alive — an edge-hugging cruise grades C, a threaded boost line S.
- */
-export function gradeSection(m: SectionMetrics): {
-  grade: SectionGrade;
-  composite: number;
-  precision: number;
-  pace: number;
-} {
-  const eventRate = (m.events / Math.max(1, m.traversed)) * 100;
-  const precision = clamp01(eventRate / (1.1 * Math.max(1, m.intensity)));
-  const pace = clamp01((m.avgSpeed / Math.max(1, m.baseSpeed) - 0.92) / 0.5);
-  const composite = 0.45 * precision + 0.3 * m.flowUptime + 0.25 * pace;
-  const grade: SectionGrade =
-    composite >= 0.8 ? "S" : composite >= 0.55 ? "A" : composite >= 0.3 ? "B" : "C";
-  return { grade, composite, precision, pace };
-}
-
-/** Sections below this intensity are transit, not tests — never graded. */
-export const GRADE_MIN_INTENSITY = 2;
-
-// --- Forensics (roadmap 3.3) ------------------------------------------------
-
-/** 30 Hz craft trace sample (line, speed, flow, tightest clearance). */
-export interface TraceSample {
-  s: number;
-  x: number;
-  /** Craft height (HOVER_HEIGHT unless airborne) — the kill-cam jump arc. */
-  y: number;
-  speed: number;
-  flow: number;
-  /** Tightest hull clearance observed since the previous sample (99 = open). */
-  clearance: number;
-}
-
-export const TRACE_OPEN_CLEARANCE = 99;
-const TRACE_EVERY_STEPS = 4; // 120 Hz sim -> 30 Hz trace.
-const TRACE_CAP = 1024;
-
-/** Lightweight always-on record of a streamed chunk (forensics + grading). */
-export interface ChunkRecord {
-  s0: number;
-  s1: number;
-  patternId: string;
-  intensity: number;
-  skills: PatternSkill[];
-  /** Validator's solved safe line through the chunk, as [s, x] pairs. */
-  path: [number, number][];
-}
-
-export interface ForensicsObstacle {
-  kind: ObstacleKind;
-  s: number;
-  x: number;
-  hx: number;
-  hs: number;
-  yaw: number;
-  inner: number;
-}
-
-export interface DeathForensics {
-  deathS: number;
-  deathX: number;
-  deathSpeed: number;
-  /** Along-track window covered by the snapshot. */
-  s0: number;
-  s1: number;
-  /** Your flown line up to the impact. */
-  trace: TraceSample[];
-  /** Validator-solved safe line, one polyline segment per chunk. */
-  path: [number, number][][];
-  /** Obstacle envelopes (current transforms at the death step). */
-  obstacles: ForensicsObstacle[];
-}
+export { obstacleTrailingEdge } from "./simulation/obstacleSystem";
+export { gradeSection, GRADE_MIN_INTENSITY, TRACE_OPEN_CLEARANCE } from "./simulation/runAnalysis";
+export type {
+  ChunkRecord, DeathCause, DeathForensics, ForensicsObstacle, RouteChoiceResult,
+  RunStats, SectionGrade, SectionMetrics, SectionResult, TraceSample,
+} from "./simulation/runStats";
 
 export interface PrecisionReward {
   grade: PrecisionGrade;
@@ -217,86 +101,6 @@ export function precisionRewardAt(clearance: number): PrecisionReward {
 /** Continuous steering authority at a given residual thrust charge. */
 export function steeringAuthorityAt(boostCharge: number): number {
   return lerp(1, STEER.BOOST_AUTHORITY, clamp01(boostCharge));
-}
-
-export interface RouteChoiceResult {
-  decisionId: string;
-  routeId: string;
-  label: string;
-  reward: RouteReward;
-  s: number;
-}
-
-export interface RunStats {
-  score: number;
-  distance: number;
-  nearMisses: number;
-  closePasses: number;
-  razorPasses: number;
-  perfectPasses: number;
-  threads: number;
-  /** Phase dashes fired (lab 5.3 only; 0 otherwise). */
-  dashes: number;
-  /** Carve pumps + wall-kisses landed (lab "carve" only; 0 otherwise). */
-  pumps: number;
-  /** Sum of normalized pump quality, for post-run technique analysis. */
-  pumpQualitySum: number;
-  /** Seconds spent above the ordinary lateral-speed envelope. */
-  glideTime: number;
-  /** Perfects confirmed on the beat grid (mainline since fun-frontier 2.1). */
-  resonantPasses: number;
-  /** Skyhook launches ridden off a lip (fun-frontier 6.1). */
-  jumps: number;
-  /** Seconds spent airborne. */
-  airTime: number;
-  /** Seconds spent boost-diving while airborne. */
-  diveTime: number;
-  /** Flared touchdowns (any quality > 0). */
-  flares: number;
-  perfectLandings: number;
-  hardLandings: number;
-  /** Near misses confirmed while airborne. */
-  airGrazes: number;
-  /** Longest single flight, lip to touchdown (m). */
-  longestFlight: number;
-  /** Double jumps fired (fun-frontier 6.2). */
-  airJumps: number;
-  /** Sum of double-jump timing quality, for the technique sheet. */
-  airJumpQualitySum: number;
-  /** Glass panes smashed through while boosting. */
-  glassSmashed: number;
-  /** Bumper flings survived. */
-  bounces: number;
-  /** Global run events weathered (meteor barrages, golden rushes). */
-  runEvents: number;
-  shards: number;
-  bestShardCombo: number;
-  bestFlowChain: number;
-  maxFlowPoints: number;
-  maxFlowTier: number;
-  boosts: number;
-  boostTime: number;
-  /** Integral of the continuous thrust charge across the run. */
-  boostChargeTime: number;
-  /** Authored strategic branches selected during the run. */
-  routeChoices: RouteChoiceResult[];
-  obstacleDrops: number;
-  pickupDrops: number;
-  duration: number;
-  seed: string;
-  mode: GameMode;
-  /** Trial roster id (mode === "trial" only). */
-  trialId: string | null;
-  /** Canonical heat stack the run was flown under (endless only). */
-  heat: HeatId[];
-  /** Canonical lab prototype stack (endless only; non-empty = unranked run). */
-  lab: LabId[];
-  /** Null for a survived time-limited run (sprint finish). */
-  deathCause: DeathCause | null;
-  /** Per-chunk line grades in traversal order (roadmap 3.4). */
-  sections: SectionResult[];
-  /** Intensity-weighted aggregate of the graded sections (null = none graded). */
-  lineRating: SectionGrade | null;
 }
 
 /**
@@ -394,7 +198,7 @@ export class SimWorld {
   private lastForeshadowS0 = -Infinity;
   private nextForeshadowTime = 0;
 
-  stats: RunStats = this.emptyStats();
+  stats: RunStats = emptyStats();
 
   // Input recording (roadmap 3.1). The sim consumes the quantized axis, so a
   // saved recording re-simulates the run bit-exactly.
@@ -402,52 +206,38 @@ export class SimWorld {
   /** Disable for replay/ghost worlds (a replay of a replay is itself). */
   recordInputs = true;
 
-  // Always-on forensics + grading state (roadmap 3.3 / 3.4).
-  readonly chunkLog: ChunkRecord[] = [];
-  private traceRing: TraceSample[] = [];
-  private traceIdx = 0;
-  /** Envelopes of recently recycled obstacles — the kill-cam window reaches
-   *  well past DESPAWN_BEHIND, so the field behind the craft must be kept. */
-  private recentObstacles: ForensicsObstacle[] = [];
-  private stepCounter = 0;
-  /** Tightest hull clearance seen since the last trace sample. */
-  private sampleClearance = Infinity;
-  private section: {
-    s0: number;
-    s1: number;
-    patternId: string;
-    intensity: number;
-    enteredAt: number;
-    steps: number;
-    flowSteps: number;
-    boostSteps: number;
-    speedSum: number;
-    events: number;
-  } | null = null;
+  private readonly analysis = new RunAnalysis(this, (s) => this.speedCurve(s));
+  /** Bounded history of streamed chunks for paths, grading and presentation. */
+  readonly chunkLog: ChunkRecord[] = this.analysis.chunks;
 
   // Drama director (seeded, distance-triggered global events).
-  private eventRng: Rng = createRng("idle");
-  private nextEventAt = Infinity;
   activeEvent: { kind: RunEventKind; endAt: number } | null = null;
-  private meteorNextAt = 0;
 
   // Death.
   deathTimer = 0;
   deathX = 0;
   deathSpeed = 0;
 
-  // Pools.
-  readonly obstacles: Obstacle[] = [];
-  readonly pickups: Pickup[] = [];
-  private obstacleFree: number[] = [];
-  private pickupFree: number[] = [];
-  /** Live ramp wedges in the pool — 0 keeps the vertical step a no-op. */
-  private liveRamps = 0;
+  // Pools own slot allocation; presentation keeps stable array references.
+  private readonly entities = new EntityPools();
+  readonly obstacles: Obstacle[] = this.entities.obstacles;
+  readonly pickups: Pickup[] = this.entities.pickups;
+  private readonly director = new EventDirector(this, this.entities, (s) => this.speedCurve(s));
+  private readonly obstacleSystem = new ObstacleSystem(this, this.entities, this.analysis, {
+    onHit: (o) => this.onHit(o),
+    onShatter: (o) => this.onShatter(o),
+    onBounce: (o) => this.onBounce(o),
+    onPassConfirmed: (o) => this.onPassConfirmed(o),
+  });
 
   private generator: TrackGenerator | null = null;
+  private readonly chunkSink = {
+    chunk: (chunk: GeneratedChunk) => this.spawnChunk(chunk),
+  };
   private accumulator = 0;
   /** Steering hold-time carried by the unfinished fixed tick (axis × seconds). */
   private pendingAxisTime = 0;
+  private readonly tickActions = new FixedTickActions();
   /** Reused only when a tick combines samples from multiple render frames. */
   private readonly bufferedInput: InputState = {
     axis: 0, boost: false, dash: false, restart: false, pause: false,
@@ -463,56 +253,9 @@ export class SimWorld {
   debugChunks: GeneratedChunk[] = [];
   collectDebug = false;
 
-  constructor() {
-    for (let i = 0; i < OBSTACLE_CAP; i++) {
-      this.obstacles.push({
-        id: i, active: false, kind: "box",
-        s: 0, x: 0, y: 0, hx: 1, hy: 1, hs: 1, yaw: 0,
-        motion: Motion.None, m0: 0, m1: 0, m2: 0,
-        role: "primary", glow: 1, collidable: true, inner: 0,
-        cx: 0, cy: 0, cs: 0, cyaw: 0,
-        state: 0, landed: false, nearMissed: false, nearMissClearance: Infinity,
-        nearMissSide: 0,
-        patternId: "", spawnTime: 0,
-      });
-      this.obstacleFree.push(OBSTACLE_CAP - 1 - i);
-    }
-    for (let i = 0; i < PICKUP_CAP; i++) {
-      this.pickups.push({
-        id: i, active: false, type: "shard", s: 0, x: 0, y: 0,
-        seeking: false, magnetic: true, spawnTime: 0,
-      });
-      this.pickupFree.push(PICKUP_CAP - 1 - i);
-    }
-  }
-
-  private emptyStats(): RunStats {
-    return {
-      score: 0, distance: 0, nearMisses: 0, shards: 0,
-      closePasses: 0, razorPasses: 0, perfectPasses: 0, threads: 0,
-      dashes: 0, pumps: 0, pumpQualitySum: 0, glideTime: 0, resonantPasses: 0,
-      jumps: 0, airTime: 0, diveTime: 0, flares: 0,
-      perfectLandings: 0, hardLandings: 0, airGrazes: 0, longestFlight: 0,
-      airJumps: 0, airJumpQualitySum: 0,
-      glassSmashed: 0, bounces: 0, runEvents: 0,
-      bestShardCombo: 0, bestFlowChain: 0,
-      maxFlowPoints: 0, maxFlowTier: 0, boosts: 0, boostTime: 0, boostChargeTime: 0,
-      routeChoices: [],
-      obstacleDrops: 0, pickupDrops: 0, duration: 0,
-      seed: "", mode: "endless", trialId: null, heat: [], lab: [], deathCause: null,
-      sections: [], lineRating: null,
-    };
-  }
-
   /** Deactivate all live entities (used when returning to the title). */
   clearField(): void {
-    for (const o of this.obstacles) o.active = false;
-    for (const p of this.pickups) p.active = false;
-    this.liveRamps = 0;
-    this.obstacleFree.length = 0;
-    this.pickupFree.length = 0;
-    for (let i = OBSTACLE_CAP - 1; i >= 0; i--) this.obstacleFree.push(i);
-    for (let i = PICKUP_CAP - 1; i >= 0; i--) this.pickupFree.push(i);
+    this.entities.clear();
     this.routeGates.length = 0;
   }
 
@@ -545,12 +288,7 @@ export class SimWorld {
     // Trials are fixed skill tests — they stay dead straight. Everything
     // else rides the seeded winding course.
     this.course = new Course(this.trial ? null : seed);
-    this.eventRng = createRng(`${seed}|events`);
-    this.activeEvent = null;
-    this.meteorNextAt = 0;
-    this.nextEventAt = this.trial
-      ? Infinity
-      : Math.max(skipTo, EVENTS.START) + this.eventRng.range(0, EVENTS.GAP_MAX - EVENTS.GAP_MIN);
+    this.director.reset(seed, skipTo, this.trial !== null);
     this.status = "running";
     this.x = 0;
     this.latVel = 0;
@@ -607,6 +345,7 @@ export class SimWorld {
     this.deathSpeed = 0;
     this.accumulator = 0;
     this.pendingAxisTime = 0;
+    this.tickActions.reset();
     this.prevX = 0;
     this.prevDistance = 0;
     this.prevBank = 0;
@@ -614,7 +353,7 @@ export class SimWorld {
     this.lastBiomeIndex = 0;
     this.nextMythicIndex = MYTHIC_ZONES.findIndex((zone) => zone.at > skipTo);
     if (this.nextMythicIndex < 0) this.nextMythicIndex = MYTHIC_ZONES.length;
-    this.stats = this.emptyStats();
+    this.stats = emptyStats();
     this.stats.seed = seed;
     this.stats.mode = this.mode;
     this.stats.trialId = this.trialId;
@@ -622,21 +361,8 @@ export class SimWorld {
     this.stats.lab = lab;
     // Recording is only meaningful for real runs from the start line.
     this.recorder.reset(this.recordInputs && skipTo === 0);
-    this.chunkLog.length = 0;
-    this.traceRing.length = 0;
-    this.traceIdx = 0;
-    this.recentObstacles.length = 0;
-    this.stepCounter = 0;
-    this.sampleClearance = Infinity;
-    this.section = null;
-
-    for (const o of this.obstacles) o.active = false;
-    for (const p of this.pickups) p.active = false;
-    this.liveRamps = 0;
-    this.obstacleFree.length = 0;
-    this.pickupFree.length = 0;
-    for (let i = OBSTACLE_CAP - 1; i >= 0; i--) this.obstacleFree.push(i);
-    for (let i = PICKUP_CAP - 1; i >= 0; i--) this.pickupFree.push(i);
+    this.analysis.reset();
+    this.entities.clear();
     this.debugChunks.length = 0;
 
     this.generator = new TrackGenerator(
@@ -679,6 +405,7 @@ export class SimWorld {
 
     const bufferedTime = this.accumulator;
     const elapsed = Math.min(dt, 0.25) * scale;
+    const timedActions = this.tickActions.append(input.actions, elapsed);
     this.accumulator += elapsed;
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
@@ -693,13 +420,15 @@ export class SimWorld {
       // Later ticks in this frame use the current sample directly; fixed-step
       // callers (including replay and calibration pilots) remain unchanged.
       let stepInput = input;
-      if (steps === 0 && bufferedTime > 0) {
-        this.bufferedInput.axis =
-          (this.pendingAxisTime + input.axis * (FIXED_DT - bufferedTime)) / FIXED_DT;
+      if (timedActions || (steps === 0 && bufferedTime > 0)) {
+        this.bufferedInput.axis = steps === 0 && bufferedTime > 0
+          ? (this.pendingAxisTime + input.axis * (FIXED_DT - bufferedTime)) / FIXED_DT
+          : input.axis;
         this.bufferedInput.boost = input.boost;
         this.bufferedInput.dash = input.dash;
         stepInput = this.bufferedInput;
       }
+      if (timedActions) this.tickActions.sample(FIXED_DT, stepInput);
       this.step(FIXED_DT, stepInput);
       this.accumulator -= FIXED_DT;
       steps++;
@@ -712,7 +441,10 @@ export class SimWorld {
         this.accumulator = remainingWallTime * RUN.DEATH_SLOWMO;
       }
     }
-    if (steps === MAX_STEPS_PER_FRAME) this.accumulator = 0;
+    if (steps === MAX_STEPS_PER_FRAME) {
+      this.accumulator = 0;
+      this.tickActions.reset();
+    }
     // This is a single partial tick, not an input history: bounded memory
     // regardless of display rate. Once a tick ran, all remaining time belongs
     // to this frame (including the post-impact slow-motion conversion above).
@@ -948,14 +680,14 @@ export class SimWorld {
     if (alive) this.updateForeshadow();
 
     // --- Drama director (after streaming: events read the solved paths) --
-    if (alive) this.updateEvents();
+    if (alive) this.director.update();
 
     // --- Section tracking (before obstacle events, so passes confirmed
     // this step attribute to the chunk the craft is currently inside) -----
-    if (alive) this.updateSection();
+    if (alive) this.analysis.updateSection();
 
     // --- Obstacles: motion + collision + near miss ----------------------
-    this.updateObstacles(dt, alive);
+    this.obstacleSystem.update(dt, alive);
     if (alive && this.status !== "running") return;
 
     // --- Pickups ---------------------------------------------------------
@@ -1004,8 +736,7 @@ export class SimWorld {
       if (this.glide > 0) this.stats.glideTime += dt;
 
       // 30 Hz line trace for the kill-cam (roadmap 3.3).
-      this.stepCounter++;
-      if (this.stepCounter % TRACE_EVERY_STEPS === 0) this.pushTrace();
+      this.analysis.sampleStep();
 
       // Time-limited runs finish at the end of the step that crosses the
       // horizon — the step was recorded, so a replay/ghost re-simulates the
@@ -1128,7 +859,7 @@ export class SimWorld {
    * of the next wedge in a chain.
    */
   private stepVertical(dt: number, axis: number, boostRaw: boolean): void {
-    if (this.liveRamps === 0 && !this.airborne) return;
+    if (this.entities.liveRamps === 0 && !this.airborne) return;
 
     // Flare detection: a fresh committed press while airborne arms the
     // flare; its timing quality is read at touchdown. Two fresh presses
@@ -1183,7 +914,7 @@ export class SimWorld {
     let climb = 0;
     let riding = false;
     let lipS = -Infinity;
-    if (this.liveRamps > 0) {
+    if (this.entities.liveRamps > 0) {
       const d = this.distance;
       for (const o of this.obstacles) {
         if (!o.active || o.kind !== "ramp") continue;
@@ -1309,7 +1040,7 @@ export class SimWorld {
           (resonant ? RESONANCE.BONUS : 1),
       );
       this.score += scoreAward;
-      if (this.section) this.section.events++;
+      this.analysis.notePrecision();
     }
     this.events.emit("land", {
       x: this.x,
@@ -1346,99 +1077,9 @@ export class SimWorld {
     }
   }
 
-  // --- Sections + trace + forensics -----------------------------------------
-
-  /** Enter/exit chunk sections as the craft crosses them; accumulate metrics. */
-  private updateSection(): void {
-    const d = this.distance;
-    if (this.section && d > this.section.s1) this.finalizeSection();
-    if (!this.section) {
-      for (const c of this.chunkLog) {
-        if (c.s0 > d) break; // chunkLog is in track order
-        if (d >= c.s0 && d <= c.s1) {
-          this.section = {
-            s0: c.s0, s1: c.s1, patternId: c.patternId, intensity: c.intensity,
-            enteredAt: d, steps: 0, flowSteps: 0, boostSteps: 0, speedSum: 0, events: 0,
-          };
-          break;
-        }
-      }
-    }
-    const sec = this.section;
-    if (sec) {
-      sec.steps++;
-      sec.speedSum += this.speed;
-      if (this.flowPoints >= FLOW.POINTS_PER_TIER) sec.flowSteps++;
-      if (this.boosting) sec.boostSteps++;
-    }
-  }
-
-  private finalizeSection(): void {
-    const sec = this.section;
-    this.section = null;
-    if (!sec || sec.steps < 30) return; // Sub-quarter-second slivers are noise.
-    const traversed = Math.min(this.distance, sec.s1) - sec.enteredAt;
-    if (traversed < 20) return;
-    const flowUptime = sec.flowSteps / sec.steps;
-    const { grade, composite, pace } = gradeSection({
-      intensity: sec.intensity,
-      events: sec.events,
-      traversed,
-      flowUptime,
-      avgSpeed: sec.speedSum / sec.steps,
-      baseSpeed: this.speedCurve((sec.s0 + sec.s1) / 2),
-    });
-    this.stats.sections.push({
-      patternId: sec.patternId, intensity: sec.intensity,
-      s0: sec.s0, s1: sec.s1,
-      grade, composite, events: sec.events, flowUptime,
-      boostUptime: sec.boostSteps / sec.steps, pace,
-    });
-    if (sec.intensity >= GRADE_MIN_INTENSITY) {
-      this.events.emit("sectionGrade", {
-        patternId: sec.patternId, intensity: sec.intensity, grade, composite,
-      });
-    }
-  }
-
-  private computeLineRating(): SectionGrade | null {
-    const graded = this.stats.sections.filter((s) => s.intensity >= GRADE_MIN_INTENSITY);
-    if (graded.length === 0) return null;
-    let weight = 0;
-    let sum = 0;
-    for (const s of graded) {
-      weight += s.intensity;
-      sum += s.composite * s.intensity;
-    }
-    const c = sum / weight;
-    return c >= 0.8 ? "S" : c >= 0.55 ? "A" : c >= 0.3 ? "B" : "C";
-  }
-
-  private pushTrace(): void {
-    const sample: TraceSample = {
-      s: this.distance,
-      x: this.x,
-      y: this.y,
-      speed: this.speed,
-      flow: this.flowPoints,
-      clearance: Math.min(this.sampleClearance, TRACE_OPEN_CLEARANCE),
-    };
-    if (this.traceRing.length < TRACE_CAP) {
-      this.traceRing.push(sample);
-    } else {
-      this.traceRing[this.traceIdx] = sample;
-      this.traceIdx = (this.traceIdx + 1) % TRACE_CAP;
-    }
-    this.sampleClearance = Infinity;
-  }
-
   /** Trace samples in chronological order. */
   getTrace(): TraceSample[] {
-    if (this.traceRing.length < TRACE_CAP) return [...this.traceRing];
-    return [
-      ...this.traceRing.slice(this.traceIdx),
-      ...this.traceRing.slice(0, this.traceIdx),
-    ];
+    return this.analysis.getTrace();
   }
 
   /** The finished run's input recording (null while recording is disabled). */
@@ -1446,66 +1087,9 @@ export class SimWorld {
     return this.recorder.toRecording(this.config, this.stats.score, this.stats.distance);
   }
 
-  /**
-   * Snapshot everything the kill-cam needs (roadmap 3.3): your traced line,
-   * the validator's solved path, and obstacle envelopes around the impact.
-   * Call right after death — pools still hold the killing geometry.
-   *
-   * Everything is straightened into course-local coordinates (winding
-   * offset subtracted), so the top-down map's ±X_LIMIT frame stays truthful.
-   */
+  /** Course-local craft trace, solved paths and geometry around the impact. */
   buildForensics(behind = 320, ahead = 50): DeathForensics | null {
-    if (this.status !== "dead") return null;
-    const deathS = this.distance;
-    const s0 = deathS - behind;
-    const s1 = deathS + ahead;
-    const local = (s: number, x: number) => x - this.course.offsetAt(s);
-
-    const trace = this.getTrace()
-      .filter((t) => t.s >= s0)
-      .map((t) => ({ ...t, x: local(t.s, t.x) }));
-
-    const path: [number, number][][] = [];
-    for (const c of this.chunkLog) {
-      if (c.s1 < s0 || c.s0 > s1) continue;
-      const seg = c.path
-        .filter(([s]) => s >= s0 && s <= s1)
-        .map(([s, x]) => [s, local(s, x)] as [number, number]);
-      if (seg.length >= 2) path.push(seg);
-    }
-
-    let obstacles: ForensicsObstacle[] = [];
-    for (const rec of this.recentObstacles) {
-      if (rec.s >= s0 && rec.s <= s1) {
-        obstacles.push({ ...rec, x: local(rec.s, rec.x) });
-      }
-    }
-    for (const o of this.obstacles) {
-      if (!o.active || !o.collidable || o.kind === "decor" || o.kind === "ramp") continue;
-      if (o.cs < s0 || o.cs > s1) continue;
-      const vHalf = o.kind === "ring" ? o.hx : o.hy;
-      if (o.cy - vHalf > CRAFT.Y_MAX || o.cy + vHalf < CRAFT.Y_MIN) continue;
-      obstacles.push({
-        kind: o.kind, s: o.cs, x: local(o.cs, o.cx),
-        hx: o.hx, hs: o.hs, yaw: o.cyaw, inner: o.inner,
-      });
-    }
-    if (obstacles.length > 240) {
-      obstacles = obstacles
-        .sort((a, b) => Math.abs(a.s - deathS) - Math.abs(b.s - deathS))
-        .slice(0, 240);
-    }
-
-    return {
-      deathS,
-      deathX: local(deathS, this.deathX),
-      deathSpeed: this.deathSpeed,
-      s0,
-      s1,
-      trace,
-      path,
-      obstacles,
-    };
+    return this.analysis.buildForensics(behind, ahead);
   }
 
   /**
@@ -1524,147 +1108,7 @@ export class SimWorld {
   private streamAhead(): void {
     const gen = this.generator;
     if (!gen) return;
-    gen.fill(this.distance + this.genHorizon, {
-      chunk: (chunk) => this.spawnChunk(chunk),
-    });
-  }
-
-  // --- Drama director --------------------------------------------------------
-
-  /**
-   * Rare seeded global events. Rolls are distance-triggered off a dedicated
-   * rng stream, so replays and twin worlds stay bit-exact.
-   */
-  private updateEvents(): void {
-    if (this.nextEventAt === Infinity) return;
-    const d = this.distance;
-    const ev = this.activeEvent;
-    if (ev) {
-      if (ev.kind === "meteor" && d >= this.meteorNextAt) {
-        this.meteorNextAt =
-          d + this.eventRng.range(EVENTS.METEOR_SPACING_MIN, EVENTS.METEOR_SPACING_MAX);
-        this.spawnEventMeteor();
-      }
-      if (d > ev.endAt) {
-        this.activeEvent = null;
-        this.nextEventAt = d + this.eventRng.range(EVENTS.GAP_MIN, EVENTS.GAP_MAX);
-      }
-      return;
-    }
-    if (d < this.nextEventAt) return;
-    const kind: RunEventKind = this.eventRng.chance(0.55) ? "meteor" : "rush";
-    if (kind === "rush") {
-      // A rush with nothing to lay down (no solved paths ahead) is skipped —
-      // re-roll a little later instead of announcing an empty event.
-      if (!this.spawnRush()) {
-        this.nextEventAt = d + this.eventRng.range(200, 400);
-        return;
-      }
-      this.activeEvent = { kind, endAt: d + EVENTS.RUSH_LENGTH };
-    } else {
-      this.activeEvent = { kind, endAt: d + EVENTS.METEOR_LENGTH };
-      this.meteorNextAt = d;
-    }
-    this.stats.runEvents++;
-    this.events.emit("runEvent", {
-      kind,
-      name: kind === "meteor" ? "METEOR BARRAGE" : "GOLDEN RUSH",
-    });
-  }
-
-  /** X of the validator's solved safe line at s (world frame), if known. */
-  private safePathXAt(s: number): number | null {
-    for (const c of this.chunkLog) {
-      if (s < c.s0 || s > c.s1 || c.path.length === 0) continue;
-      let best: number | null = null;
-      let bestD = Infinity;
-      for (const [ps, px] of c.path) {
-        const dd = Math.abs(ps - s);
-        if (dd < bestD) {
-          bestD = dd;
-          best = px;
-        }
-      }
-      return bestD <= 6 ? best : null;
-    }
-    return null;
-  }
-
-  /**
-   * Is track position s inside a live skyhook approach/flight/landing
-   * window? Drama-director rocks must never salt a landing tube — an
-   * airborne craft has no authority to dodge a fresh drop.
-   */
-  private inRampWindow(s: number): boolean {
-    if (this.liveRamps === 0) return false;
-    for (const o of this.obstacles) {
-      if (!o.active || o.kind !== "ramp") continue;
-      const lip = o.cs + o.hs;
-      const flight = rampMaxFlight(o.hy, o.hs * 2, this.speedCurve(lip));
-      if (s > o.cs - o.hs - 20 && s < lip + flight + 10) return true;
-    }
-    return false;
-  }
-
-  /**
-   * One telegraphed meteor: lands ahead as a permanent rock, never within
-   * METEOR_PATH_CLEAR of the solved safe line (nor inside a skyhook flight
-   * window). No proven line => no rock.
-   */
-  private spawnEventMeteor(): void {
-    const s = this.distance + this.eventRng.range(EVENTS.METEOR_LEAD_MIN, EVENTS.METEOR_LEAD_MAX);
-    const safeX = this.safePathXAt(s);
-    const off = this.course.offsetAt(s);
-    // The rng draws below run unconditionally so the stream stays aligned
-    // whether or not a legal spot exists.
-    const lane = this.eventRng.range(-(TRACK.X_LIMIT - 3), TRACK.X_LIMIT - 3);
-    const w = this.eventRng.range(1.3, 2.2);
-    const hy = this.eventRng.range(2, 3.2);
-    const yaw = this.eventRng.range(0, Math.PI);
-    const drop = this.eventRng.range(0, 8);
-    const restY = this.eventRng.range(1.4, 2);
-    if (safeX === null) return;
-    if (this.inRampWindow(s)) return;
-    const x = off + lane;
-    if (Math.abs(x - safeX) < EVENTS.METEOR_PATH_CLEAR + w) return;
-    // spawnObstacle re-applies the course offset: hand it local-frame specs.
-    const lx = x - off;
-    const trigger = s - (this.speed * 1.45 + 34);
-    this.spawnObstacle(
-      {
-        kind: "crystal", x: lx, s, y: 34 + drop,
-        hx: w, hy, hs: w, yaw,
-        role: "warn", glow: 1.6,
-        motion: Motion.FallY, m0: trigger, m1: restY,
-      },
-      "meteorBarrage",
-    );
-    this.spawnObstacle(
-      {
-        kind: "box", x: lx, s, y: 0.06,
-        hx: w + 0.5, hy: 0.06, hs: w + 0.5,
-        role: "warn", glow: 2.2,
-        collidable: false, noValidate: true,
-      },
-      "meteorBarrage",
-    );
-  }
-
-  /** Golden rush: a shard river laid along the solved safe line ahead. */
-  private spawnRush(): boolean {
-    const d0 = this.distance + EVENTS.RUSH_LEAD;
-    const d1 = d0 + EVENTS.RUSH_LENGTH;
-    let laid = 0;
-    for (const c of this.chunkLog) {
-      if (c.s1 < d0 || c.s0 > d1) continue;
-      for (let i = 0; i < c.path.length; i += 2) {
-        const [s, x] = c.path[i];
-        if (s < d0 || s > d1) continue;
-        this.spawnPickupWorld("shard", s, x, 1.3, true);
-        laid++;
-      }
-    }
-    return laid >= 8;
+    gen.fill(this.distance + this.genHorizon, this.chunkSink);
   }
 
   private spawnChunk(chunk: GeneratedChunk): void {
@@ -1686,26 +1130,7 @@ export class SimWorld {
         resolved: false,
       });
     }
-    // Always-on lightweight chunk record: section grading needs the bounds
-    // and intensity, the kill-cam needs the validator's solved path — keep
-    // enough behind the craft to cover the forensics window. Paths are
-    // authored in the straight local frame; store them in world frame.
-    this.chunkLog.push({
-      s0: chunk.s0,
-      s1: chunk.s1,
-      patternId: chunk.patternId,
-      intensity: chunk.intensity,
-      skills: chunk.skills,
-      path: this.course.flat
-        ? chunk.path
-        : chunk.path.map(([s, x]) => [s, x + this.course.offsetAt(s)] as [number, number]),
-    });
-    while (
-      this.chunkLog.length > 64 ||
-      (this.chunkLog.length > 0 && this.chunkLog[0].s1 < this.distance - 380)
-    ) {
-      this.chunkLog.shift();
-    }
+    this.analysis.recordChunk(chunk);
     if (this.collectDebug && chunk.debug) {
       // Retain everything between the craft and the horizon (path-follower
       // bots and the kill-cam need chunks the craft is currently inside, not
@@ -1784,316 +1209,13 @@ export class SimWorld {
   }
 
   private spawnPickupWorld(
-    type: Pickup["type"],
-    s: number,
-    x: number,
-    y: number,
-    magnetic: boolean,
+    type: Pickup["type"], s: number, x: number, y: number, magnetic: boolean,
   ): void {
-    const idx = this.pickupFree.pop();
-    if (idx === undefined) {
-      this.stats.pickupDrops++;
-      return;
-    }
-    const pk = this.pickups[idx];
-    pk.active = true;
-    pk.type = type;
-    pk.s = s;
-    pk.x = x;
-    pk.y = y;
-    pk.seeking = false;
-    pk.magnetic = magnetic;
-    pk.spawnTime = this.time;
+    this.entities.spawnPickup(type, s, x, y, magnetic, this);
   }
 
   private spawnObstacle(spec: ObstacleSpec, patternId: string): void {
-    const idx = this.obstacleFree.pop();
-    if (idx === undefined) {
-      this.stats.obstacleDrops++;
-      return;
-    }
-    // Patterns author in the straight local frame; the winding course lands
-    // here, at spawn time (validation already happened in the local frame).
-    const courseX = this.course.offsetAt(spec.s);
-    const o = this.obstacles[idx];
-    o.active = true;
-    o.kind = spec.kind;
-    o.s = spec.s;
-    o.x = spec.x + courseX;
-    o.y = spec.y;
-    o.hx = spec.hx;
-    o.hy = spec.hy;
-    o.hs = spec.hs;
-    o.yaw = spec.yaw ?? 0;
-    o.motion = spec.motion ?? Motion.None;
-    // CloseIn's m0 is an absolute lateral target — shift it with the course.
-    o.m0 = (spec.m0 ?? 0) + (o.motion === Motion.CloseIn ? courseX : 0);
-    o.m1 = spec.m1 ?? 0;
-    o.m2 = spec.m2 ?? 0;
-    o.role = spec.role ?? "primary";
-    o.glow = spec.glow ?? 1;
-    o.collidable = spec.collidable ?? true;
-    o.inner = spec.inner ?? 0;
-    o.cx = o.x;
-    o.cy = o.y;
-    o.cs = o.s;
-    o.cyaw = o.yaw;
-    o.state = 0;
-    o.landed = false;
-    o.nearMissed = false;
-    o.nearMissClearance = Infinity;
-    o.nearMissSide = 0;
-    o.patternId = patternId;
-    o.spawnTime = this.time;
-    if (o.kind === "ramp") this.liveRamps++;
-  }
-
-  private updateObstacles(dt: number, alive: boolean): void {
-    const t = this.time;
-    const craftS = this.distance;
-    const behind = craftS - TRACK.DESPAWN_BEHIND;
-    let engageDensity = 0;
-    let availDensity = 0;
-    // Craft vertical band follows the (usually grounded) craft. `y` is set
-    // to HOVER_HEIGHT *exactly* whenever no ramp is in play, so these are
-    // bit-identical to the classic Y_MIN/Y_MAX constants on the ground.
-    const yLo =
-      this.y === CRAFT.HOVER_HEIGHT
-        ? CRAFT.Y_MIN
-        : this.y + (CRAFT.Y_MIN - CRAFT.HOVER_HEIGHT);
-    const yHi =
-      this.y === CRAFT.HOVER_HEIGHT
-        ? CRAFT.Y_MAX
-        : this.y + (CRAFT.Y_MAX - CRAFT.HOVER_HEIGHT);
-
-    for (const o of this.obstacles) {
-      if (!o.active) continue;
-
-      if (obstacleTrailingEdge(o) < behind) {
-        if (o.kind === "ramp") this.liveRamps = Math.max(0, this.liveRamps - 1);
-        // Keep the envelope around for the kill-cam: its window reaches far
-        // past the recycling line.
-        if (o.collidable && o.kind !== "decor" && o.kind !== "ramp") {
-          const vHalf = o.kind === "ring" ? o.hx : o.hy;
-          if (o.cy - vHalf < CRAFT.Y_MAX && o.cy + vHalf > CRAFT.Y_MIN) {
-            this.recentObstacles.push({
-              kind: o.kind, s: o.cs, x: o.cx,
-              hx: o.hx, hs: o.hs, yaw: o.cyaw, inner: o.inner,
-            });
-            while (
-              this.recentObstacles.length > 600 ||
-              (this.recentObstacles.length > 0 &&
-                this.recentObstacles[0].s < craftS - 380)
-            ) {
-              this.recentObstacles.shift();
-            }
-          }
-        }
-        o.active = false;
-        this.obstacleFree.push(o.id);
-        continue;
-      }
-
-      // Motion evaluation.
-      switch (o.motion) {
-        case Motion.None:
-          break;
-        case Motion.SweepX:
-          o.cx = o.x + Math.sin(t * o.m0 + o.m1) * o.m2;
-          break;
-        case Motion.Pendulum: {
-          const ang = Math.sin(t * o.m2) * o.m1;
-          o.cx = o.x + Math.sin(ang) * o.m0;
-          o.cy = o.y - Math.cos(ang) * o.m0;
-          break;
-        }
-        case Motion.FallY: {
-          if (!o.landed) {
-            if (craftS > o.m0) {
-              o.state += 88 * dt; // Fall velocity accumulates.
-              o.cy = Math.max(o.m1, o.cy - o.state * dt * 14);
-              if (o.cy <= o.m1) {
-                o.cy = o.m1;
-                o.landed = true;
-                this.events.emit("slabFall", { x: o.cx, s: o.cs });
-              }
-            }
-          }
-          break;
-        }
-        case Motion.RotateYaw:
-          o.cyaw = o.m1 + t * o.m0;
-          break;
-        case Motion.OrbitXZ: {
-          const a = o.m2 + t * o.m1;
-          o.cx = o.x + Math.cos(a) * o.m0;
-          o.cs = o.s + Math.sin(a) * o.m0;
-          break;
-        }
-        case Motion.CloseIn: {
-          const p = clamp01((craftS - o.m1) / Math.max(1, o.m2 - o.m1));
-          const e = p * p * (3 - 2 * p);
-          o.cx = lerp(o.x, o.m0, e);
-          break;
-        }
-        case Motion.Piston: {
-          const pulse = pistonPulse((t * o.m0 + o.m1));
-          o.cx = o.x + o.m2 * pulse;
-          break;
-        }
-        case Motion.Blink: {
-          const raw = t * o.m0 + o.m1;
-          const phase = raw - Math.floor(raw);
-          // Fire moment: the phase wrapped into the ON window this step.
-          if (phase < o.state && alive) {
-            const ahead = o.cs - craftS;
-            if (ahead > -6 && ahead < 70) this.events.emit("beamFire", { x: o.cx, s: o.cs });
-          }
-          o.state = phase;
-          break;
-        }
-        case Motion.Serpent: {
-          const dip = 0.5 + 0.5 * Math.sin(t * o.m0 + o.m1);
-          o.cy = o.y - o.m2 * dip;
-          o.cx = o.x + Math.sin(t * o.m0 * 0.63 + o.m1 * 1.7) * SERPENT.WOBBLE;
-          break;
-        }
-      }
-
-      // Ramps are rideable surfaces, never colliders or danger: the vertical
-      // step reads them directly. They stay `collidable` so the validator
-      // and gap-scanning bots route ground traffic around the deck.
-      if (!alive || !o.collidable || o.kind === "ramp") continue;
-      // Pulse beams only exist while their duty window is ON: no collision
-      // and no clearance credit while phased out (passes still confirm).
-      const beamOff = o.kind === "beam" && o.motion === Motion.Blink && o.state >= o.m2;
-
-      // Broad phase along track.
-      const stepLen = this.speed * dt;
-      const sExtent = o.motion === Motion.RotateYaw
-        ? Math.hypot(o.hx, o.hs)
-        : Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
-      const dS = craftS - o.cs;
-
-      // Danger sample. Availability: is there anything to dodge in this
-      // stretch at all? Engagement: is the craft's line actually near it?
-      // Only geometry in the craft's vertical band counts — an arch crossbar
-      // overhead is scenery, not danger. Overflight credit (fun-frontier
-      // 6.2): an AIRBORNE craft samples the ground band instead, so vaulting
-      // dense geometry keeps the engaged score stream alive — choosing to
-      // fly over the thickest line pays like threading it.
-      if (Math.abs(dS) < DANGER.S_WINDOW) {
-        // Rings gauge danger by their tube band (hy): a grounded ring rim
-        // fills the craft band exactly as before, while a skyhook air ring
-        // far overhead never inflates ground availability.
-        const vHalf = o.hy;
-        const dLo = this.airborne ? CRAFT.Y_MIN : yLo;
-        const dHi = this.airborne ? CRAFT.Y_MAX : yHi;
-        if (o.cy - vHalf < dHi && o.cy + vHalf > dLo) {
-          const ws = 1 - Math.abs(dS) / DANGER.S_WINDOW;
-          availDensity += ws;
-          const effHx = o.kind === "ring"
-            ? o.hx
-            : Math.abs(Math.cos(o.cyaw)) * o.hx + Math.abs(Math.sin(o.cyaw)) * o.hs;
-          const dxEdge = Math.max(0, Math.abs(o.cx - this.x) - effHx - CRAFT.RADIUS);
-          if (dxEdge < DANGER.X_REACH) {
-            engageDensity += ws * (1 - dxEdge / DANGER.X_REACH);
-          }
-        }
-      }
-
-      const withinS = Math.abs(dS) < sExtent + stepLen + CRAFT.RADIUS + 1.5;
-
-      if (withinS && !beamOff) {
-        // Vertical overlap (movers use current cy, band follows the craft).
-        const yOverlap = o.cy - o.hy < yHi && o.cy + o.hy > yLo;
-        if (yOverlap) {
-          let hit = false;
-          let clearance = Infinity;
-
-          if (o.kind === "ring") {
-            const inS = Math.abs(dS) < o.hs + stepLen * 0.5 + CRAFT.RADIUS * 0.5;
-            if (inS) {
-              const dx = this.x - o.cx;
-              const dy = this.y - o.cy;
-              const r = Math.hypot(dx, dy);
-              const innerEdge = o.inner - CRAFT.RADIUS * 0.4;
-              const outerEdge = o.hx + CRAFT.RADIUS * 0.6;
-              if (r > innerEdge && r < outerEdge) hit = true;
-              else clearance = r <= innerEdge ? innerEdge - r : r - outerEdge;
-            }
-          } else {
-            const distSq = circleObbDistSq(
-              this.x, craftS,
-              o.cx, o.cs,
-              o.hx, o.hs + stepLen * 0.5,
-              o.cyaw,
-            );
-            const rr = CRAFT.RADIUS;
-            if (distSq < rr * rr) hit = true;
-            clearance = Math.max(0, Math.sqrt(distSq) - rr);
-          }
-
-          if (hit && o.kind === "bumper") {
-            // Elastic: a boing, never a death. Per-obstacle cooldown rides
-            // in `state` so an overlapping frame can't machine-gun flings.
-            if (this.time >= o.state) this.onBounce(o);
-            continue;
-          }
-          if (hit && o.kind === "glass" && this.boostCharge >= GLASS.SMASH_CHARGE) {
-            // Boost is the key: plow through, shower of shards, keep flying.
-            this.onShatter(o);
-            continue;
-          }
-
-          // Kill-cam trace: tightest hull clearance this sample window.
-          if (hit) this.sampleClearance = 0;
-          else if (clearance < this.sampleClearance) this.sampleClearance = clearance;
-
-          if (hit) {
-            // A collision cannot also pay out as a precision pass, including
-            // contacts absorbed during shield iframes.
-            o.nearMissed = true;
-            if (this.iframes <= 0) {
-              // FallY slabs still in the air far above can't hit the craft
-              // (yOverlap already filtered), so any hit here is real.
-              this.onHit(o);
-              if (this.status !== "running") return;
-            }
-          } else if (
-            !o.nearMissed &&
-            o.motion !== Motion.FallY && // state doubles as fall velocity there
-            clearance < THREAD.CLEARANCE
-          ) {
-            // Keep the true closest approach (and its side); payout happens
-            // once fully passed. The wider THREAD band also tracks "pressed"
-            // passes that only matter as thread partners.
-            if (clearance < o.nearMissClearance) {
-              o.nearMissClearance = clearance;
-              o.nearMissSide = o.cx >= this.x ? 1 : -1;
-            }
-          }
-        }
-      }
-
-      // Pass confirmation: obstacle fully behind the craft.
-      if (
-        !o.nearMissed &&
-        o.nearMissClearance < THREAD.CLEARANCE &&
-        o.motion !== Motion.FallY && // Falling slabs feel arbitrary for near-miss credit.
-        obstacleTrailingEdge(o) < craftS - CRAFT.RADIUS
-      ) {
-        o.nearMissed = true;
-        if (alive) this.onPassConfirmed(o);
-      }
-    }
-
-    if (alive) {
-      const engagement = 1 - Math.exp(-engageDensity / DANGER.REF_ENGAGE);
-      const availability = 1 - Math.exp(-availDensity / DANGER.REF_AVAIL);
-      this.dangerFactor =
-        1 + DANGER.BONUS * engagement - DANGER.PENALTY * availability * (1 - engagement);
-    }
+    this.entities.spawnObstacle(spec, patternId, this);
   }
 
   /**
@@ -2152,7 +1274,7 @@ export class SimWorld {
     this.flowTimer = 0;
     this.stats.nearMisses++;
     if (this.airborne) this.stats.airGrazes++;
-    if (this.section) this.section.events++;
+    this.analysis.notePrecision();
 
     // Grazes fund boost — the perpetual-boost loop for elite play.
     const grazeEnergy =
@@ -2221,7 +1343,7 @@ export class SimWorld {
     this.flowTimer = 0;
     this.grantEnergy(THREAD.ENERGY);
     this.stats.threads++;
-    if (this.section) this.section.events += 2;
+    this.analysis.notePrecision(2);
     this.events.emit("thread", {
       x: o.cx,
       s: o.cs,
@@ -2234,8 +1356,7 @@ export class SimWorld {
 
   /** Boost-smashed glass: the pane dies, the craft doesn't. */
   private onShatter(o: Obstacle): void {
-    o.active = false;
-    this.obstacleFree.push(o.id);
+    this.entities.releaseObstacle(o);
     this.flowPoints += GLASS.FLOW * this.speedFlowFactor;
     this.flowTimer = 0;
     const energyAward = this.grantEnergy(GLASS.ENERGY);
@@ -2244,7 +1365,7 @@ export class SimWorld {
     );
     this.score += scoreAward;
     this.stats.glassSmashed++;
-    if (this.section) this.section.events++;
+    this.analysis.notePrecision();
     this.events.emit("shatter", {
       x: o.cx,
       y: o.cy,
@@ -2289,9 +1410,9 @@ export class SimWorld {
     this.deathTimer = 0;
     this.deathX = this.x;
     this.deathSpeed = this.speed;
-    this.pushTrace(); // The impact itself always lands in the trace.
-    this.finalizeSection(); // Partial section where the run ended still counts.
-    this.stats.lineRating = this.computeLineRating();
+    this.analysis.pushTrace(); // The impact itself always lands in the trace.
+    this.analysis.finalizeSection(); // Partial section where the run ended still counts.
+    this.stats.lineRating = this.analysis.computeLineRating();
     this.stats.score = Math.floor(this.score);
     this.stats.distance = this.distance;
     this.stats.duration = this.time;
@@ -2315,9 +1436,9 @@ export class SimWorld {
     this.deathTimer = 0;
     this.deathX = this.x;
     this.deathSpeed = this.speed;
-    this.pushTrace();
-    this.finalizeSection(); // The section in progress at the line still counts.
-    this.stats.lineRating = this.computeLineRating();
+    this.analysis.pushTrace();
+    this.analysis.finalizeSection(); // The section in progress at the line still counts.
+    this.stats.lineRating = this.analysis.computeLineRating();
     this.stats.score = Math.floor(this.score);
     this.stats.distance = this.distance;
     this.stats.duration = this.time;
@@ -2334,8 +1455,7 @@ export class SimWorld {
     for (const p of this.pickups) {
       if (!p.active) continue;
       if (p.s < behind) {
-        p.active = false;
-        this.pickupFree.push(p.id);
+        this.entities.releasePickup(p);
         continue;
       }
 
@@ -2368,8 +1488,7 @@ export class SimWorld {
 
       const cr = ENERGY.COLLECT_RADIUS;
       if (distSq < cr * cr) {
-        p.active = false;
-        this.pickupFree.push(p.id);
+        this.entities.releasePickup(p);
         if (p.type === "shard") {
           this.shardCombo = this.shardComboTimer <= ENERGY.COMBO_WINDOW
             ? Math.min(ENERGY.COMBO_CAP, this.shardCombo + 1)

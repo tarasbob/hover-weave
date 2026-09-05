@@ -25,13 +25,12 @@ import { chromaticAberration } from "three/addons/tsl/display/ChromaticAberratio
 import { film } from "three/addons/tsl/display/FilmNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
 import { smaa } from "three/addons/tsl/display/SMAANode.js";
-import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
 import { useGameBundle } from "../GameController";
 import { damp } from "../core/mathUtils";
-import { useGame } from "../state/game";
 import { useSettings } from "../state/settings";
 import type { NodeAny } from "./tsl-utils";
 import { SUN_DIRECTION } from "./visualConstants";
+import { createDepthOfField, disposePostResources } from "./disposePostResources";
 
 /**
  * WebGPU-native post chain: bloom, speed-driven chromatic aberration,
@@ -140,7 +139,7 @@ export function PostFX({
       const shaft = pow(saturate(float(1).sub(shaftDistance.mul(1.7))), 3.4)
         .mul(uShafts);
       graded = vec4(graded.rgb.add(env.uHorizon.mul(shaft).mul(0.32)), graded.a);
-      graded = dof(
+      graded = createDepthOfField(
         graded,
         scenePass.getViewZNode(),
         14,
@@ -180,21 +179,13 @@ export function PostFX({
     uVignette,
   ]);
 
-  useEffect(() => {
-    // Count the entire frame, including the scene and its offscreen passes.
-    // Automatic reset otherwise leaves only the final fullscreen triangle.
-    const autoReset = renderer.info.autoReset;
-    renderer.info.autoReset = false;
-    return () => {
-      setup.post.dispose();
-      renderer.info.autoReset = autoReset;
-    };
-  }, [renderer, setup]);
+  useEffect(() => () => {
+    disposePostResources(setup.post.outputNode);
+    setup.post.dispose();
+  }, [setup]);
 
   const caSmooth = useRef(0);
   const motionSmooth = useRef(0);
-  const postMs = useRef(0);
-  const telemetryFrame = useRef(0);
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.08);
@@ -229,19 +220,7 @@ export function PostFX({
       env.uSkyEnergy.value *
       (reduceFlash ? 0.35 : 1) * (projectedSun.z < 1 && projectedSun.z > -1 ? 1 : 0);
 
-    const started = performance.now();
-    renderer.info.reset();
     setup.post.render();
-    postMs.current = postMs.current * 0.9 + (performance.now() - started) * 0.1;
-    telemetryFrame.current++;
-    if (telemetryFrame.current >= 12) {
-      telemetryFrame.current = 0;
-      useGame.getState().setGraphics({
-        postCpuMs: postMs.current,
-        drawCalls: renderer.info.render.drawCalls,
-        triangles: Math.round(renderer.info.render.triangles),
-      });
-    }
   }, 1);
 
   return null;

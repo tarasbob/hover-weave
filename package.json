@@ -11,7 +11,9 @@
     "test:frontier": "tsx scripts/frontiertest.ts",
     "test:graphics": "tsx scripts/graphicstest.ts",
     "test:session": "tsx scripts/sessiontest.ts",
-    "test": "npm run test:game && npm run test:graphics && npm run test:session"
+    "test:world": "tsx scripts/worldtest.ts",
+    "test:browser": "npm run build && playwright test",
+    "test": "npm run test:game && npm run test:graphics && npm run test:session && npm run test:world"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",
@@ -25,6 +27,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

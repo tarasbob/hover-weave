@@ -12,6 +12,8 @@ import { useSettings, type QualityTier } from "./state/settings";
 
 export default function GameRoot() {
   const phase = useGame((s) => s.phase);
+  const mode = useGame((s) => s.mode);
+  const webgpu = useGame((s) => s.webgpu);
   const setPhase = useGame((s) => s.setPhase);
   const setAutoTier = useSettings((s) => s.setAutoTier);
 
@@ -39,7 +41,12 @@ export default function GameRoot() {
 
   return (
     <GameProvider>
-      <div className="fixed inset-0 overflow-hidden bg-[#030208] select-none">
+      <div
+        className="fixed inset-0 overflow-hidden bg-[#030208] select-none"
+        data-game-phase={phase}
+        data-game-mode={mode}
+        data-renderer-backend={webgpu === null ? "initializing" : webgpu ? "webgpu" : "webgl2"}
+      >
         {phase !== "boot" && <GameCanvas />}
         <Hud />
         <Screens />

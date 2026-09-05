@@ -2,6 +2,9 @@
 
 September 5, 2026. Findings are from this repository and its automated pilots;
 the proposed player-experience outcomes still need human playtesting.
+Updated after the engineering implementation: the simulation split, event-time
+boost/dash, rendering instrumentation and browser regression suite are complete.
+High-DPI GPU optimization and broader hardware validation remain next.
 
 ## What the game already does well
 
@@ -34,7 +37,7 @@ The key weaknesses were:
 - **Rating was easy to overinterpret.** Pilot Rating is a smoothed estimate of
   fixed-trial reference-distance performance, not a competitive Elo rating.
 
-## Implemented in this pass
+## Implemented design polish
 
 ### A more active, varied first minute
 
@@ -146,20 +149,52 @@ pairwise system may be sufficient for duels. Pick the algorithm after choosing
 the competition format and evaluating prediction quality; the algorithm alone
 does not create fair competition.
 
-## Engineering priorities after this pass
+## Engineering implementation completed
 
-- Split `world.ts` by cohesive simulation responsibilities while preserving the
-  fixed-step order and exact replay gates. Keep React outside simulation code.
-- Extend event-time input coverage to boost/dash. This pass fixes dropped
-  steering; it does not turn every button into a fully timestamped event queue.
-- Keep one owner for render resolution, and profile real GPU frame times across
-  desktop, integrated graphics, and phones. Static render budgets are not FPS
-  measurements. Avoid hiding low-tier failures behind a fast development machine.
-- Add repeatable browser smoke coverage for first launch, mode selection through
-  settings, pause/focus loss, death/retry, and both rendering backends. Retain the
-  deeper synthetic pilot, generator, replay, and session suites.
-- Introduce versioned competitive seasons before shared leaderboards. A client
-  save file and a browser-local best are not authoritative competitive results.
+- **Simulation ownership:** `SimWorld` retains the 120 Hz fixed-step order,
+  craft/reward state and public API. Typed systems now own entity pools,
+  obstacle motion/contact detection, seeded event direction and bounded run
+  analysis. Six pre-refactor fingerprints cover exact state, ordered events,
+  pools, forensics, recordings and reused-world resets. React stays outside
+  simulation code, and course streaming reuses its callback instead of
+  allocating one per physics tick.
+- **Action input:** keyboard and touch boost/dash transitions now retain event
+  timestamps through partial physics ticks, pause and focus changes. Short
+  airborne boost taps and Lab dashes are covered at 30/60/144/240 Hz; held boost
+  remains a dive. Gamepads still use browser snapshots. The existing boolean
+  replay representation and v7 playback remain compatible.
+- **Rendering reliability and measurement:** the canvas remains the sole owner
+  of renderer DPR. Bounded frame/CPU windows and asynchronous GPU queries drive
+  a controller with warmup, hysteresis and the existing clarity floors. Backend
+  initialization is shared per canvas, fixing a WebGPU depth-buffer sizing
+  race. Superseded post effects, implicit render targets, shadow maps and all
+  internally created depth-of-field blur generations are released. Per-pass
+  timestamp history is cleared after readback rather than growing forever.
+- **Production browser coverage:** ten scenarios cover first launch, mode
+  selection through settings, pause/trusted focus loss, natural death/retry,
+  both actual rendering backends and repeated quality changes. Two additional
+  higher-DPR checks pass. The tests verify native animation/input clocks and
+  reject rendering errors and unintended WebGPU fallback. The deeper pilot,
+  generator, replay, session and graphics suites remain in place.
+
+See [Engineering verification](engineering-verification.md) for the contracts,
+commands, measured results and measurement limits.
+
+## Engineering work still ahead
+
+1. Profile individual High-quality post-processing and reflection passes, then
+   reduce unnecessary GPU work while preserving the visual direction. The
+   local DPR-2 checks still measured substantial GPU cost; animation callback
+   cadence alone is not completed GPU throughput.
+2. Run sustained, repeatable routes on lower-powered graphics and actual phones,
+   including thermal behavior, dense sections and biome transitions. The local
+   Apple M4 Max checks do not complete this hardware matrix.
+3. Pair responsiveness and frame-time measurements with human playtesting before
+   the proposed expedition content pass. Automated pilots cannot certify fun
+   or accessibility for every player.
+4. Introduce versioned seasons and authoritative replay verification before
+   shared competitive leaderboards. Local saves and browser personal bests
+   remain practice records.
 
 ## What would justify calling it excellent
 
@@ -176,18 +211,30 @@ or a triple-A level of finish.
 
 ## Verification completed
 
+The design-polish checks established:
+
 - Production build and TypeScript checks; repository ESLint; whitespace checks.
 - Generator validation, fixed-trial and downstream-course fingerprints.
 - Full simulation/replay suite and the synthetic skill-frontier suite, retaining
   the existing fairness, separation, and scoring tolerances.
 - Graphics budgets, geometry orientation, and trail consistency at 30/60/144 Hz.
 - Session date/week boundaries, exact fixed-course retry, input cleanup, and
-  end-to-end short steering taps at 60/144/240 Hz.
+  end-to-end short steering taps at 60/144/240 Hz; the engineering follow-up
+  extends steering and boost/dash coverage to 30/60/144/240 Hz.
 - Browser inspection of WebGPU and forced WebGL2, low quality and accessibility
   settings, first flight, daily launch/retry, pause, the compact report, keyboard
   analysis expansion/focus wrap, and mode preservation through settings.
 - Visual layout checks at 1280×720 and 844×390. Landscape mode selection and
   launch remain visible together; longer reports and settings scroll.
+
+The engineering follow-up also passed the full headless suites, production
+build, TypeScript, ESLint, whitespace checks, six exact pre-refactor simulation
+fingerprints, ten production browser scenarios and two DPR-2 quality checks.
+On Chromium 153 / Apple M4 Max, both backends retained the same texture sequence
+through repeated quality changes: **19 → 41 → 19 → 41 → 19**. This validates
+resource cleanup without removing the High-quality effects. GPU timing was
+available on both backends, but the short opening-course samples do not
+establish cross-device performance or a universal 60 FPS guarantee.
 
 The novice-model mean survival is 931 m, reactive 2,159 m, and intermediate
 4,128 m on the existing frontier seeds. The rebaked mean score at 800 m changes

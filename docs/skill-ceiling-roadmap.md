@@ -1,11 +1,13 @@
 # Skill Ceiling Roadmap
 
-> **Complete.** This roadmap (v1) shipped in full — see the progress log.
+> **Closed out.** This roadmap (v1) completed its implementation decisions:
+> features shipped, remained LAB prototypes, or were explicitly cut.
 > Successor: [`fun-frontier.md`](./fun-frontier.md) (v2: execution depth,
 > musical readability, reference distances, and the magic layer).
 
-Tracking document for the "raise the skill ceiling" redesign. Update statuses,
-log decisions, and append to the progress log as work lands.
+Historical record of the "raise the skill ceiling" redesign. Dated decisions,
+measurements and progress entries below describe their original implementation;
+later changes are identified in the current status and successor roadmap.
 
 **North star:** easy to learn, lifetime to master. Two verbs (steer, boost).
 A player's score/distance should be limited by their skill wall, never by
@@ -14,9 +16,31 @@ with the first 2 km unchanged for new players.
 
 Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Log)
 
+## Current status — September 5, 2026
+
+The v1 foundations remain implemented. Since closeout, the successor roadmap
+promoted resonance to mainline, shipped optional authored ramps and double jumps,
+and moved Pilot Rating to fixed-seed trials normalized by reference distance.
+Surge, dash and Carve remain LAB prototypes. Historical wall numbers and replay
+versions below are dated milestones; the current replay format is **v7**.
+
+The latest engineering pass preserves that replay contract while extracting typed
+simulation systems behind `SimWorld`. Keyboard/touch boost and dash transitions
+now reach 120 Hz ticks with their event timing; short taps, holds and exact replay
+are checked at 30/60/144/240 Hz. The rendering pipeline now exposes bounded CPU/GPU
+timing and frame percentiles, uses GPU-aware dynamic resolution, and releases
+post-effect and shadow resources correctly. WebGPU initialization is also fixed.
+
+All headless checks and ten production browser scenarios passed across WebGPU
+and WebGL2, plus two DPR-2 quality checks on an Apple M4 Max. The old browser-tooling
+blocker recorded in the logs is resolved. High-quality retina GPU cost still needs
+tuning; phones, lower-end hardware, deep-course visual inspection and real-player
+skill-gap/feel acceptance remain open. See [engineering verification](./engineering-verification.md)
+for current measurements and next steps.
+
 ---
 
-## Diagnosis (why the ceiling caps today)
+## Original diagnosis (July 2026, before the v1 implementation)
 
 1. **The game stops getting harder.** `difficultyAt` (`src/game/track/generator.ts`)
    flattens by ~8 km; `speedAt` saturates at `SPEED.MAX = 90`. Past that, runs
@@ -49,15 +73,17 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 
 ## Phase 1 — Risk economy (compound existing systems)
 
-The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
-`src/game/core/world.ts` and should land together as one coherent rebalance.
+The original core patch landed as one coherent rebalance in
+`src/game/core/constants.ts` and `src/game/core/world.ts`. Obstacle danger and
+contact evaluation now live in `src/game/core/simulation/obstacleSystem.ts`;
+the world retains reward policy and fixed-step orchestration.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 1.1 | **Grazes fund boost** — perfect ≈ +4 energy, razor ≈ +1.5, refund ×~1.5 while boosting. Perpetual boost becomes the emergent elite technique. | done | Shipped as perfect +12 / razor +7 / close +1.5, refund ×1.75 while boosting, drain 34→30 (tuned against the uptime gate — the roadmap's starting values couldn't outpace drain). `ENERGY.GRAZE_*`, `ENERGY.BOOST_REFUND`, `grantEnergy` in `world.ts` |
 | 1.2 | **Speed-scaled precision rewards** — graze score/flow ×`(speed/SPEED.BASE)^1.5` or ×2 while `boostCharge > 0.8`. | done | Continuous variant chosen (see Decision Log). Score gets the full factor; flow-point gains use a damped linear factor capped ×2.5 so one graze can't spike multiple tiers. `speedRewardFactor` / `speedFlowFactor` in `world.ts` |
 | 1.3 | **Thread bonus** — grazing both sides of a gap within a short s-window pays both + multiplicative bonus. Own stat, callout, sound. | done | Pairs opposite-side passes ≤10 m apart. Accepts "pressed" passes (hull clearance < 2.6 m) so real `narrowGates`/`combTeeth` gaps thread; true double-graze needles additionally repay both awards ×1.5. `THREAD` constants, `onPassConfirmed`/`onThread`, `stats.threads`, `thread` event, HUD toast + `audio.thread()` |
-| 1.4 | **Danger-weighted scoring** — passive score rate scales with local obstacle density near the craft lane; edge-hugging pays ~nothing. | done | Reformulated as engagement vs. availability (see Decision Log): empty stretches stay neutral (×1), threading dense geometry pays up to ×1.8, dodging into an empty flank while a field rages pays down to ×0.25. `DANGER` constants, density sample in `updateObstacles` |
+| 1.4 | **Danger-weighted scoring** — passive score rate scales with local obstacle density near the craft lane; edge-hugging pays ~nothing. | done | Reformulated as engagement vs. availability (see Decision Log): empty stretches stay neutral (×1), threading dense geometry pays up to ×1.8, dodging into an empty flank while a field rages pays down to ×0.25. `DANGER` constants; density/contact sampling now lives in `simulation/obstacleSystem.ts` |
 | 1.5 | **Flow prestige** — pick one: (a) uncap `flowPoints` with superlinear decay past 28, or (b) bank a full meter into a permanent +1 run multiplier level. | done | Option (a) shipped: no cap on points; everything above 28 bleeds continuously at `DECAY_RATE × 0.028 × over²`/s, so sustained event rate sets an equilibrium (~58 pts on the synthetic gauntlet ⇒ ×15+ multiplier). Flow speed bonus capped at tier 5 (pre-uncap max) so speed stays a boost ratchet |
 | 1.6 | **Rebalance pass** — retune `FLOW`/`ENERGY` constants so novice first-session play is unchanged; verify with sim tests. | done | Conservative-bot scores drift −5.5% on average vs. pre-patch baselines (gate: ±10%), baked into `simtest.ts` as `BASELINE_800`/`BASELINE_2KM` |
 
@@ -79,7 +105,7 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 **Acceptance criteria**
 
 - [x] Every autopilot tier dies at a stable, distinct distance band (its "wall"). *(1.1 km / 2.7 km / 18.4 km medians; superhuman must die past 8 km so overdrive itself is exercised; deterministic seeds make the bands exactly reproducible)*
-- [x] No visible pop-in at 2× current max speed (manual + graphics test). *(Static invariant enforced in `graphicstest.ts`: worst-case materialize-start transmittance ≤ 1.3e-3 across 30–220 m/s at obstacle heights, plus far-plane/terrain/ocean/sky-dome ≥ LOOKAHEAD.MAX checks. In-app spot-check still pending — Cursor's embedded browser throttles rAF for hidden tabs so the render loop never ran; use `?start=25000` (dev-only skip param, added this sprint) to eyeball it in a real browser)*
+- [ ] No visible pop-in at 2× current max speed (manual + graphics test). *(Static visibility/far-field coverage is enforced in `graphicstest.ts`. Production browser rendering is now verified on both backends, but the opening-course smoke suite does not establish this deep-speed visual criterion; inspect `?start=25000` in a development build.)*
 - [x] `gentest.ts` validation rates stay healthy at high difficulty inputs. *(New 60 km chained run: fallbacks 1.3% (gate < 4%), seams 26.8 m → 14.1 m with a hard 10 m floor, generator never stalls; standalone per-pattern rates unchanged ≥ 95%)*
 
 ## Phase 3 — Make the gap visible
@@ -104,10 +130,10 @@ The core patch. Items 1.1–1.4 are mostly `src/game/core/constants.ts` +
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 4.1 | **Trials mode** — single pattern (or authored 45 s course) at escalating speed until death; Bronze/Silver/Gold/Author medals; per-trial PBs. Doubles as the practice room. | done | 10-trial roster (`src/game/track/trials.ts`), every skill tag covered. Generator loops the forced pattern on trial-owned curves: difficulty ramps pattern-floor → 1 over 1.4 km, speed climbs linearly without bound (+26 m/s per km — the wall is guaranteed), a synthetic pressure channel shrinks seams / heats mutators long before the endless 8 km overdrive. Fixed seed per trial ⇒ comparable PBs + a true spatial PB ghost (the practice room). Medals on distance, calibrated per-trial against the greedy/lookahead bot walls (`scripts/trialcal.ts`, drift-gated in simtest). `meta.trialBest`, TRIALS overlay, death-screen medal ladder + "next medal was n m further", live medal callouts, and a **DRILL** button on endless deaths whose killer pattern has a trial |
+| 4.1 | **Trials mode** — single pattern (or authored 45 s course) at escalating speed until death; Bronze/Silver/Gold/Author medals; per-trial PBs. Doubles as the practice room. | done | Original 10-trial roster; the current 11-trial roster also includes Weaver Circuit (`src/game/track/trials.ts`), with every skill tag covered. Generator loops the forced pattern on trial-owned curves: difficulty ramps pattern-floor → 1 over 1.4 km, speed climbs linearly without bound (+26 m/s per km — the wall is guaranteed), a synthetic pressure channel shrinks seams / heats mutators long before the endless 8 km overdrive. Fixed seed per trial ⇒ comparable PBs + a true spatial PB ghost (the practice room). Medals on distance, calibrated per-trial against the greedy/lookahead bot walls (`scripts/trialcal.ts`, drift-gated in simtest). `meta.trialBest`, TRIALS overlay, death-screen medal ladder + "next medal was n m further", live medal callouts, and a **DRILL** button on endless deaths whose killer pattern has a trial |
 | 4.2 | **Sprint mode** — fixed 180 s on a weekly seed, pure score attack. | done | ISO-week shared seed (`weeklySeed`, UTC). The sim finishes on the exact step that crosses 180 s of *sim* time (pause can't stretch it) — status `finished`, `finish` event, score/distance frozen at the line; the crossing step is recorded, so replays and ghosts reproduce the finish bit-exactly (gated in simtest via the superhuman pilot). `meta.sprintBest` per week, same-seed spatial ghost, HUD countdown (red pulse in the last 10 s), "TRANSMISSION COMPLETE" results screen (no kill-cam — nothing killed you) |
 | 4.3 | **Heat modifiers** — opt-in burdens (Scarce Shields, No Magnet, Dense Field, Fast Movers, Narrow Gaps, Tin Hull), multiplicative score stack. | done | All six shipped (`core/heat.ts`), endless-only, ×1.1–×1.35 each (full stack ×2.63). One resolved `HeatEffects` object feeds sim + generator + validator + mutators; every effect is the identity when unheated, so plain runs stay **bit-identical** (novice/wall baselines unmoved). Recordings carry the stack — heated ghosts/replays re-sim exactly. Pre-run HEAT panel (persisted selection, live total, "IGNITE"), HUD chip, death-screen stack line. Heat runs count for endless PBs (that's the deal) but never rate |
-| 4.4 | **Pilot Rating** — Elo-ish number from daily percentiles (offline fallback: vs. own history + autopilot baselines). | done | No backend ⇒ the offline fallback *is* the rating (`core/rating.ts`): run performance = piecewise-linear in log2(distance) through the calibrated bot-wall anchors (greedy 1 133 m → 1200, lookahead 2 686 m → 1700, superhuman 31 547 m → 3000), Elo-style pull with a provisional K (×0.3 first 12 runs, ×0.1 settled), clamped 100–3600, 7 named tiers (DRIFTER→WEAVER). Plain endless + daily runs only. Title line, hangar peak, death-screen delta |
+| 4.4 | **Pilot Rating** — Elo-ish number from daily percentiles (offline fallback: vs. own history + autopilot baselines). | done | **Current:** fixed-seed trials earn a local practice estimate against their automated reference distance (v2); this is not competitive Elo or a population percentile. **Original v1 implementation:** the offline fallback was the rating (`core/rating.ts`): run performance = piecewise-linear in log2(distance) through the calibrated bot-wall anchors (greedy 1 133 m → 1200, lookahead 2 686 m → 1700, superhuman 31 547 m → 3000), Elo-style pull with a provisional K (×0.3 first 12 runs, ×0.1 settled), clamped 100–3600, 7 named tiers (DRIFTER→WEAVER). Plain endless + daily runs only. Title line, hangar peak, death-screen delta |
 | 4.5 | **Skill-shaped quests** — rotating challenges ("3 threads in one run", "S-grade a chunk while boosting") layered on the daily seed. | done | 3/day from 10 templates (`core/quests.ts`), rolled from `cubefield-quests-<day>` — same board for everyone, all completable in one skilled run (threads, perfects, ×N multiplier, chains, shard/risk-shard play, boost economy, high-speed perfects, section grades, boosted-S — which needed the new `SectionResult.boostUptime`). Tracker in `GameController` banks completions mid-run (callout + chime); checklist on the title and the daily death screen; lifetime `questsCompleted` feeds cosmetics |
 | 4.6 | **Cosmetic rewards for mastery** — craft/trail unlocks for trials medals, heat levels, rating milestones. | done | `MetaSnapshot` gained the mastery signals (gold/author trial counts, peak rating, quests completed, sprints finished, best heat cleared ≥ 2 km). +3 crafts (Meridian: 3 sprints · Sovereign: 5 golds · Oblivion: 1 900 rating) and +4 trails (Ember: ×1.5 heat past 2 km · Quicksilver: an Author medal · Laurel: 9 quests · Meteor: 1 500 rating) on the existing diff-on-death unlock pipeline — zero new plumbing |
 
@@ -122,10 +148,10 @@ no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
 |---|------|--------|-------|
 | 5.1 | **Surge windows** — perfect pass opens ~0.6 s of free boost. Overlaps 1.1; keep whichever feels better, or surge for razors + refunds for perfects. | done | Shipped as the first LAB prototype (default off, endless only): perfects **and threads** open `SURGE.WINDOW = 0.6 s` of free boost — zero drain, ignites even on an empty meter; chaining perfects sustains it on top of 1.1's refunds. The lab flag *is* the A/B switch the roadmap asked for; the keep/fold verdict still needs human playtesting. `surge` event, HUD surge bar + chip, audio shimmer. Gated in `simtest.ts`: window pays exactly 0.6 s vs a flag-off twin, empty-meter ignition lasts exactly the window, plain runs bit-identical |
 | 5.2 | **Mouse-relative steering** — highest-ceiling input option. | cut | Analog steering is against the game's identity — steering is two buttons, full stop (user decision). The existing analog leaks were digitized to match: pointer position → left/right hold zones, gamepad stick → sign beyond a wide deadzone, d-pad added. Sim/replay surface untouched (the sim already consumes a quantized axis; old analog-valued ghosts replay exactly) |
-| 5.3 | **Phase dash** — third verb: short lateral displacement, ~2 s cooldown, energy cost, no i-frames. Validator must never assume it (tracks stay steer-solvable). | done | LAB prototype: tap S/↓ (gamepad X, third finger) with a held direction → a committed 7 m burst over 0.11 s (`DASH` constants), 25 energy (full price required), 2 s cooldown, ends as a reposition (×0.25 exit momentum), **no i-frames** — dashing into a wall kills (gated). Validator untouched by construction. Input rides recording bit 512, masked to 0 unless the flag is on, so plain recordings stay byte-identical and `REPLAY_VERSION` stays 1 (gated). HUD cooldown pip, panned zip SFX, `stats.dashes`. The trivialization risk is exactly what the unranked sandbox is for |
-| 5.4 | **Rhythm resonance** — phase-lock movers to the Tone.js transport; on-beat perfects grade "resonant". | done | LAB prototype: generator re-times every mover onto a fixed 116 BPM grid (periods snap to beat×2^k, phases to quarter cycles — `resonatePattern`), and the audio transport pins to the same BPM. Locked to *sim time*, not the live transport clock (see Decision Log). Timing-only: amplitudes/geometry/validation/rng bit-identical to the same seed unflagged (gated in gentest: 209/209 movers re-timed, 0 geometry drift). Perfects confirmed within ±70 ms of a beat grade **resonant**: ×1.25 score, "RESONANT PASS" callout, on-beat bell, `stats.resonantPasses` (probe-gated: flag matches the grid exactly, ×1.25 exact, off-beat awards unchanged) |
-| 5.5 | **Async multiplayer** — daily rival ghosts near your rating; server-verified leaderboards by re-simulation. | cut | User decision 2026-07-13: needs a backend that is not planned. The offline ladder (rating vs. calibrated walls, weekly sprint, daily course + quests) stays the comparison layer |
-| 5.6 | **Vertical layer (hops/ramps)** | cut | Dilutes the 1D purity that keeps the game readable at speed. Revisit only if all else ships. |
+| 5.3 | **Phase dash** — third verb: short lateral displacement, ~2 s cooldown, energy cost, no i-frames. Validator must never assume it (tracks stay steer-solvable). | done | LAB prototype: tap S/↓ (gamepad X, third finger) with a held direction → a committed 7 m burst over 0.11 s (`DASH` constants), 25 energy (full price required), 2 s cooldown, ends as a reposition (×0.25 exit momentum), **no i-frames** — dashing into a wall kills (gated). Validator untouched by construction. Input rides recording bit 512, masked to 0 unless the flag is on, so introducing dash preserved plain recordings and replay v1 (gated). Current replay format is v7; timestamped keyboard/touch dash taps now reach fixed ticks. HUD cooldown pip, panned zip SFX, `stats.dashes`. The trivialization risk is exactly what the unranked sandbox is for |
+| 5.4 | **Rhythm resonance** — phase-lock movers to the Tone.js transport; on-beat perfects grade "resonant". | done | **Current:** promoted to mainline in v2; no resonance LAB flag remains. **Original v1 prototype:** generator re-timed every mover onto a fixed 116 BPM grid (periods snap to beat×2^k, phases to quarter cycles — `resonatePattern`), and the audio transport pins to the same BPM. Locked to *sim time*, not the live transport clock (see Decision Log). Timing-only: amplitudes/geometry/validation/rng bit-identical to the same seed unflagged (gated in gentest: 209/209 movers re-timed, 0 geometry drift). Perfects confirmed within ±70 ms of a beat grade **resonant**: ×1.25 score, "RESONANT PASS" callout, on-beat bell, `stats.resonantPasses` (probe-gated: flag matches the grid exactly, ×1.25 exact, off-beat awards unchanged) |
+| 5.5 | **Async multiplayer** — daily rival ghosts near your rating; server-verified leaderboards by re-simulation. | cut | User decision 2026-07-13: needs a backend that is not planned. The offline ladder (now trial-reference rating, weekly sprint, daily course + quests) stays the comparison layer |
+| 5.6 | **Vertical layer (hops/ramps)** | cut in v1; superseded in v2 | The original cut protected readability at speed. Optional authored skyhook ramps and double jumps later shipped in [Fun Frontier Pillar 6](./fun-frontier.md#pillar-6--the-sky-is-track-authored-verticality), preserving a validated ground route and the same controls. |
 
 ---
 
@@ -134,7 +160,11 @@ no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
 - **Gap ratio:** p99/p50 score across sessions. Baseline ≈ ×3–5. Target ≥ ×30 by Phase 4.
 - **Floor check:** new-player time-to-death and first-2 km experience unchanged (autopilot baseline ±10%).
 - **Wall check:** each autopilot tier dies at a stable, distinct distance.
-- **Determinism:** replay re-simulation reproduces recorded stats exactly. *(Enforced in `simtest.ts` since Phase 3.)*
+- **Determinism:** replay re-simulation reproduces recorded stats exactly. *(Enforced in `simtest.ts` since Phase 3; `worldtest.ts` now also locks exact pre-refactor state, event, pool, forensics and recording fingerprints.)*
+- **Input and rendering:** `sessiontest.ts` checks event-time actions across
+  30/60/144/240 Hz; the production browser suite checks both render backends,
+  real controls and resource cleanup. Hardware/visual acceptance remains separate
+  from these functional gates.
 
 ## Decision log
 
@@ -365,3 +395,13 @@ no streaks, no lifetime tallies, never ghost-eligible. See Decision Log.
   known caveat, unchanged: full visual pass in a real browser (embedded
   browser throttles rAF), and the p99/p50 gap-ratio target still needs real
   player telemetry.
+- **2026-09-05** — **Historical roadmap reconciled with the current build.**
+  The v2 mechanics and trial-normalized rating supersede the original v1 status
+  where noted above. The design review's first four engineering priorities are
+  implemented: typed simulation composition with exact fingerprints, event-time
+  action consumption, GPU/frame measurement and resolution control, and real
+  production browser tests. Startup and render-target/shadow cleanup fixes passed
+  ten browser scenarios and two higher-DPR checks with all headless/static/build
+  checks green. Human playtesting and broader hardware acceptance are still open;
+  next performance work should reduce measured High-quality GPU cost at retina
+  resolution while preserving the visual effects.

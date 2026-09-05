@@ -1,4 +1,5 @@
 import { clamp } from "./mathUtils";
+import { ActionEventBuffer, type ActionFrame } from "./actionInput";
 
 export interface InputState {
   /** Steering axis, -1 (left) .. 1 (right). */
@@ -9,6 +10,8 @@ export interface InputState {
   /** Edge-triggered actions consumed by the game loop / UI. */
   restart: boolean;
   pause: boolean;
+  /** Live event-time actions; omitted by already sampled replay/pilot inputs. */
+  actions?: ActionFrame;
 }
 
 /**
@@ -95,7 +98,11 @@ const nowMs = (): number =>
  * fraction of the frame each direction was actually held.
  */
 export class InputManager {
-  readonly state: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
+  private actionEvents = new ActionEventBuffer();
+  readonly state: InputState = {
+    axis: 0, boost: false, dash: false, restart: false, pause: false,
+    actions: this.actionEvents.frame,
+  };
 
   private keys = new Set<string>();
   /** Active game pointers (fingers on the field), id -> last clientX. */
@@ -107,6 +114,8 @@ export class InputManager {
   private baselineGamepad = false;
   private gamepadRestartHeld = false;
   private gamepadPauseHeld = false;
+  private gamepadBoost = false;
+  private gamepadDash = false;
   /** Sub-tick integrators (keyboard and touch are separate sources). */
   private keySteer = new SubTickAxis();
   private touchSteer = new SubTickAxis();
@@ -116,18 +125,24 @@ export class InputManager {
     this.focused = true;
     this.keySteer.reset(nowMs());
     this.touchSteer.reset(nowMs());
-    const stamp = (e: Event): number => (e.timeStamp > 0 ? e.timeStamp : nowMs());
+    const stamp = (e: Event): number => {
+      const now = nowMs();
+      // Older browsers can use epoch timestamps; all buffers use performance time.
+      return e.timeStamp > 0 && Math.abs(e.timeStamp - now) < 60_000 ? e.timeStamp : now;
+    };
     const syncKeySteer = (t: number) => {
       this.keySteer.set(-1, this.keys.has("ArrowLeft") || this.keys.has("KeyA"), t);
       this.keySteer.set(1, this.keys.has("ArrowRight") || this.keys.has("KeyD"), t);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) return;
+      if (e.repeat || !this.focused) return;
       const inUi = e.target instanceof Element && e.target.closest("[data-ui]");
       const globalShortcut = e.code === "KeyR" || e.code === "Escape" || e.code === "KeyP";
       if (inUi && !globalShortcut) return;
       this.keys.add(e.code);
-      syncKeySteer(stamp(e));
+      const t = stamp(e);
+      syncKeySteer(t);
+      this.syncActions(t);
       if (e.code === "KeyR" || e.code === "Enter") this.state.restart = true;
       if (e.code === "Escape" || e.code === "KeyP") this.state.pause = true;
       if (["ArrowLeft", "ArrowRight", "Space", "ArrowUp", "ArrowDown"].includes(e.code)) {
@@ -136,7 +151,9 @@ export class InputManager {
     };
     const onKeyUp = (e: KeyboardEvent) => {
       this.keys.delete(e.code);
-      syncKeySteer(stamp(e));
+      const t = stamp(e);
+      syncKeySteer(t);
+      this.syncActions(t);
     };
     const onBlur = () => {
       this.focused = false;
@@ -146,14 +163,20 @@ export class InputManager {
       this.focused = true;
       this.baselineGamepad = true;
     };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onBlur();
+      else onFocus();
+    };
 
     this.pointerTarget = target;
     const onPointerDown = (e: PointerEvent) => {
       // Fingers on UI never enter the map, so lifting them can't cancel or
       // boost the fingers that are actually steering.
-      if (e.target instanceof Element && e.target.closest("[data-ui]")) return;
+      if (!this.focused || (e.target instanceof Element && e.target.closest("[data-ui]"))) return;
       this.pointers.set(e.pointerId, e.clientX);
-      this.syncTouchSteer(stamp(e));
+      const t = stamp(e);
+      this.syncTouchSteer(t);
+      this.syncActions(t);
     };
     const onPointerMove = (e: PointerEvent) => {
       if (this.pointers.has(e.pointerId)) {
@@ -162,13 +185,18 @@ export class InputManager {
       }
     };
     const onPointerUp = (e: PointerEvent) => {
-      if (this.pointers.delete(e.pointerId)) this.syncTouchSteer(stamp(e));
+      if (this.pointers.delete(e.pointerId)) {
+        const t = stamp(e);
+        this.syncTouchSteer(t);
+        this.syncActions(t);
+      }
     };
 
     window.addEventListener("keydown", onKeyDown, { passive: false });
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     window.addEventListener("focus", onFocus);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
     target.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
@@ -179,6 +207,7 @@ export class InputManager {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("focus", onFocus);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
       target.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
@@ -201,14 +230,27 @@ export class InputManager {
     const t = nowMs();
     this.keySteer.reset(t);
     this.touchSteer.reset(t);
+    this.actionEvents.reset(t);
     this.gamepadRestartHeld = false;
     this.gamepadPauseHeld = false;
+    this.gamepadBoost = false;
+    this.gamepadDash = false;
     this.baselineGamepad = false;
     this.state.axis = 0;
     this.state.boost = false;
     this.state.dash = false;
     this.state.restart = false;
     this.state.pause = false;
+  }
+
+  /** Merge held sources before recording edges, so releasing one never cancels another. */
+  private syncActions(t: number): void {
+    this.state.boost = this.gamepadBoost || this.pointers.size >= 2 ||
+      this.keys.has("Space") || this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") ||
+      this.keys.has("KeyW") || this.keys.has("ArrowUp");
+    this.state.dash = this.gamepadDash || this.pointers.size >= 3 ||
+      this.keys.has("KeyS") || this.keys.has("ArrowDown");
+    this.actionEvents.set(this.state.boost, this.state.dash, t);
   }
 
   /**
@@ -239,23 +281,8 @@ export class InputManager {
     // Touch replaces keyboard while any finger contributed to the window.
     let axis = this.pointers.size > 0 || touchAxis !== 0 ? touchAxis : keyAxis;
 
-    let boost =
-      this.keys.has("Space") ||
-      this.keys.has("ShiftLeft") ||
-      this.keys.has("ShiftRight") ||
-      this.keys.has("KeyW") ||
-      this.keys.has("ArrowUp");
-
-    // Dash is inert unless the Phase Dash lab flag is on (the sim masks it).
-    let dash = this.keys.has("KeyS") || this.keys.has("ArrowDown");
-
-    if (this.pointers.size > 0) {
-      // Touch: a second finger ignites the boost, a third dashes. Both
-      // halves held = boost straight ahead (the zones cancel above).
-      if (this.pointers.size >= 2) boost = true;
-      if (this.pointers.size >= 3) dash = true;
-    }
-
+    this.gamepadBoost = false;
+    this.gamepadDash = false;
     if (typeof navigator !== "undefined" && navigator.getGamepads) {
       const pads = navigator.getGamepads();
       let restartPressed = false;
@@ -267,8 +294,8 @@ export class InputManager {
         if (Math.abs(gx) > 0.35) axis = Math.sign(gx);
         if (pad.buttons[14]?.pressed) axis = -1;
         if (pad.buttons[15]?.pressed) axis = 1;
-        if (pad.buttons[0]?.pressed || pad.buttons[7]?.pressed) boost = true;
-        if (pad.buttons[2]?.pressed) dash = true;
+        this.gamepadBoost = Boolean(pad.buttons[0]?.pressed || pad.buttons[7]?.pressed);
+        this.gamepadDash = Boolean(pad.buttons[2]?.pressed);
         restartPressed = Boolean(pad.buttons[1]?.pressed);
         pausePressed = Boolean(pad.buttons[9]?.pressed);
         break;
@@ -283,8 +310,9 @@ export class InputManager {
     }
 
     this.state.axis = clamp(axis * sensitivity, -1, 1);
-    this.state.boost = boost;
-    this.state.dash = dash;
+    // Gamepad has no DOM button events, so its transitions use poll time.
+    this.syncActions(t);
+    this.actionEvents.drain(t);
   }
 
   /** Consume edge-triggered flags. */

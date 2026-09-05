@@ -95,7 +95,16 @@ export interface GraphicsStats {
   drawCalls: number;
   triangles: number;
   textures: number;
-  postCpuMs: number;
+  textureCounts: Record<string, number> | null;
+  renderedFrames: number;
+  frameSamples: number;
+  frameMs: number;
+  frameP95Ms: number;
+  frameP99Ms: number;
+  cpuMs: number;
+  gpuMs: number | null;
+  gpuP95Ms: number | null;
+  gpuStatus: import("../render/performance").GpuTimingStatus;
 }
 
 interface GameState {
@@ -160,7 +169,16 @@ export const useGame = create<GameState>((set) => ({
     drawCalls: 0,
     triangles: 0,
     textures: 0,
-    postCpuMs: 0,
+    textureCounts: null,
+    renderedFrames: 0,
+    frameSamples: 0,
+    frameMs: 0,
+    frameP95Ms: 0,
+    frameP99Ms: 0,
+    cpuMs: 0,
+    gpuMs: null,
+    gpuP95Ms: null,
+    gpuStatus: "pending",
   },
   setPhase: (phase) => set({ phase }),
   setMode: (mode, trialId = null) => set({ mode, trialId }),

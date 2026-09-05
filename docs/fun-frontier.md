@@ -1,7 +1,7 @@
 # The Fun Frontier (roadmap v2)
 
 Tracking document for the "make the game ridiculously fun" redesign — the
-successor to `skill-ceiling-roadmap.md` (v1, complete). Update statuses, log
+successor to `skill-ceiling-roadmap.md` (v1, closed out). Update statuses, log
 decisions, and append to the progress log as work lands.
 
 **North star:** the *hands* are the game. v1 built the ladder (economy,
@@ -15,9 +15,30 @@ conditions, no ceiling.
 
 Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Log)
 
+## Current status — September 5, 2026
+
+The implemented pillars below remain shipped; Carve remains LAB-only. Launch
+ritual, light rails, deep gates and wedge choreography are still proposals.
+The diagnosis and dated logs preserve the design's starting point and historical
+calibrations. Current replay format is **v7**, introduced for first-flight weave
+encounters; the engineering pass preserved that format and exact replay behavior.
+
+The design review's first four engineering implementation priorities are in place: typed
+simulation systems behind `SimWorld`, event-time boost/dash consumption at
+120 Hz, bounded CPU/GPU/frame-tail measurements with dynamic resolution, and
+production browser tests. Keyboard and touch taps survive render-frame boundaries;
+gamepad actions remain snapshot-sampled. Renderer startup, post-effect targets
+and light-shadow cleanup are also fixed without removing the high-quality effects.
+
+Ten browser scenarios passed on WebGPU and WebGL2, plus two DPR-2 quality checks
+on the same Apple M4 Max. High-quality GPU cost at retina resolution still needs
+tuning; actual phone and lower-end hardware acceptance and human feel/visual
+playtests remain open. See [engineering verification](./engineering-verification.md)
+for measurements and the next performance steps.
+
 ---
 
-## Diagnosis (what still caps the ceiling after v1)
+## Original diagnosis (July 2026, before the v2 implementation)
 
 1. **One way to fly a line.** The steer model (`STEER` in `constants.ts`,
    `SimWorld.step`) is digital axis → acceleration → strong drag. Two players
@@ -60,7 +81,7 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1.1 | **Sub-tick input** — integrate per-poll hold fractions (event timestamps) into the axis; taps become a true analog channel (120 Hz × 1/127), lost taps impossible, average latency halved. Keyboard + touch hold-zones; gamepad stays digital. | done | `SubTickAxis` integrator in `core/input.ts` (pure, unit-gated in simtest): signed hold-time integral over each poll window, exact ±1 for holds, exact 0 for cancels. Keyboard keys + touch hold-zone transitions feed it with event timestamps; wheel/gamepad unchanged. The sim already consumes a 1/127-quantized axis, so recordings replay bit-exactly — no sim change at all |
+| 1.1 | **Sub-tick input** — integrate timestamped hold fractions into the axis; preserve keyboard and touch steering taps while keeping gamepad steering digital. | done | `SubTickAxis` in `core/input.ts` conserves signed hold time and feeds the existing 1/127-quantized axis. The September engineering pass adds timestamped boost/dash transitions through `core/actionInput.ts`, mapped onto 120 Hz physics ticks even during time dilation. A sub-tick action becomes a press then release on successive ticks; gamepad actions use browser snapshots. `sessiontest.ts` checks 30/60/144/240 Hz taps, holds, dash, airborne double jumps, conserved steering and exact replay. Replay remains v7. |
 | 1.2 | **Carve physics (LAB "carve")** — flick (fresh-press impulse), pump (reversal at carried speed rebounds + gains), glide (pumped momentum may exceed `STEER.RATIO`, excess decays slowly), wall-kiss (timed reversal at the clamp reflects instead of absorbing), boost-carve (pump gain × while boosting). | done | Pump payout now scales continuously from reversal quality and feeds technique telemetry. Automated A/B verdict remains **LAB ONLY**: modeled novice mean/median retention ×0.90/×0.79 and intermediate performance ×0.46 versus plain physics, below promotion gates |
 | 1.3 | **Boost modulation** — speed and steering cost share one continuous thrust charge; release before curvature, hold through straights, and pulse only when the future line justifies it. | done | The fixed 0.7–0.9 band was rejected as rote PWM. `steeringAuthorityAt(boostCharge)` closes the old release loophole (residual speed with instant full authority), while leaving the optimum state-dependent |
 | 1.4 | **Launch ritual** — release boost on the third beat of the start for a perfect launch. | todo | Small; ship with a resonance polish pass |
@@ -95,7 +116,7 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 5.1 | **Grazes play music** — clearance/grade/chain map to pitched notes in the generative D-minor field; chains walk up the pentatonic, threads ring a chord. An elite run literally sounds like a solo. | done | `AudioEngine.nearMiss` re-voiced: chain index walks the pentatonic (perfects +1 octave, brightness by precision), threads play a chord of the *current* pad harmony, resonant perfects keep the on-beat bell. Whoosh layer retained for physicality |
-| 5.2 | **Time kisses** — a ~90 ms sim-timescale dip on perfect passes and threads only (wall-clock boundary, deterministic like death slow-mo). Flow made mechanical: grazing well makes the next graze reachable. | done | `GameScene` scales the wall dt fed to `world.update` (0.55× floor, eased recovery). Replays/ghosts unaffected (sim-step indexed). Disabled by `reduceMotion` |
+| 5.2 | **Time kisses** — a ~90 ms sim-timescale dip on perfect passes, threads and perfect landings (wall-clock boundary, deterministic like death slow-mo). Flow made mechanical: grazing well makes the next graze reachable. | done | `GameScene` scales the wall dt fed to `world.update` (0.55× floor, eased recovery). Replays/ghosts remain sim-step indexed. All pilots receive the same gameplay time dilation; reduced-motion settings affect presentation. Timestamped actions now follow the dilated simulation clock. |
 | 5.3 | **Trail calligraphy** — trail width/glow encode carve state and smoothness; glides read as wide brush strokes, jitter as scratch. | done | `Craft.tsx` trail width/boost pick up `world.glide` + a bank-smoothness EMA; pumps flash the trail like perfects |
 | 5.4 | **Gamepad haptics** — graze ticks by grade, thread double-tap, pump thump, wall-kiss knock, death drop, boost floor. The craft in the hands. | done | `core/haptics.ts` (`GamepadHaptics`), wired beside audio in `GameController`; boost floor re-fires as a weak rumble bed; `haptics` settings toggle (default on, only fires when a gamepad is connected) |
 | 5.5 | **Mythic depths** — visual/musical zones at 20/40/80 km that almost nobody reaches. Cheap content, enormous aura. | done | Astral Verge, Crown of Static, and Event Horizon tint the live procedural palette, replace the HUD biome label, fire one-time callouts, and resolve with unique musical signatures |
@@ -125,7 +146,9 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 - **Walls:** every autopilot tier still dies at a stable, distinct band;
   medians re-baked after any physics/track change.
 - **Determinism:** replay re-simulation reproduces recorded stats exactly
-  (extended to pump events and carve runs).
+  (extended to pump events and carve runs). `worldtest.ts` also locks exact
+  pre-refactor fingerprints for ordered events, pools, recordings, forensics
+  and reused-world resets across the composed simulation systems.
 - **Carve ceiling:** scripted pump cadence sustains > ×1.25 of the plain
   lateral cap; a mistimed cadence must not (enforced in simtest).
 - **Identity:** empty lab stack ≡ plain run, bit for bit; a held-but-flagless
@@ -134,8 +157,14 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
   cohorts must improve monotonically across fixed seeds; periodic macros stay
   below adaptive play, every modeled novice clears the 600 m first-flight
   curriculum, and seed spread remains bounded (`test:frontier`).
-- **Input fairness:** a timestamped intent integrates identically under
-  60/90/144 Hz poll partitions; timing techniques span multiple 60 Hz polls.
+- **Input fairness:** steering hold-time integration is invariant under
+  60/90/144 Hz poll partitions. `sessiontest.ts` additionally checks short
+  boost/dash taps and exact replay at 30/60/144/240 Hz, including airborne taps,
+  holds, time dilation and stale-input clearing after pause/focus changes.
+- **Rendering:** production browser checks exercise WebGPU and WebGL2 startup,
+  actual play, pause/retry and repeated quality changes; DPR-2 checks exercise
+  desktop resolution scaling. CPU/GPU timing and bounded resources are measured;
+  sustained hardware performance and human visual quality still need acceptance.
 - **Strategic diversity:** authored route choices are recorded, and refuel /
   flow / tempo value comes from distinct resources and geometry rather than a
   universal score multiplier.
@@ -176,6 +205,16 @@ Statuses: `todo` · `in progress` · `done` · `cut` (with reason in Decision Lo
 
 ## Progress log
 
+- **2026-09-05** — **Engineering foundation complete.** `SimWorld` now composes
+  entity-pool, obstacle/contact, event-direction and bounded run-analysis systems
+  with exact pre-refactor fingerprint gates. Timestamped boost/dash events reach
+  fixed ticks without losing short taps; replay v7 and sampled replay/pilot
+  behavior are preserved. Frame percentiles, bounded GPU readback and dynamic
+  resolution are live. Browser checks caught and verified fixes for WebGPU
+  initialization and post-effect/shadow resource leaks. All headless suites,
+  build, types, lint, ten browser scenarios and two higher-DPR checks passed.
+  High-quality retina GPU cost, broader hardware and human playtesting remain
+  the next gates; no additional creative proposal is marked complete here.
 - **2026-07-16** — **Double jump + ramps everywhere shipped (Pillar 6.2,
   `REPLAY_VERSION` 6).** Jumping is now a core verb, not a rare set-piece:
   a generator cadence guarantees the first wedge inside the first-flight
