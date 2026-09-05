@@ -26,6 +26,7 @@ import { useGame, type GameMode } from "./state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "./state/meta";
 import { useReplays } from "./state/replays";
 import { useSettings } from "./state/settings";
+import { clearProfileRoute, installProfiler, isBenchmarkRun } from "./profiling/runtime";
 
 export interface GameBundle {
   world: SimWorld;
@@ -76,6 +77,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     };
 
     const launchRun = (launched: RunSession) => {
+      clearProfileRoute(world);
       // Called from a tap/click, so the fullscreen + orientation-lock
       // gesture requirement is satisfied here (Android; no-op elsewhere).
       lockLandscape();
@@ -126,6 +128,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       launchRun(createRunSession(mode, trialId));
 
     const raceRecording = (recording: RunRecording) => {
+      clearProfileRoute(world);
       if (!ghostEligible(recording)) {
         throw new Error("Imported flight is not eligible for a rival race");
       }
@@ -160,6 +163,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     };
 
     const backToTitle = () => {
+      clearProfileRoute(world);
       world.status = "idle";
       world.clearField();
       ghost.arm(null);
@@ -204,6 +208,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
     }
   }, [bundle]);
 
+  useEffect(() => installProfiler(bundle), [bundle]);
+
   // Wire world events -> stores + audio (render/FX layers subscribe separately).
   useEffect(() => {
     const { world, audio, env, haptics } = bundle;
@@ -222,7 +228,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     } = { day: null, defs: [], counters: { riskShards: 0, fastPerfects: 0 } };
 
     const evaluateQuests = (silent = false) => {
-      if (!quest.day || quest.defs.length === 0) return;
+      if (isBenchmarkRun(world) || !quest.day || quest.defs.length === 0) return;
       const meta = useMeta.getState();
       const done = meta.questDay === quest.day ? meta.questDone : [];
       const sample = { stats: world.stats, counters: quest.counters };
@@ -241,6 +247,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     /** Shared run-end path: a crash and a survived sprint finish differ only
      *  in FX and forensics — recording, PBs, and unlocks flow identically. */
     const endRun = (finished: boolean) => {
+      if (isBenchmarkRun(world)) return;
       evaluateQuests(true); // Final sweep with the closing stats, no fanfare.
       const g = useGame.getState();
       const meta = useMeta.getState();
@@ -473,7 +480,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }),
       world.events.on("land", (e) => {
         const game = useGame.getState();
-        if (game.lesson === "jump") {
+        if (game.lesson === "jump" && !isBenchmarkRun(world)) {
           // First touchdown graduates the first flight.
           useMeta.getState().completeOnboarding();
           game.setLesson(null);

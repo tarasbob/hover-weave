@@ -4,7 +4,10 @@ September 5, 2026. Findings are from this repository and its automated pilots;
 the proposed player-experience outcomes still need human playtesting.
 Updated after the engineering implementation: the simulation split, event-time
 boost/dash, rendering instrumentation and browser regression suite are complete.
-High-DPI GPU optimization and broader hardware validation remain next.
+The engineering follow-up also implements High-DPI effect optimization,
+per-pass profiling, sustained recorded routes, human-playtest capture, and an
+isolated season-aware replay verifier. Physical-device and human validation
+remain acceptance work, rather than missing software implementation.
 
 ## What the game already does well
 
@@ -180,21 +183,40 @@ does not create fair competition.
 See [Engineering verification](engineering-verification.md) for the contracts,
 commands, measured results and measurement limits.
 
-## Engineering work still ahead
+## Engineering follow-up
 
-1. Profile individual High-quality post-processing and reflection passes, then
-   reduce unnecessary GPU work while preserving the visual direction. The
-   local DPR-2 checks still measured substantial GPU cost; animation callback
-   cadence alone is not completed GPU throughput.
-2. Run sustained, repeatable routes on lower-powered graphics and actual phones,
-   including thermal behavior, dense sections and biome transitions. The local
-   Apple M4 Max checks do not complete this hardware matrix.
-3. Pair responsiveness and frame-time measurements with human playtesting before
-   the proposed expedition content pass. Automated pilots cannot certify fun
-   or accessibility for every player.
-4. Introduce versioned seasons and authoritative replay verification before
-   shared competitive leaderboards. Local saves and browser personal bests
-   remain practice records.
+1. **GPU work and pass attribution — implemented.** High quality warms its
+   nine crash-blur passes once, then skips them during flight and restores the
+   original effect during death. High-DPI bloom and reflection targets use
+   bounded pixel density; the beauty pass, AA and main DPR floors remain intact.
+   Invisible water skips its reflection draw. Bounded query samples name the
+   expensive passes. WebGPU can time individual passes; WebGL's nested-query
+   restriction yields aggregate GPU timing with a separate submitted-pass list.
+2. **Sustained device-test harness — implemented.** An opt-in capture panel and
+   production browser runner replay a versioned 140-second real input route
+   through dense fields and four biomes, repeating for longer thermal runs.
+   Every measured frame contributes to bounded statistics, including stall
+   boundaries; exports include device identity, quality, actual DPR, events and
+   a time series. Benchmark runs cannot earn progression. Run the same harness
+   on the remaining physical targets; desktop emulation does not complete them.
+3. **Playtest measurement tools — implemented.** Human capture uses ordinary
+   controls and records trusted input timing, run events, first route choice
+   and observer notes alongside frame tails. Input measurements describe CPU
+   observation/submission, not input-to-photon latency. Conduct human playtests
+   before the expedition content pass; these tools cannot certify enjoyment or
+   accessibility.
+4. **Season and authoritative verification foundation — implemented.** An
+   immutable preview manifest partitions exact course/version/modifier identities.
+   A bounded Node worker strictly validates uploaded recordings and recomputes
+   the terminal result at 120 Hz, rejecting altered summaries, wrong courses,
+   truncated runs and trailing inputs. This is a trusted-host component, with
+   a usable verification CLI; local JSON output is not a competitive credential.
+   A deployed league still needs authenticated ingestion and authoritative storage.
+
+See [profiling and playtesting](profiling.md) and
+[competitive verification](competitive-verification.md) for the runnable tools
+and operational boundaries. The creative expedition and experiments above
+remain separate content proposals.
 
 ## What would justify calling it excellent
 
@@ -227,14 +249,22 @@ The design-polish checks established:
 - Visual layout checks at 1280×720 and 844×390. Landscape mode selection and
   launch remain visible together; longer reports and settings scroll.
 
-The engineering follow-up also passed the full headless suites, production
+The current engineering checks passed the full headless suites, production
 build, TypeScript, ESLint, whitespace checks, six exact pre-refactor simulation
-fingerprints, ten production browser scenarios and two DPR-2 quality checks.
-On Chromium 153 / Apple M4 Max, both backends retained the same texture sequence
-through repeated quality changes: **19 → 41 → 19 → 41 → 19**. This validates
-resource cleanup without removing the High-quality effects. GPU timing was
-available on both backends, but the short opening-course samples do not
-establish cross-device performance or a universal 60 FPS guarantee.
+fingerprints, ten game browser scenarios, two profiler lifecycle/input scenarios,
+and two DPR-2 quality checks. On Chromium 153 / Apple M4 Max, both backends
+returned the same texture sequence through repeated quality changes:
+**19 → 39 → 19 → 39 → 19**. Crash effects remain available and stop executing
+on retry. The competition tests reject forged and incomplete recordings and
+verify both actual death and the full 180-second sprint finish.
+
+Two sustained High/DPR-2 profiles each measured 120 seconds after warmup,
+replayed the same 15,592 ticks to 6,700.75 m across three biomes, and completed
+without automatic pauses or rendering errors. Mean sampled GPU time was
+15.6 ms on WebGPU and 26.8 ms on WebGL2; the latter remains above a 60 Hz budget.
+These local measurements and their tails are documented in
+[Engineering verification](engineering-verification.md). They do not establish
+cross-device performance or a universal 60 FPS guarantee.
 
 The novice-model mean survival is 931 m, reactive 2,159 m, and intermediate
 4,128 m on the existing frontier seeds. The rebaked mean score at 800 m changes

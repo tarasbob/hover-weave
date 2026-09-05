@@ -30,7 +30,8 @@ import { damp } from "../core/mathUtils";
 import { useSettings } from "../state/settings";
 import type { NodeAny } from "./tsl-utils";
 import { SUN_DIRECTION } from "./visualConstants";
-import { createDepthOfField, disposePostResources } from "./disposePostResources";
+import { createDepthOfField, disposePostResources, gateDepthOfField } from "./disposePostResources";
+import { EFFECT_PIXEL_DENSITY, effectResolutionScale } from "./effectPolicy";
 
 /**
  * WebGPU-native post chain: bloom, speed-driven chromatic aberration,
@@ -139,13 +140,15 @@ export function PostFX({
       const shaft = pow(saturate(float(1).sub(shaftDistance.mul(1.7))), 3.4)
         .mul(uShafts);
       graded = vec4(graded.rgb.add(env.uHorizon.mul(shaft).mul(0.32)), graded.a);
-      graded = createDepthOfField(
-        graded,
-        scenePass.getViewZNode(),
-        14,
-        28,
-        env.uDeath.mul(1.25),
+      const deathFocus = gateDepthOfField(
+        createDepthOfField(graded, scenePass.getViewZNode(), 14, 28, env.uDeath.mul(1.25)),
+        () => env.uDeath.value > 0,
       );
+      // The DOF graph stays compiled, but its expensive blur/MRT passes are
+      // inactive throughout flight. At zero radius the original effect still
+      // resampled the image at half resolution, softening an otherwise sharp
+      // course. Select the original grade until the actual crash transition.
+      graded = env.uDeath.greaterThan(0).select(deathFocus, graded);
     }
 
     if (aa === "smaa") {
@@ -197,7 +200,8 @@ export function PostFX({
         env.uShieldPulse.value * 0.12) * bloomQuality;
     setup.bloomNode.radius.value = 0.4 + world.boostCharge * (reduceMotion ? 0.08 : 0.25);
     setup.bloomNode.setResolutionScale(
-      Math.max(0.22, bloomResolutionScale * env.uDrsScale.value),
+      effectResolutionScale(bloomResolutionScale, env.uDrsScale.value,
+        renderer.getPixelRatio(), EFFECT_PIXEL_DENSITY.bloom),
     );
 
     const caScale = reduceMotion || highContrast ? 0 : 1;

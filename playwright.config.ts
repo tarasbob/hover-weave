@@ -9,7 +9,8 @@ const resultDirectory = deviceScaleFactor === 1 ? "test-results" : `test-results
 const reportDirectory = deviceScaleFactor === 1 ? "playwright-report" : `playwright-report/dpr-${deviceScaleFactor}`;
 
 export default defineConfig({
-  testDir: "./tests/browser",
+  testDir: "./tests",
+  testMatch: "**/*.spec.ts",
   outputDir: resultDirectory,
   // GPU-heavy pages contend with one another and distort the smoke results.
   workers: 1,

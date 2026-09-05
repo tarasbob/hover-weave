@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { densityFogFactor, fog, positionWorld, smoothstep } from "three/tsl";
 import { useGameBundle } from "../GameController";
+import { advanceProfile, isBenchmarkRun, recordProfileSimulation } from "../profiling/runtime";
 import { MEDAL_RANK, medalFor, nextMedalFor, trialById } from "../track/trials";
 import { useGame } from "../state/game";
 import { useMeta } from "../state/meta";
@@ -175,7 +176,8 @@ export function GameScene() {
         kissScale = 1 - (1 - KISS.FLOOR) * release;
       }
       kiss.current = Math.max(0, kiss.current - rawDt);
-      world.update(dt * kissScale, input.state);
+      if (!advanceProfile(world, dt * kissScale)) world.update(dt * kissScale, input.state);
+      recordProfileSimulation(world);
       ghost.sync(world.time);
     } else if (g.phase === "title") {
       ambient.value += dt * 9;
@@ -206,14 +208,14 @@ export function GameScene() {
     hudClock.current += dt;
     if (hudClock.current >= HUD_INTERVAL) {
       hudClock.current = 0;
-      if (g.phase === "running" || g.phase === "paused" || g.phase === "dead") {
+      if (g.phase === "running" || g.phase === "dead") {
         // Mode-aware pressure line: global PB for endless/daily, week best
         // for sprint, the next medal for trials (roadmap 3.5 / 4.1 / 4.2).
         const meta = useMeta.getState();
         // First flight teaches itself inside a real endless run. Demonstrated
         // actions advance immediately via world events; distance fallbacks
         // prevent one missed lesson from trapping the sequence.
-        if (g.phase === "running" && g.lesson) {
+        if (g.phase === "running" && g.lesson && !isBenchmarkRun(world)) {
           if (
             g.lesson === "steer" &&
             (Math.abs(world.x - world.courseOffsetAt(world.distance)) > 2.5 ||

@@ -13,6 +13,9 @@ interface RenderSample {
   frameP99Ms: number;
   gpuMs: number | null;
   gpuStatus: string;
+  gpuPasses: { name: string; gpuMs: number; passes: number }[];
+  gpuPassCoverage: "individual" | "aggregate" | "none";
+  gpuSubmittedPasses: string[];
 }
 
 async function readPerformance(page: Page): Promise<RenderSample | null> {
@@ -210,6 +213,10 @@ test("pause freezes the run, settings keep it paused, and changing tabs pauses a
 });
 
 test("a real collision produces a flight report and retry starts the daily course", async ({ page }, testInfo) => {
+  await flightDeck(page).getByRole("button", { name: "Settings", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "SETTINGS", exact: true });
+  await settings.getByRole("button", { name: "HIGH", exact: true }).click();
+  await settings.getByRole("button", { name: "Close SETTINGS", exact: true }).click();
   await exploreModes(page);
   await page.getByRole("group", { name: "Choose a flight mode" })
     .getByRole("button", { name: /Daily course/ }).click();
@@ -220,12 +227,27 @@ test("a real collision produces a flight report and retry starts the daily cours
   await expect(report).toBeVisible({ timeout: 60_000 });
   await expect(game(page)).toHaveAttribute("data-game-phase", "dead");
   await expect(report).toContainText("FLIGHT REPORT / DAILY");
+  if ((await readPerformance(page))?.gpuStatus !== "unsupported") {
+    await expect.poll(async () => (await readPerformance(page))?.gpuSubmittedPasses.some((name) => /DoF/i.test(name)), {
+      message: "The High-quality crash retains the depth-of-field rendering passes",
+    }).toBe(true);
+    await testInfo.attach("crash-gpu-passes", {
+      body: JSON.stringify(await readPerformance(page), null, 2), contentType: "application/json",
+    });
+  }
   await testInfo.attach("flight-report", { body: await page.screenshot(), contentType: "image/png" });
   await report.getByRole("button", { name: "RETRY COURSE", exact: true }).click();
   await expect(report).toBeHidden();
   await expect(game(page)).toHaveAttribute("data-game-phase", "running");
   await expect(game(page)).toHaveAttribute("data-game-mode", "daily");
   await expect(page.getByRole("button", { name: "Pause flight", exact: true })).toBeVisible();
+  if ((await readPerformance(page))?.gpuStatus !== "unsupported") {
+    await expect.poll(async () => {
+      const sample = await readPerformance(page);
+      return sample?.gpuStatus === "available" && sample.gpuPasses.length > 0 &&
+        !sample.gpuSubmittedPasses.some((name) => /DoF/i.test(name));
+    }, { message: "Retry deactivates the crash blur passes without rebuilding the pipeline" }).toBe(true);
+  }
 });
 
 test("low and high quality survive repeated changes with bounded render resources", async ({ page }, testInfo) => {
@@ -284,7 +306,14 @@ test("low and high quality survive repeated changes with bounded render resource
     expect(sample.drawCalls).toBeGreaterThan(0);
     expect(sample.frameMs).toBeGreaterThan(0);
     expect(sample.frameP99Ms).toBeGreaterThanOrEqual(sample.frameP95Ms);
-    if (sample.gpuStatus === "available") expect(sample.gpuMs).toBeGreaterThan(0);
+    if (sample.gpuStatus === "available") {
+      expect(sample.gpuMs).toBeGreaterThan(0);
+      expect(sample.gpuPasses.length).toBeGreaterThan(0);
+      const passTotal = sample.gpuPasses.reduce((sum, pass) => sum + pass.gpuMs, 0);
+      expect(passTotal).toBeCloseTo(sample.gpuMs!, 3);
+      expect(sample.gpuSubmittedPasses.some((name) => /DoF/i.test(name)),
+        "Invisible crash blur must not execute during normal flight").toBe(false);
+    }
     else expect(sample.gpuMs).toBeNull();
     samples.push({ quality, sample });
     // Large screenshot readbacks can stall the main thread beyond the game's

@@ -10,8 +10,12 @@ browser suite also verified fixes for renderer initialization and retained shado
 and post-processing resources. The existing visual direction and quality-tier
 clarity floors remain intact. Broader device validation is still outstanding.
 
-Shared competitive seasons remain deferred until shared, authoritative results
-exist. A season identifier alone would not make local recordings trustworthy.
+The follow-up implements High-DPI effect budgets, bounded per-pass attribution,
+a sustained recorded-route/device harness, human-playtest capture, and a
+season-aware replay verifier in an isolated Node worker. See
+[profiling](profiling.md) and [competitive verification](competitive-verification.md)
+for the runnable tools. A preview season exercises authoritative recomputation;
+shared competition still needs a deployed ingestion/storage service.
 The expedition proposal remains the next content project after performance
 measurements and human playtests can support its scope.
 
@@ -72,13 +76,18 @@ as well to diagnose startup compilation and long stalls; they are not represente
 by the overlay's gameplay percentiles.
 
 CPU time spans the simulation, render updates and complete post-pipeline
-submission. GPU time sums the sampled frame's render passes using three's
-timestamp queries, including offscreen work. It excludes browser compositing,
+submission. GPU time uses three's timestamp queries, including offscreen work.
+WebGPU exposes individual pass durations. WebGL2's nested-query restriction
+usually exposes the outer pipeline duration; its nested submitted-pass names
+are reported separately and must not be mistaken for individual timings.
+The `gpuPassCoverage` field makes that distinction explicit. It excludes browser compositing,
 presentation waits and CPU work, so it is not the same as displayed frame time.
 One sample is requested every 250 ms at most; GPU p95 uses the last 120 valid
 samples. Queries never block the animation loop. Unsupported timers display
 `unsupported`, failed timers `unavailable`, and absent/stale results remain null.
-The adapter clears three's otherwise accumulating per-pass timestamp history
+Empty/cached and disjoint readbacks are rejected rather than presented as new
+GPU measurements. Per-pass windows and submitted names have fixed bounds,
+and phase/tier changes invalidate pending results. The adapter clears three's otherwise accumulating per-pass timestamp history
 after each readback; aggregate samples remain in bounded application buffers.
 
 Fresh GPU work drives dynamic resolution when available, so a CPU-limited frame
@@ -107,7 +116,62 @@ shadow resources because R3F does not own objects supplied as primitives.
 
 ## Verification results and remaining device checks
 
-### Local verification on September 5, 2026
+### GPU optimization and sustained capture follow-up
+
+High quality retains the original nine-pass crash depth-of-field effect, warms
+it once, then executes it only while the crash blur is visible. During flight
+the unblurred grade feeds AA directly, avoiding the old half-resolution resample.
+At renderer DPR 2 and unchanged DRS, bloom targets contain 56.25% and reflection
+targets 39.06% of their previous pixels. Their existing minimum scales remain;
+the scene's resolution, High MSAA/SMAA and texture cleanup contract are unchanged.
+These are pixel budgets, not guaranteed percentages of total GPU time saved.
+
+The production tests check the actual submitted pass names during High-quality
+flight, natural death and retry on both backends. The pause test also caught a
+delayed HUD update that could move the sprint timer after pausing; paused HUD
+snapshots now remain frozen until resume.
+
+Use `?profile=1` for the opt-in production diagnostic panel. Its benchmark route
+uses recorded inputs from an ordinary simulation, retains hazards and collision
+rules, and can repeat for ten-minute thermal observations. The profile report
+keeps full-capture frame/CPU/GPU distributions, per-second series, device details,
+real course coverage and observer notes. It counts stall-boundary frames that
+the short HUD rolling window excludes. See [the capture guide](profiling.md).
+
+The follow-up passed the ten game browser scenarios, two profiler lifecycle/input
+scenarios and both higher-DPR quality checks, plus the headless suites, production
+build, TypeScript and lint. Alternating Low/High textures now return to
+**19 → 39 → 19 → 39 → 19** on both backends and both desktop densities. The
+crash effect remains present; fewer redundant textures initialize during flight.
+
+Two sustained High/DPR-2 captures used Chromium 153.0.8010.12 on the same Apple
+M4 Max at 1440 × 900 logical pixels, with 10 seconds of warmup and 120 measured
+seconds. Both consumed 15,592 identical recorded ticks, reached 6,700.75 m,
+crossed three biomes, observed 165 active obstacles at peak, and completed with
+zero automatic resumes and zero runtime/render validation errors.
+
+| Backend | Effective DPR range | Frame p95 / p99 | CPU mean | GPU samples | GPU mean / p95 / p99 |
+| --- | --- | --- | --- | --- | --- |
+| WebGPU | 1.8–2.0 | 17.5 / 19.8 ms | 1.84 ms | 463 | 15.6 / 22.1 / 27.3 ms |
+| WebGL2 | 1.7 | 17.3 / 17.6 ms | 1.60 ms | 467 | 26.8 / 34.1 / 60.2 ms |
+
+WebGPU attributed approximately 7.1 ms of its mean to the bloom passes,
+2.8 ms to the scene output, 2.1 ms to implicit render-to-texture work,
+2.0 ms to SMAA, and 0.56 ms to reflection. No crash DOF passes were submitted
+during these routes. WebGL2's GPU number is its aggregate elapsed query, not
+independent pass durations. Its GPU cost remains above a 60 Hz budget even at
+the High clarity floor; the callback cadence must not be presented as proof of
+60 displayed frames per second. The optimizations remove unnecessary work,
+but these results do not certify High quality on every device.
+
+Raw local outputs are in `artifacts/engineering/profile-webgpu-high-dpr2.json`
+and `artifacts/engineering/profile-webgl2-high-dpr2.json`; profiling commands in
+the capture guide regenerate them. These ignored artifacts contain full series
+and hardware metadata. The baseline and optimized short DPR-2 quality reports
+are retained beside them. They are single local observations, not repeated
+thermal trials or representative phone results.
+
+### Initial engineering-pass measurements on September 5, 2026
 
 All headless suites passed, including exact pre-refactor fingerprints. The final
 production build passed all ten browser scenarios on real WebGPU and forced
@@ -126,12 +190,11 @@ The two additional DPR-2 quality checks also passed on both backends with the
 same stable texture sequence. Low quality capped effective DPR at 1.25; High
 adapted to DPR 1.9 / scale 0.95 during the short observations. High-quality GPU
 samples were approximately 23 ms on WebGPU and 24.5–33.7 ms on WebGL2, with
-sampled p95 around 27–30 ms and 37–38 ms respectively. Those costs warrant
-further GPU profiling before promising 60 Hz at retina resolution. Animation
+sampled p95 around 27–30 ms and 37–38 ms respectively. Those costs motivated
+the optimization and sustained profiling follow-up above. Animation
 callback cadence near 16.7 ms is not proof that the GPU finishes frames at that
-rate. The next performance pass should isolate the high-tier post effects and
-reflection costs against a repeatable route, preserving the authored appearance
-while reducing unnecessary work.
+rate. These historical measurements precede the skipped crash passes and
+secondary-effect density limits; they are retained as the initial baseline.
 
 High-resolution active screenshots can themselves stall the page long enough
 to trigger the existing 250 ms auto-pause safeguard. The higher-DPR profiling

@@ -9,6 +9,10 @@ server on port 3100, and runs the same scenarios on WebGPU and forced WebGL2:
 - Keyboard pause, frozen sprint timer, settings while paused, and real tab focus loss.
 - A natural collision, flight report, and daily-course retry.
 - Repeated low/high quality changes, live frame measurements, and bounded textures.
+- High-quality crash blur runs at death and stops again on retry, verified from
+  submitted render passes on both backends.
+- The opt-in profiler is absent on ordinary launches; recorded benchmark runs
+  cannot award progression or become human practice runs without a fresh launch.
 
 Every test receives a fresh browser context. A Date-only proxy fixes the UTC
 date for stable daily and weekly courses; the suite asserts that animation,
@@ -53,17 +57,26 @@ complement those checks.
 
 ## Verified implementation — September 5, 2026
 
-The final production build passed all **10 default scenarios** and both
-**DPR-2 quality scenarios** in Chromium 153 on an Apple M4 Max, using actual
+The production build passed **10 game scenarios**, **2 profiling scenarios**, and
+both **DPR-2 quality scenarios** in Chromium 153 on an Apple M4 Max, using actual
 WebGPU and forced WebGL2. Repeated Low/High quality changes returned tracked
-textures to **19 → 41 → 19 → 41 → 19** on both backends and at both device
+textures to **19 → 39 → 19 → 39 → 19** on both backends and at both device
 densities. The relative non-growth assertion is the regression contract; those
 exact counts are observations from this renderer version and machine.
 
 These tests uncovered the asynchronous renderer initialization race, retained
 shadow resources and blur textures hidden inside repeated depth-of-field setup.
 The corresponding fixes are implemented and covered by the passing suite.
-High-quality GPU cost at retina density, lower-powered graphics, actual phones,
-and sustained thermal behavior still require further work. See
+The follow-up skips nine invisible crash-blur passes and limits secondary effect
+pixel density while retaining the High-quality scene and AA. GPU samples include
+named pass durations on WebGPU; WebGL2 reports aggregate timing and the separate
+submitted-pass list. Empty, stale and disjoint readbacks are rejected.
+
+For sustained performance, use `npm run profile -- --seconds 120 --dpr 2` after
+building. The ordinary smoke suite intentionally stays short. See
+[the profiling guide](../../docs/profiling.md) for the real recorded route,
+machine-readable exports, physical-device connections and human-playtest panel.
+Lower-powered graphics, actual phones, and sustained thermal behavior on those
+devices remain validation work. See
 [Engineering verification](../../docs/engineering-verification.md) for the
 measurements and remaining acceptance matrix.

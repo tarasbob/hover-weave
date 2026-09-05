@@ -31,10 +31,12 @@ gamepad actions remain snapshot-sampled. Renderer startup, post-effect targets
 and light-shadow cleanup are also fixed without removing the high-quality effects.
 
 Ten browser scenarios passed on WebGPU and WebGL2, plus two DPR-2 quality checks
-on the same Apple M4 Max. High-quality GPU cost at retina resolution still needs
-tuning; actual phone and lower-end hardware acceptance and human feel/visual
-playtests remain open. See [engineering verification](./engineering-verification.md)
-for measurements and the next performance steps.
+on the same Apple M4 Max. The subsequent follow-up skips invisible crash-blur
+passes, bounds retina effect resolution, adds sustained route/playtest capture,
+and provides an isolated season-aware replay verifier. Actual phone and lower-end
+hardware acceptance and human feel/visual playtests remain open. See
+[engineering verification](./engineering-verification.md) for the current results;
+the dated logs below preserve the earlier implementation milestones.
 
 ---
 

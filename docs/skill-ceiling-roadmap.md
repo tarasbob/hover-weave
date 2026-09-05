@@ -33,10 +33,12 @@ post-effect and shadow resources correctly. WebGPU initialization is also fixed.
 
 All headless checks and ten production browser scenarios passed across WebGPU
 and WebGL2, plus two DPR-2 quality checks on an Apple M4 Max. The old browser-tooling
-blocker recorded in the logs is resolved. High-quality retina GPU cost still needs
-tuning; phones, lower-end hardware, deep-course visual inspection and real-player
-skill-gap/feel acceptance remain open. See [engineering verification](./engineering-verification.md)
-for current measurements and next steps.
+blocker recorded in the logs is resolved. The subsequent follow-up skips invisible
+crash-blur passes, bounds retina effect resolution, adds sustained route/playtest
+capture, and provides an isolated season-aware replay verifier. Phones,
+lower-end hardware and real-player skill-gap/feel acceptance remain open. See
+[engineering verification](./engineering-verification.md) for current results;
+the dated logs below describe the earlier milestones.
 
 ---
 

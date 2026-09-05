@@ -7,11 +7,14 @@ import { useGameBundle } from "../GameController";
 import { useGame } from "../state/game";
 import { QUALITY_CONFIGS, useSettings, type QualityTier } from "../state/settings";
 import { GpuFrameTimer, ResolutionController, TimingWindow } from "./performance";
+import { createGpuTimerSource } from "./gpuTimerSource";
+import { hasActiveProfile, recordProfileFrame } from "../profiling/runtime";
+import type { GraphicsStats } from "../state/game";
 
 /** Runs around all scene callbacks and the complete post pipeline. */
 export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
   const renderer = useThree((s) => s.gl) as unknown as WebGPURenderer;
-  const { env } = useGameBundle();
+  const { world, env } = useGameBundle();
   const monitor = useRef<{
     frames: TimingWindow;
     cpu: TimingWindow;
@@ -21,33 +24,20 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     publishAt: number;
     renderedFrames: number;
     wasActive: boolean;
+    phase: string;
+    gpuSubmissionAt: number | null;
+    gpuView: Pick<GraphicsStats, "gpuSampleAt" | "gpuPasses" | "gpuPassCoverage" | "gpuSubmittedPasses">;
   } | null>(null);
 
   useEffect(() => {
-    // trackTimestamp exists in three r185 but is missing from @types/three's
-    // base Backend. Keep that version-specific boundary out of the controller.
-    const backend = renderer.backend as typeof renderer.backend & {
-      trackTimestamp: boolean;
-      timestampQueryPool: { render: { timestamps: Map<string, number> } | null };
-    };
-    const gpu = new GpuFrameTimer({
-      supported: renderer.hasFeature("timestamp-query"),
-      setTracking: (enabled) => { backend.trackTimestamp = enabled; },
-      resolve: async () => {
-        try {
-          return await renderer.resolveTimestampsAsync();
-        } finally {
-          // three retains per-pass entries keyed by ever-increasing frame IDs.
-          // We retain bounded aggregate samples, not inspector history. Clear
-          // that unused history after readback so long sessions stay bounded.
-          backend.timestampQueryPool.render?.timestamps.clear();
-        }
-      },
-    });
+    const source = createGpuTimerSource(renderer);
+    const gpu = new GpuFrameTimer(source);
     monitor.current = {
       frames: new TimingWindow(), cpu: new TimingWindow(), gpu,
       resolution: new ResolutionController(1),
-      started: 0, publishAt: 0, renderedFrames: 0, wasActive: false,
+      started: 0, publishAt: 0, renderedFrames: 0, wasActive: false, phase: "",
+      gpuSubmissionAt: null,
+      gpuView: { gpuSampleAt: null, gpuPasses: [], gpuPassCoverage: "none", gpuSubmittedPasses: [] },
     };
     const autoReset = renderer.info.autoReset;
     renderer.info.autoReset = false;
@@ -55,6 +45,7 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     useGame.getState().setGraphics({ drsScale: 1, gpuStatus: gpu.status, gpuMs: null });
     return () => {
       gpu.dispose();
+      source.dispose();
       monitor.current = null;
       renderer.info.autoReset = autoReset;
     };
@@ -73,6 +64,8 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     useGame.getState().setGraphics({
       drsScale: 1, frameSamples: 0, frameMs: 0, frameP95Ms: 0, frameP99Ms: 0,
       cpuMs: 0, gpuMs: null, gpuP95Ms: null, gpuStatus: m.gpu.status,
+      gpuSampleAt: null, gpuPasses: [],
+      gpuPassCoverage: "none", gpuSubmittedPasses: [],
     });
   }, [env, tier]);
 
@@ -82,7 +75,14 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     m.started = performance.now();
     renderer.info.reset();
     const phase = useGame.getState().phase;
-    m.gpu.begin(m.started, !document.hidden && (phase === "running" || phase === "title"));
+    if (phase !== m.phase) {
+      m.gpu.resetSamples();
+      m.phase = phase;
+    }
+    // The optional diagnostic overlay can inspect the crash effect too. Never
+    // carry those expensive samples into a resumed run's resolution decisions.
+    m.gpu.begin(m.started, !document.hidden && (phase === "running" || phase === "title" ||
+      (phase === "dead" && useSettings.getState().showFps)));
   }, -100);
 
   // PostFX owns rendering at priority 1; this callback only measures it.
@@ -110,10 +110,30 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     }
     m.wasActive = active;
     const gpuMs = m.gpu.latest(now);
+    const gpuSampleAt = m.gpu.sampleAt(now);
+    const gpuSubmissionAt = m.gpu.submissionAt(now);
+    if (gpuSubmissionAt !== m.gpuSubmissionAt || gpuSampleAt !== m.gpuView.gpuSampleAt) {
+      m.gpuSubmissionAt = gpuSubmissionAt;
+      m.gpuView = {
+        gpuSampleAt, gpuPasses: m.gpu.passSnapshot(now),
+        gpuPassCoverage: m.gpu.coverage(now), gpuSubmittedPasses: m.gpu.submittedPasses(now),
+      };
+    }
     const scale = m.resolution.update(frameMs, gpuMs, active);
     if (scale !== env.uDrsScale.value) {
       env.uDrsScale.value = scale;
       g.setGraphics({ drsScale: scale });
+    }
+    if (hasActiveProfile(world)) {
+      recordProfileFrame(world, {
+        at: now, frameMs, cpuMs, active,
+        graphics: {
+          ...g.graphics, ...m.gpuView, gpuMs,
+          dpr: renderer.getPixelRatio(), drsScale: scale,
+          drawCalls: renderer.info.render.drawCalls,
+          triangles: Math.round(renderer.info.render.triangles), textures: renderer.info.memory.textures,
+        },
+      });
     }
     if (now < m.publishAt) return;
     m.publishAt = now + 250;
@@ -141,6 +161,7 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
       frameMs: frames.mean, frameP95Ms: frames.p95, frameP99Ms: frames.p99,
       cpuMs: cpu.mean, gpuMs, gpuP95Ms: gpuMs === null ? null : gpu.p95,
       gpuStatus: m.gpu.status === "available" && gpuMs === null ? "pending" : m.gpu.status,
+      ...m.gpuView,
       drawCalls: renderer.info.render.drawCalls,
       triangles: Math.round(renderer.info.render.triangles),
       textures: renderer.info.memory.textures,

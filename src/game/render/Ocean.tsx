@@ -1,6 +1,6 @@
 "use client";
 
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import {
@@ -23,6 +23,7 @@ import {
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { OCEAN_DEPTH } from "./visualConstants";
+import { EFFECT_PIXEL_DENSITY, effectResolutionScale } from "./effectPolicy";
 
 /**
  * Planar-reflection water strip along the track (digital-ocean biome).
@@ -31,11 +32,13 @@ import { OCEAN_DEPTH } from "./visualConstants";
  */
 export function Ocean({ resolutionScale }: { resolutionScale: number }) {
   const { env } = useGameBundle();
+  const renderer = useThree((s) => s.gl);
 
   const { group, reflection } = useMemo(() => {
     const g = new THREE.Group();
 
-    const reflectionNode = reflector({ resolutionScale });
+    // The single water plane cannot usefully reflect another reflection.
+    const reflectionNode = reflector({ resolutionScale, bounces: false });
     reflectionNode.target.rotateX(-Math.PI / 2);
     reflectionNode.target.position.y = 0.05;
     g.add(reflectionNode.target);
@@ -86,9 +89,12 @@ export function Ocean({ resolutionScale }: { resolutionScale: number }) {
   }, [env, resolutionScale]);
 
   useFrame(() => {
-    reflection.reflector.resolutionScale = Math.max(
-      0.22,
-      resolutionScale * env.uDrsScale.value,
+    // A fully transparent water plane must not trigger an invisible scene
+    // render. Any nonzero sheen, including biome transitions, stays visible.
+    group.visible = env.uReflectivity.value > 0;
+    reflection.reflector.resolutionScale = effectResolutionScale(
+      resolutionScale, env.uDrsScale.value,
+      renderer.getPixelRatio(), EFFECT_PIXEL_DENSITY.reflection,
     );
   });
 

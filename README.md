@@ -107,6 +107,12 @@ Useful dev tools:
   focus/input cleanup and steering/boost/dash playback at 30/60/144/240 Hz
 - `npm run test:world` — exact pre-refactor simulation, event, entity-pool,
   analysis and replay fingerprints
+- `npm run test:competition` — strict season/course verification, hostile
+  recording rejection and isolated worker limits
+- `npm run test:profiling` — real recorded route, exact playback across refresh
+  rates, bounded capture distributions and repeating thermal routes
+- `npm run profile -- --backend webgpu --quality high --dpr 2` — sustained
+  capture against an existing production build; use `--backend webgl2` for fallback
 - `npx playwright install chromium` — install the browser used by the smoke suite
 - `npm run test:browser` — production browser smoke tests for WebGPU and forced
   WebGL2, including first launch, settings, pause/focus loss, death/retry and
@@ -178,14 +184,29 @@ verified fixes for concurrent renderer initialization and retained shadow/blur
 resources. Quality changes preserve the authored effects and release superseded
 targets, including blur objects replaced during repeated effect initialization.
 
-All headless suites, production build, TypeScript and lint passed, together with
-10 browser scenarios and 2 higher-DPR quality checks on WebGPU and WebGL2.
-On the tested Apple M4 Max, alternating Low/High quality returned texture counts
-to **19 → 41 → 19 → 41 → 19**. These are local regression results, not a claim of
+Headless suites, production build, TypeScript and lint passed, together with
+10 game scenarios, 2 profiling scenarios and 2 higher-DPR quality checks on
+WebGPU and WebGL2. On the tested Apple M4 Max, the optimized build's alternating
+Low/High quality returned texture counts to **19 → 39 → 19 → 39 → 19**.
+These are local regression results, not a claim of
 60 FPS across devices.
 
-The next engineering work is to isolate and reduce High-quality post-processing
-and reflection cost at retina resolution, then profile sustained runs on
-lower-powered graphics and actual phones. Human playtests and the proposed
-three-sector expedition remain ahead; shared competitive seasons require
-authoritative results before leaderboards become a competitive feature.
+The follow-up now skips invisible crash-blur GPU passes, caps secondary effect
+pixel density on retina displays, and attributes GPU timing to named passes
+(aggregate timing plus submitted-pass names on WebGL2). The scene's High-quality
+AA and DPR floors remain intact.
+
+Open `?profile=1` for a local performance/playtest capture panel, or use the
+[sustained profiling guide](docs/profiling.md) for automated recorded-route runs.
+The real 140-second route includes dense sections and four biomes and repeats
+for thermal testing. Human capture records trusted input observations, events
+and notes. Benchmark flights never earn progression.
+
+`npm run verify:flight -- --list` lists the versioned verification preview
+courses. The [authoritative replay verifier](docs/competitive-verification.md)
+strictly validates `.flight` inputs and recomputes the terminal result in a
+bounded Node worker. Shared competition still requires deployed authenticated
+ingestion and authoritative storage; local saves remain practice records.
+
+Physical lower-powered devices, actual phones and human playtests remain
+validation work. The proposed three-sector expedition is a separate content pass.

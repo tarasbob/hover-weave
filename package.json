@@ -9,11 +9,16 @@
     "lint": "eslint",
     "test:game": "tsx scripts/gentest.ts && tsx scripts/simtest.ts && npm run test:frontier",
     "test:frontier": "tsx scripts/frontiertest.ts",
-    "test:graphics": "tsx scripts/graphicstest.ts",
+    "test:graphics": "tsx scripts/graphicstest.ts && tsx scripts/effecttest.ts && tsx scripts/gputest.ts",
+    "test:competition": "tsx scripts/competitiontest.ts",
+    "verify:flight": "tsx scripts/verify-flight.ts",
+    "test:profiling": "tsx tests/profiling/profile.test.ts",
+    "profile": "tsx scripts/profile.ts",
+    "profile:route": "tsx scripts/profile-route.ts",
     "test:session": "tsx scripts/sessiontest.ts",
     "test:world": "tsx scripts/worldtest.ts",
     "test:browser": "npm run build && playwright test",
-    "test": "npm run test:game && npm run test:graphics && npm run test:session && npm run test:world"
+    "test": "npm run test:game && npm run test:graphics && npm run test:session && npm run test:world && npm run test:competition && npm run test:profiling"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",

@@ -4,12 +4,12 @@ export class TimingWindow {
   private cursor = 0;
   private count = 0;
 
-  constructor(capacity = 240) {
+  constructor(capacity = 240, private readonly allowZero = false) {
     this.values = new Float64Array(capacity);
   }
 
   add(ms: number): void {
-    if (!Number.isFinite(ms) || ms <= 0) return;
+    if (!Number.isFinite(ms) || ms < 0 || (ms === 0 && !this.allowZero)) return;
     this.values[this.cursor] = ms;
     this.cursor = (this.cursor + 1) % this.values.length;
     this.count = Math.min(this.count + 1, this.values.length);
@@ -71,12 +71,34 @@ export class ResolutionController {
 }
 
 export type GpuTimingStatus = "pending" | "available" | "unsupported" | "unavailable";
+export type GpuPassCoverage = "individual" | "aggregate" | "none";
+
+export interface GpuPassSample {
+  name: string;
+  gpuMs: number;
+  /** Multiple invocations of the same pass are summed within one frame. */
+  passes: number;
+}
+
+export interface GpuFrameSample {
+  totalMs: number | undefined;
+  passes: GpuPassSample[];
+  coverage: GpuPassCoverage;
+  /** Submitted render labels, including passes without their own GPU query. */
+  submittedPasses: string[];
+}
+
+export interface GpuPassStats extends GpuPassSample {
+  meanMs: number;
+  p95Ms: number;
+  samples: number;
+}
 
 /** Narrow adapter keeps three's backend-specific timestamp switch in one place. */
 export interface GpuTimerSource {
   supported: boolean;
   setTracking(enabled: boolean): void;
-  resolve(): Promise<number | undefined>;
+  resolve(): Promise<number | undefined | GpuFrameSample>;
 }
 
 /**
@@ -95,6 +117,11 @@ export class GpuFrameTimer {
   private value: number | null = null;
   private generation = 0;
   readonly timings = new TimingWindow(120);
+  private readonly passWindows = new Map<string, TimingWindow>();
+  private passes: GpuPassSample[] = [];
+  private passCoverage: GpuPassCoverage = "none";
+  private submitted: string[] = [];
+  private submittedAt = -Infinity;
 
   constructor(private readonly source: GpuTimerSource) {
     this.status = source.supported ? "pending" : "unsupported";
@@ -103,7 +130,7 @@ export class GpuFrameTimer {
 
   begin(now: number, active: boolean): void {
     if (this.disposed || this.pending || !active || now < this.nextSampleAt ||
-        this.status === "unsupported" || this.status === "unavailable") return;
+        this.status === "unsupported") return;
     this.sampling = true;
     this.sampledAt = now;
     this.source.setTracking(true);
@@ -119,21 +146,37 @@ export class GpuFrameTimer {
     // synchronously at the entry to resolveTimestampsAsync().
     const resolution = this.source.resolve();
     this.source.setTracking(false);
-    void resolution.then((ms) => {
+    void resolution.then((sample) => {
       if (this.disposed || generation !== this.generation) return;
+      const ms = typeof sample === "object" ? sample.totalMs : sample;
+      this.submitted = typeof sample === "object" ? [...new Set(sample.submittedPasses)].slice(0, 256) : [];
+      this.submittedAt = this.sampledAt;
       if (ms !== undefined && Number.isFinite(ms) && ms > 0) {
         this.value = ms;
         this.valueAt = this.sampledAt;
         this.timings.add(ms);
         this.status = "available";
+        this.passes = typeof sample === "object" ? sample.passes.slice(0, 64) : [];
+        this.passCoverage = typeof sample === "object" ? sample.coverage : "aggregate";
+        for (const pass of this.passes) {
+          if (!this.passWindows.has(pass.name) && this.passWindows.size < 64) {
+            // Timestamp quantization can report a valid zero-cost pass.
+            this.passWindows.set(pass.name, new TimingWindow(120, true));
+          }
+          this.passWindows.get(pass.name)?.add(pass.gpuMs);
+        }
       } else {
         this.value = null;
         this.status = "unavailable";
+        this.passCoverage = "none";
+        this.passes = [];
       }
     }).catch(() => {
       if (!this.disposed && generation === this.generation) {
         this.value = null;
         this.status = "unavailable";
+        this.passCoverage = "none";
+        this.passes = [];
       }
     }).finally(() => { this.pending = false; });
   }
@@ -142,11 +185,40 @@ export class GpuFrameTimer {
     return now - this.valueAt <= 1500 ? this.value : null;
   }
 
+  sampleAt(now: number): number | null {
+    return this.latest(now) === null ? null : this.valueAt;
+  }
+
+  coverage(now: number): GpuPassCoverage {
+    return this.latest(now) === null ? "none" : this.passCoverage;
+  }
+
+  submittedPasses(now: number): string[] {
+    return now - this.submittedAt <= 1500 ? [...this.submitted] : [];
+  }
+
+  submissionAt(now: number): number | null {
+    return now - this.submittedAt <= 1500 ? this.submittedAt : null;
+  }
+
+  passSnapshot(now: number): GpuPassStats[] {
+    if (this.latest(now) === null) return [];
+    return this.passes.map((pass) => {
+      const stats = this.passWindows.get(pass.name)?.snapshot();
+      return { ...pass, meanMs: stats?.mean ?? 0, p95Ms: stats?.p95 ?? 0, samples: stats?.samples ?? 0 };
+    });
+  }
+
   resetSamples(): void {
     this.generation++;
     this.value = null;
     this.valueAt = -Infinity;
     this.timings.clear();
+    this.passWindows.clear();
+    this.passes = [];
+    this.passCoverage = "none";
+    this.submitted = [];
+    this.submittedAt = -Infinity;
     if (this.status === "available") this.status = "pending";
   }
 

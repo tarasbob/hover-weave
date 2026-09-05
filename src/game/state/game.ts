@@ -105,6 +105,10 @@ export interface GraphicsStats {
   gpuMs: number | null;
   gpuP95Ms: number | null;
   gpuStatus: import("../render/performance").GpuTimingStatus;
+  gpuSampleAt: number | null;
+  gpuPasses: import("../render/performance").GpuPassStats[];
+  gpuPassCoverage: "individual" | "aggregate" | "none";
+  gpuSubmittedPasses: string[];
 }
 
 interface GameState {
@@ -179,6 +183,10 @@ export const useGame = create<GameState>((set) => ({
     gpuMs: null,
     gpuP95Ms: null,
     gpuStatus: "pending",
+    gpuSampleAt: null,
+    gpuPasses: [],
+    gpuPassCoverage: "none",
+    gpuSubmittedPasses: [],
   },
   setPhase: (phase) => set({ phase }),
   setMode: (mode, trialId = null) => set({ mode, trialId }),

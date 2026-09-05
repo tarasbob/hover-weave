@@ -24,6 +24,28 @@ export function createDepthOfField(...args: Parameters<typeof dof>): ReturnType<
 }
 
 /**
+ * A zero bokeh radius does not disable r185's nine DOF rendering passes. Warm
+ * their shaders once when constructing the pipeline, then run them only while
+ * the effect is visible. The caller must select the original color while off;
+ * otherwise it would display the last blurred frame. No graph rebuild is
+ * needed on death or retry, and the first crash has already compiled shaders.
+ */
+export function gateDepthOfField(
+  effect: ReturnType<typeof dof>,
+  active: () => boolean,
+): ReturnType<typeof dof> {
+  let warm = false;
+  const updateBefore = effect.updateBefore.bind(effect);
+  effect.updateBefore = (frame) => {
+    if (warm && !active()) return;
+    updateBefore(frame);
+    warm = true;
+    return undefined;
+  };
+  return effect;
+}
+
+/**
  * RenderPipeline.dispose() only frees its final quad material in three r185.
  * Release the offscreen targets too when changing quality or unmounting.
  * Walk only node links, deduplicating shared inputs and cycles; scene objects
