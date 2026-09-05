@@ -437,10 +437,9 @@ console.log("\n== winding course: slope + amplitude budget ==");
     `late ≤ ${worstLate.toFixed(3)}`,
   );
   assert.ok(worstAbs <= COURSE.MAX_OFFSET, `course amplitude exceeds budget (${worstAbs.toFixed(1)}m)`);
-  // Early: validator plans 0.25 vs ~0.5 physical; bends reserve >0.1 headroom.
+  // The curved generator budgets avoidance around these world-space slopes.
   assert.ok(worstEarly < COURSE.SLOPE_EARLY, `early course slope too steep (${worstEarly.toFixed(3)})`);
-  // Late: validator plans 0.375 — drift must taper well under the headroom.
-  assert.ok(worstLate < 0.045, `late course slope too steep (${worstLate.toFixed(3)})`);
+  assert.ok(worstLate < 0.22, `late course slope too steep (${worstLate.toFixed(3)})`);
 }
 
 // Deep-overdrive chained generation (60km): validation must stay healthy

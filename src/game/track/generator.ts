@@ -22,6 +22,7 @@ import {
   blockedRanges,
   validatePattern,
   widestCorridor,
+  type CourseOffset,
   type ValidationResult,
 } from "./validator";
 
@@ -101,6 +102,7 @@ export class TrackGenerator {
   private readonly trial: TrialDef | null;
   /** Resolved heat stack (identity when unheated — bit-identical streams). */
   private readonly heat: HeatEffects;
+  private readonly courseOffset?: CourseOffset;
   generatedUpTo = 0;
   private exitLanes: Uint8Array;
   private sinceSetpiece = 0;
@@ -128,11 +130,13 @@ export class TrackGenerator {
     debug = false,
     trial: TrialDef | null = null,
     heat: HeatEffects = NO_HEAT,
+    courseOffset?: CourseOffset,
   ) {
     this.rng = rng;
     this.debug = debug;
     this.trial = trial;
     this.heat = heat;
+    this.courseOffset = trial ? undefined : courseOffset;
     this.exitLanes = openLanes();
     this.nextSetpieceAt = rng.range(620, 900);
     this.nextFieldAt = rng.range(240, 440) * heat.fieldCadenceScale;
@@ -238,6 +242,7 @@ export class TrackGenerator {
         this.debug,
         tryCtx.difficulty,
         this.heat.slackBias,
+        this.courseOffset,
       );
       if (v.ok) {
         result = built;
@@ -253,7 +258,10 @@ export class TrackGenerator {
       // Truly unreachable in practice; emit an empty stretch as a last resort.
       this.fallbacks++;
       result = { length: 90, exitX: 0, exitHalf: TRACK.X_LIMIT - 2, obstacles: [], pickups: [] };
-      validation = validatePattern([], s0, 90, openLanes(), runway, this.debug, difficulty);
+      validation = validatePattern(
+        [], s0, 90, this.courseOffset ? this.exitLanes : openLanes(), runway, this.debug, difficulty,
+        this.heat.slackBias, this.courseOffset,
+      );
       usedPattern = BREATHER;
       attempts = 8;
     }
@@ -339,7 +347,7 @@ export class TrackGenerator {
       const obstacles = [...result.obstacles, ...opening.obstacles];
       const proof = validatePattern(
         obstacles, s0, result.length, entryLanes, runway, this.debug,
-        difficulty, this.heat.slackBias,
+        difficulty, this.heat.slackBias, this.courseOffset,
       );
       // The next authored section must retain exactly the same entry set.
       // If an extra choice alters that contract, keep the original breather.

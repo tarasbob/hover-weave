@@ -380,6 +380,7 @@ export class SimWorld {
       this.collectDebug,
       this.trial,
       this.heatFx,
+      this.trial ? undefined : (s) => this.course.offsetAt(s),
     );
     if (skipTo > 0) {
       this.distance = skipTo;

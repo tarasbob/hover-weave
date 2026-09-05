@@ -70,30 +70,41 @@ for (const tier of tiers) {
 
 console.log("Graphics quality budgets valid.");
 
-// Wide seeded bends must not push the ship out of a portrait viewport by
-// accidentally damping its absolute course translation toward global x=0.
+// Wide seeded bends must keep the entire ship in portrait and landscape;
+// enough of the winding centerline ahead must remain visible to plan a turn.
 {
   for (const seed of ["cubefield-daily-2026-09-05", "mobile-camera-bends"]) {
     const course = new Course(seed);
-    for (const aspect of [390 / 844, 844 / 390, 16 / 9]) {
+    for (const aspect of [375 / 852, 390 / 844, 844 / 390, 16 / 9]) {
       const camera = new PerspectiveCamera(66, aspect, 0.1, 2000);
-      for (let distance = 0; distance <= 12000; distance += 50) {
+      for (let distance = 0; distance <= 20000; distance += 25) {
         const center = course.offsetAt(distance);
         const bend = course.offsetAt(distance + 78) - course.offsetAt(distance + 6);
         for (const localX of [-29, 0, 29]) {
           const x = center + localX;
-          const frame = chaseFraming(x, center, bend);
-          camera.position.set(frame.x, 5, 8.6);
+          const frame = chaseFraming(x, center, bend, 0, aspect);
+          camera.position.set(frame.x, 4.5, 8.6);
           camera.lookAt(frame.lookX, 1.7, -13);
           camera.updateMatrixWorld();
-          const ship = new Vector3(x, 1.15, 0).project(camera);
-          assert.ok(Math.abs(ship.x) < 0.85 && Math.abs(ship.y) < 0.95,
-            `ship left viewport on ${seed} at ${distance}m, lane ${localX}, aspect ${aspect}`);
+          for (const wingX of [-1.1, 1.1]) {
+            for (const shipZ of [-1.5, 0.95]) {
+              const ship = new Vector3(x + wingX, 1.15, shipZ).project(camera);
+              assert.ok(Math.abs(ship.x) < 0.93 && Math.abs(ship.y) < 0.95,
+                `ship left viewport on ${seed} at ${distance}m, lane ${localX}, aspect ${aspect}`);
+            }
+          }
+          if (localX === 0) {
+            for (const ahead of [70, 110]) {
+              const road = new Vector3(course.offsetAt(distance + ahead), 0, -ahead).project(camera);
+              assert.ok(Math.abs(road.x) < 0.92 && Math.abs(road.y) < 0.95,
+                `upcoming road hidden on ${seed} at ${distance}m, ahead ${ahead}, aspect ${aspect}`);
+            }
+          }
         }
       }
     }
   }
-  console.log("Ship framing stays visible across broad bends in portrait and landscape.");
+  console.log("Entire ship and upcoming road remain visible through broad bends on phone and desktop.");
 }
 
 // --- Speed-proportional lookahead: static no-pop-in invariant ---------------

@@ -1,4 +1,4 @@
-/** Exact v8 simulation fingerprints: broad bends, lethal edges and captured wreck state. */
+/** Exact v9 simulation fingerprints: demanding bends and curve-aware obstacle routes. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { FIXED_DT } from "../src/game/core/constants";
@@ -8,12 +8,12 @@ import { SimWorld } from "../src/game/core/world";
 import { autopilot } from "./pilots";
 
 const cases: { name: string; config: RunConfig; expected: string }[] = [
-  { name: "opening", config: { mode: "endless", seed: "test-3" }, expected: "4f8b6970be8e7827ff4d15b23e42a2955e38700e4625c56a218d39acb52d1e32" },
-  { name: "heated", config: { mode: "endless", seed: "world-contract", heat: ["fastMovers", "denseField"] }, expected: "cb54dfbc7ccaf4527b56b1ea237a0f8d2b7e296f765e902752446e579aace8d6" },
-  { name: "laboratory", config: { mode: "endless", seed: "world-contract", lab: ["surge", "dash", "carve"] }, expected: "cd447b2cad36353973f89bec0305f5c073b1ec1dad479cf8ed49ecc90579b652" },
-  { name: "deep-events", config: { mode: "endless", seed: "world-contract", skipTo: 9000 }, expected: "4672df0644edad5de8fe84a91fc955dd1fdd7a4f4d08557075342c579b30182c" },
-  { name: "mythic", config: { mode: "endless", seed: "world-contract", skipTo: 19950 }, expected: "ff434b853f6b8481ac833408fc9fff762d0aa79fb04e75fc7f48de9e87ef7345" },
-  { name: "sprint", config: { mode: "sprint", seed: "world-contract" }, expected: "f3c9e372879653417aad7c7369dc456b07080209acb6529016a3015be7d9e9e0" },
+  { name: "opening", config: { mode: "endless", seed: "test-3" }, expected: "597006e9d531717190bec1d9e5867da985e72563a7bf3a5b757a158751b9f42c" },
+  { name: "heated", config: { mode: "endless", seed: "world-contract", heat: ["fastMovers", "denseField"] }, expected: "1b1dd153439224ed6a556ab37546964f5caa8fc9d7b4f729083550aad514f89d" },
+  { name: "laboratory", config: { mode: "endless", seed: "world-contract", lab: ["surge", "dash", "carve"] }, expected: "83b39daa9f32fbf0143de476c1bb367b0e74882565fce95ffd3afe3f397d6bfe" },
+  { name: "deep-events", config: { mode: "endless", seed: "world-contract", skipTo: 9000 }, expected: "ec16813e4d9030c2f50cb5b34b4106cf757153df868f7792ff97ba110cddc283" },
+  { name: "mythic", config: { mode: "endless", seed: "world-contract", skipTo: 19950 }, expected: "ea387d4303ae4a66014b03404d0e0167ed00e588d55de242b5d8f30539972624" },
+  { name: "sprint", config: { mode: "sprint", seed: "world-contract" }, expected: "1bfec4d624769a7e3ec402ca99486a33814bb7b00e11958499a4ce97fcee98ec" },
 ];
 
 function fingerprint(world: SimWorld, config: RunConfig): string {

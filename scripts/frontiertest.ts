@@ -32,9 +32,10 @@ const SEEDS = ["frontier-0", "frontier-1", "frontier-2", "frontier-3", "frontier
 const MAX_SECONDS = 140;
 const MAX_TRIMMED_SPREAD = 3.5;
 const MIN_SEPARATION = 1.03;
-// The opening weave arrives by 350m; the broad first apex now approaches at
-// 650m. Separate the opening's accessibility floor from that new challenge.
-const FIRST_FLIGHT_DISTANCE = 400;
+// v9's first turn already demands correction before the 650m apex. Frozen
+// novice policies reach 318–405m; they must clear the 300m steering lesson,
+// while wider preview and finer control must buy survival through the turn.
+const FIRST_FLIGHT_DISTANCE = 300;
 
 const PROFILES = [
   MODELED_NOVICE_PROFILE,
@@ -176,8 +177,8 @@ for (const run of adaptive[0].runs) {
       `(${run.seed}: ${run.distance.toFixed(0)}m)`,
   );
 }
-assert.ok(adaptive[0].aggregate.medianDistance >= 500,
-  "the median modeled novice must complete the opening weave before the first broad apex");
+assert.ok(adaptive[0].aggregate.medianDistance >= 375,
+  "the median modeled novice must progress into the first noticeable turn");
 
 for (const report of adaptive) {
   assert.ok(
@@ -190,6 +191,8 @@ for (const report of adaptive) {
 const reactive = adaptive.find((report) => report.cohortId === MODELED_REACTIVE_PROFILE.id)!;
 const bestMacroMean = Math.max(...macros.map((report) => report.aggregate.meanDistance));
 const bestMacroMedian = Math.max(...macros.map((report) => report.aggregate.medianDistance));
+assert.ok(adaptive[0].aggregate.medianDistance > bestMacroMedian * 1.1,
+  "even novice adaptive steering must beat a fixed periodic macro by at least 10%");
 assert.ok(
   bestMacroMean < reactive.aggregate.meanDistance,
   `fixed periodic macro mean (${bestMacroMean.toFixed(0)}m) must not dominate adaptive play ` +

@@ -116,13 +116,13 @@ export const CRAFT = {
  * The winding track (seeded course centerline). Patterns are still built and
  * validated in a straight local frame; the offset is applied when chunks
  * spawn into the world, and the lethal edges follow offset ± X_LIMIT. The
- * drift itself demands steering, so its worst-case slope must stay well
- * under the craft's physical slope (~0.5) minus the validator's planning
- * slope (0.25 early, 0.375 when difficulty ≥ 0.64) — hence the late taper.
+ * Bends use a meaningful share of the craft's steering authority. The
+ * generator reserves their slope before planning local obstacle avoidance;
+ * the late taper eases the steering load without flattening the road.
  */
 export const COURSE = {
   /** Hard bound on |offset| (amplitude budget + margin, for tests/render). */
-  MAX_OFFSET: 36,
+  MAX_OFFSET: 96,
   /** First broad apex; the launch begins centered with zero lateral slope. */
   RAMP_IN: 650,
   /** Straight launch runway before gently entering the first visible bend. */
@@ -130,11 +130,11 @@ export const COURSE = {
   /** Distance between subsequent alternating apices (m). */
   BEND_LENGTH: 820,
   /** Minimum seeded apex offset (m), so every course has readable turns. */
-  MIN_OFFSET: 24,
+  MIN_OFFSET: 64,
   /** Maximum centerline slope before the late difficulty taper. */
-  SLOPE_EARLY: 0.135,
+  SLOPE_EARLY: 0.36,
   /** Amplitude multiplier once the difficulty taper has fully applied. */
-  LATE_SCALE: 0.3,
+  LATE_SCALE: 0.6,
   /** Difficulty band across which the late taper blends in. */
   TAPER_D0: 0.5,
   TAPER_D1: 0.68,

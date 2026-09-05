@@ -200,7 +200,7 @@ export function HorizonLandmarks() {
       for (const part of landmarkParts(slot, biomeIndexAt(s))) {
         const pool = poolByKind.get(part.kind);
         if (!pool || pool.count >= pool.capacity) continue;
-        _position.set(part.x, part.y, -ahead);
+        _position.set(part.x + world.courseOffsetAt(s), part.y, -ahead);
         _euler.set(...part.rotation);
         _rotation.setFromEuler(_euler);
         _scale.set(...part.scale).multiplyScalar(Math.max(0.001, grow));

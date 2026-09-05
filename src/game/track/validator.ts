@@ -15,6 +15,11 @@ const DS = 4;
 export const PATH_SLOPE = 0.25;
 const EARLY_REACH_LANES = 2;
 const LATE_REACH_LANES = 3;
+/** Normal steering settles near 0.52; reserve room for acceleration lag. */
+export const CURVED_PATH_SLOPE = 0.49;
+
+/** A course's lateral centerline at a given forward distance. */
+export type CourseOffset = (s: number) => number;
 
 /** Late patterns may demand more of the craft while retaining a human margin. */
 export function reachLanesAt(difficulty: number): number {
@@ -191,29 +196,56 @@ export function validatePattern(
   difficulty = 0,
   /** Extra slack reduction (Narrow Gaps heat); floored at the hard minimum. */
   slackBias = 0,
+  /** Reserve steering for bends and rasterize obstacles in the moving frame. */
+  courseOffset?: CourseOffset,
 ): ValidationResult {
   const steps = Math.max(2, Math.ceil(length / DS));
-  const reachLanes = reachLanesAt(difficulty);
-  const runwayLanes = Math.floor((pathSlopeAt(difficulty) * Math.max(0, runway)) / LANE_W);
+  const baselineSlope = pathSlopeAt(difficulty);
+  const availableSlope = (start: number, end: number): number => {
+    if (!courseOffset) return baselineSlope;
+    const slope = Math.abs(courseOffset(end) - courseOffset(start)) / (end - start);
+    return Math.max(0, Math.min(baselineSlope, CURVED_PATH_SLOPE - slope));
+  };
+  // Each transition consumes some lateral authority just to follow the road.
+  // Budget the remaining displacement in both directions, so the solver
+  // never combines a hard dodge with a bend the craft cannot hold.
+  const reach = Array.from({ length: steps + 1 }, (_, k) =>
+    Math.floor((availableSlope(s0 + (k - 1) * DS, s0 + k * DS) * DS + 1e-9) / LANE_W),
+  );
+  let runwaySlope = baselineSlope;
+  for (let start = s0 - Math.max(0, runway); courseOffset && start < s0; start += DS) {
+    runwaySlope = Math.min(runwaySlope, availableSlope(start, Math.min(s0, start + DS)));
+  }
+  const runwayLanes = Math.floor((runwaySlope * Math.max(0, runway)) / LANE_W);
   const entry = dilateLanes(entryLanes, runwayLanes);
   // Overdrive (and heat) tightens the guaranteed corridor toward its floor.
   const slack = Math.max(MIN_MARGIN_SLACK, marginSlackAt(s0) - slackBias);
 
   // Rasterize blocked masks.
   const blocked: Uint8Array[] = [];
-  for (let k = 0; k <= steps; k++) blocked.push(new Uint8Array(LANE_COUNT));
+  for (let k = 0; k <= steps; k++) {
+    const row = new Uint8Array(LANE_COUNT);
+    // The course edges are lethal. Fixed trials retain their authored masks.
+    if (courseOffset) row[0] = row[LANE_COUNT - 1] = 1;
+    blocked.push(row);
+  }
   for (const o of obstacles) {
     const ranges = blockedRanges(o, slack);
     if (ranges.length === 0) continue;
     const hs = sHalfExtent(o);
     const k0 = clamp(Math.floor((o.s - hs - s0) / DS), 0, steps);
     const k1 = clamp(Math.ceil((o.s + hs - s0) / DS), 0, steps);
-    for (const [x0, x1] of ranges) {
-      if (x1 < -TRACK.X_LIMIT || x0 > TRACK.X_LIMIT) continue;
-      const l0 = clamp(Math.floor((x0 + TRACK.X_LIMIT) / LANE_W), 0, LANE_COUNT - 1);
-      const l1 = clamp(Math.ceil((x1 + TRACK.X_LIMIT) / LANE_W), 0, LANE_COUNT - 1);
-      for (let k = k0; k <= k1; k++) {
-        const row = blocked[k];
+    for (let k = k0; k <= k1; k++) {
+      // A long box remains rigid in world space; its ends do not move with
+      // the road. Account for that shift over its whole blocked footprint.
+      const bend = courseOffset ? courseOffset(o.s) - courseOffset(s0 + k * DS) : 0;
+      const row = blocked[k];
+      for (const [left, right] of ranges) {
+        const x0 = left + bend;
+        const x1 = right + bend;
+        if (x1 < -TRACK.X_LIMIT || x0 > TRACK.X_LIMIT) continue;
+        const l0 = clamp(Math.floor((x0 + TRACK.X_LIMIT) / LANE_W), 0, LANE_COUNT - 1);
+        const l1 = clamp(Math.ceil((x1 + TRACK.X_LIMIT) / LANE_W), 0, LANE_COUNT - 1);
         for (let l = l0; l <= l1; l++) row[l] = 1;
       }
     }
@@ -229,8 +261,8 @@ export function validatePattern(
     const cur = new Uint8Array(LANE_COUNT);
     for (let l = 0; l < LANE_COUNT; l++) {
       if (blocked[k][l]) continue;
-      const lo = Math.max(0, l - reachLanes);
-      const hi = Math.min(LANE_COUNT - 1, l + reachLanes);
+      const lo = Math.max(0, l - reach[k]);
+      const hi = Math.min(LANE_COUNT - 1, l + reach[k]);
       for (let p = lo; p <= hi; p++) {
         if (prev[p]) {
           cur[l] = 1;
@@ -254,8 +286,8 @@ export function validatePattern(
     const cur = new Uint8Array(LANE_COUNT);
     for (let l = 0; l < LANE_COUNT; l++) {
       if (blocked[k][l] || !fwd[k][l]) continue;
-      const lo = Math.max(0, l - reachLanes);
-      const hi = Math.min(LANE_COUNT - 1, l + reachLanes);
+      const lo = Math.max(0, l - reach[k + 1]);
+      const hi = Math.min(LANE_COUNT - 1, l + reach[k + 1]);
       for (let n = lo; n <= hi; n++) {
         if (next[n]) {
           cur[l] = 1;
@@ -303,8 +335,8 @@ export function validatePattern(
     const safe = bwd[k];
     let best = -1;
     let bestScore = Infinity;
-    const lo = k === 0 ? lane : Math.max(0, lane - reachLanes);
-    const hi = k === 0 ? lane : Math.min(LANE_COUNT - 1, lane + reachLanes);
+    const lo = k === 0 ? lane : Math.max(0, lane - reach[k]);
+    const hi = k === 0 ? lane : Math.min(LANE_COUNT - 1, lane + reach[k]);
     for (let l = lo; l <= hi; l++) {
       if (!safe[l]) continue;
       const score = Math.abs(l - lane) + Math.abs(l - (LANE_COUNT - 1) / 2) * 0.08;

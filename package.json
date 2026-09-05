@@ -18,7 +18,7 @@
     "test:session": "tsx scripts/sessiontest.ts",
     "test:world": "tsx scripts/worldtest.ts",
     "test:mobile": "tsx scripts/mobiletest.ts",
-    "test:course": "tsx scripts/coursetest.ts",
+    "test:course": "tsx scripts/coursetest.ts && tsx scripts/curvefairnesstest.ts",
     "test:browser": "npm run build && playwright test",
     "test": "npm run test:game && npm run test:graphics && npm run test:session && npm run test:world && npm run test:mobile && npm run test:course && npm run test:competition && npm run test:profiling"
   },

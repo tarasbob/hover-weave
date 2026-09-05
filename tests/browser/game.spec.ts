@@ -224,7 +224,7 @@ test("a real collision produces a flight report and retry starts the daily cours
   // Let the production loop, collision code, and result events run. The
   // report must leave enough time for the visible ship breakup first.
   await expect.poll(async () => Number(await page.getByLabel("Distance traveled").getAttribute("data-distance")),
-    { timeout: 30_000 }).toBeGreaterThanOrEqual(500);
+    { timeout: 30_000 }).toBeGreaterThanOrEqual(240);
   await testInfo.attach("curved-track", { body: await page.screenshot(), contentType: "image/png" });
   const report = page.getByRole("dialog", { name: "SIGNAL LOST", exact: true });
   await expect(game(page)).toHaveAttribute("data-game-phase", "crashing", { timeout: 60_000 });
@@ -240,6 +240,9 @@ test("a real collision produces a flight report and retry starts the daily cours
     "The crash presentation precedes the results dialog by a few seconds").toBeGreaterThan(2_500);
   await expect(game(page)).toHaveAttribute("data-game-phase", "dead");
   await expect(report).toContainText("FLIGHT REPORT / DAILY");
+  await expect(report).toContainText(/left edge|off track/i);
+  expect(Number(await page.getByLabel("Distance traveled").getAttribute("data-distance")),
+    "Coasting must leave the first bend before 450m").toBeLessThan(450);
   if ((await readPerformance(page))?.gpuStatus !== "unsupported") {
     await expect.poll(async () => (await readPerformance(page))?.gpuSubmittedPasses.some((name) => /DoF/i.test(name)), {
       message: "The High-quality crash retains the depth-of-field rendering passes",

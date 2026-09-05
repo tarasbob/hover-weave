@@ -126,14 +126,22 @@ export function lookaheadPilot(
   const speed = Math.max(world.speed, 20);
   const DS = 4;
   const LANE = 0.5;
-  // Frame widened by the course amplitude so a drifting corridor still fits.
-  const FRAME_HALF = TRACK.X_LIMIT + 18;
+  // Include the whole visible corridor: strong bends can move its center
+  // well beyond the old fixed 18 m pad within this planning window.
+  const horizon = 10 + speed * 2.4;
+  const slices = Math.min(80, Math.ceil(horizon / DS));
+  let framePadding = 18;
+  const courseNow = world.courseOffsetAt(craftS);
+  for (let k = 0; k < slices; k++) {
+    framePadding = Math.max(
+      framePadding,
+      Math.abs(world.courseOffsetAt(craftS + 2 + k * DS) - courseNow),
+    );
+  }
+  const FRAME_HALF = TRACK.X_LIMIT + Math.ceil(framePadding / LANE) * LANE;
   const LANES = Math.round((FRAME_HALF * 2) / LANE) + 1;
   const frame0 = world.courseOffsetAt(craftS) - FRAME_HALF;
   const laneX = (l: number) => frame0 + l * LANE;
-  // Plan ~2.4 s ahead (greedy reads ~1.35 s and cannot see dead-ends).
-  const horizon = 10 + speed * 2.4;
-  const slices = Math.min(80, Math.ceil(horizon / DS));
 
   const blocked: Uint8Array[] = [];
   for (let k = 0; k < slices; k++) blocked.push(new Uint8Array(LANES));
@@ -161,16 +169,21 @@ export function lookaheadPilot(
   // slice are unreachable in the sim.
   for (let k = 0; k < slices; k++) {
     const off = world.courseOffsetAt(band0 + k * DS);
-    const lo = Math.floor((off - TRACK.X_LIMIT - frame0) / LANE);
-    const hi = Math.ceil((off + TRACK.X_LIMIT - frame0) / LANE);
+    // Round inward and retain the same clearance used for gap targets.
+    // Rounding outward admits lanes beyond a lethal, moving road edge.
+    const lo = Math.ceil((off - TRACK.X_LIMIT + 1.2 - frame0) / LANE);
+    const hi = Math.floor((off + TRACK.X_LIMIT - 1.2 - frame0) / LANE);
     const row = blocked[k];
     for (let l = 0; l < LANES; l++) {
       if (l < lo || l > hi) row[l] = 1;
     }
   }
 
-  // Forward reachability from the craft (sustainable lateral slope ~0.4).
-  const reachLanes = Math.max(1, Math.round((DS * 0.4) / LANE));
+  // Use the actual unboosted steady steering limit. The old 0.375 grid
+  // slope falsely dead-ended routes where bends and dodges combine to
+  // require up to 0.49, then left the pilot holding position off the road.
+  const steadySlope = STEER.ACCEL_K * FIXED_DT / Math.expm1(STEER.DRAG * FIXED_DT);
+  const reachLanes = Math.max(1, Math.floor((DS * Math.min(STEER.RATIO, steadySlope)) / LANE));
   const cl = Math.round((world.x - frame0) / LANE);
   const fwd: Uint8Array[] = [];
   const start = new Uint8Array(LANES);

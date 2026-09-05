@@ -1,7 +1,7 @@
 /**
- * v8: broad seeded S bends and lethal track edges replace the gentle wander
- * and lateral barrier. Collision results now capture wreck motion. Previous
- * input streams require their original simulation and cannot be replayed here.
+ * v9: stronger bends require sustained steering, and obstacle generation
+ * reserves steering room for the road's curvature. Previous input streams
+ * require their original simulation and cannot be replayed here.
  *
  * Input recording + replay (roadmap 3.1).
  *
@@ -20,6 +20,9 @@ import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
 /**
+ * v8: broad seeded S bends and lethal track edges replace the gentle wander
+ * and lateral barrier. Collision results now capture wreck motion.
+ *
  * v7: first-flight weave encounters replace the repeated empty opening.
  * Endless/daily/sprint course streams change; v6 ghosts must be discarded.
  * Fixed trial geometry and calibration remain unchanged.
@@ -42,7 +45,7 @@ import type { SimWorld } from "./world";
  * v2 streams no longer re-simulate. (v2: the winding course, glass/bumper/
  * beam obstacles, the Leviathan, and run events.)
  */
-export const REPLAY_VERSION = 8;
+export const REPLAY_VERSION = 9;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;

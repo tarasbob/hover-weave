@@ -3,9 +3,10 @@
 The repository now provides the engineering prerequisite for a future ghost
 league: a versioned, server-owned season/course policy and an isolated Node
 verifier that recomputes a submitted `.flight` using the real simulation. This is
-a verification preview, not a deployed competition. Curved tracks and lethal
-edges use replay format v8 and simulation `hover-weave-v8-r1`. The original v7
-season remains immutable and requires its archived build. Saved cosmetics,
+a verification preview, not a deployed competition. Stronger curves and their
+steering-aware obstacle generation use replay format v9 and simulation
+`hover-weave-v9-r1`. The v7 and v8 seasons remain immutable and require their
+archived builds. Saved cosmetics,
 practice rating and existing personal best keys remain available.
 
 ## Use the verifier
@@ -20,7 +21,7 @@ npm run verify:flight -- --list
 Export a completed Slalom run from the game's expanded flight report, then run:
 
 ```sh
-npm run verify:flight -- 2026-preview-v8 trial-slalomGates /path/to/run.flight
+npm run verify:flight -- 2026-preview-v9 trial-slalomGates /path/to/run.flight
 npm run test:competition
 ```
 
@@ -44,7 +45,7 @@ operator must run the verifier against the submitted input recording itself.
   physics and development `skipTo` fields are rejected. Unsupported replay
   versions require an archived simulation build; they are never reinterpreted
   using the current rules.
-- The preview accepts server receipt times from January 1, 2026 inclusive to
+- The current preview accepts server receipt times from September 5, 2026 inclusive to
   January 1, 2027 exclusive. A file's editable `at` timestamp cannot move a
   result into an earlier season. The CLI uses its host clock. The trusted
   integration may supply the time it received the submission; this must not be
@@ -118,5 +119,5 @@ truncated and trailing streams, unavailable seasons/courses, season receipt
 boundaries, version-key isolation, equivalent-export deduplication, and actual
 child-process success, rejection and forced timeout.
 A stored synthetic sprint fixture reaches the real 180-second finish, pins
-its exact v8 result, and verifies that a recording ending one tick earlier is
+its exact v9 result, and verifies that a recording ending one tick earlier is
 rejected. It is a simulation regression fixture, not a claimed human run.

@@ -181,6 +181,17 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const warningAA = max(fwidth(warningPattern), 0.02);
       const stripes = shoulder.mul(smoothstep(warningAA.negate(), warningAA, warningPattern));
 
+      // Sparse center dashes reveal the shape of an upcoming S bend even
+      // while a near road edge is outside a narrow mobile field of view.
+      const centerLine = float(1).sub(
+        smoothstep(float(0.22).sub(edgeAA), float(0.22).add(edgeAA), abs(worldX)),
+      );
+      const dash = abs(fract(sCoord.div(32)).sub(0.5));
+      const dashAA = max(fwidth(sCoord.div(32)), 0.001);
+      const centerDashes = centerLine.mul(float(1).sub(
+        smoothstep(float(0.17).sub(dashAA), float(0.17).add(dashAA), dash),
+      )).mul(resolved);
+
       // Crystal facet sparkle: tiny glints, not whole cells.
       const cellCoord = vec2(worldX, sCoord).div(3);
       const cell = floor(cellCoord);
@@ -192,6 +203,7 @@ export function Terrain({ segments }: { segments: [number, number] }) {
 
       const e = env.uGridColor.mul(grid).mul(0.24)
         .add(env.uPrimary.mul(edge).mul(1.3))
+        .add(mix(env.uPrimary, vec3(0.8, 0.9, 1), 0.55).mul(centerDashes).mul(0.52))
         .add(vec3(1, 0.3, 0.06).mul(stripes).mul(0.46))
         .add(env.uAccent.mul(sparkle).mul(0.65))
         .add(env.uGridColor.mul(env.uFlash).mul(0.12))

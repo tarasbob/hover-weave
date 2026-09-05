@@ -35,7 +35,12 @@ explains how to use Safari's Share → Add to Home Screen and launch the install
 app for a fullscreen experience. Layouts respect the phone's safe areas and
 adapt to the available viewport. Motion access requires HTTPS (or localhost).
 
-Follow the broad, seeded curves and stay inside the luminous track markings.
+Follow the sweeping, seeded curves and stay inside the luminous track markings.
+Bends now reach 64–96 m to either side, about 2.7 times the previous swing, and
+retain 60% of that amplitude at high speed. Every bend requires active steering;
+coasting leaves the first turn at roughly 300–360 m even without obstacles.
+Read the center dashes, set up for the next turn, and ease off boost to recover
+steering authority. Obstacle routes reserve steering capacity for the bend.
 Crossing either edge ends the run, including while airborne or shielded. A fatal
 obstacle impact or edge departure breaks the ship into flying fragments; the
 flight report appears after the three-second crash sequence. Reduced motion
@@ -147,8 +152,8 @@ Useful dev tools:
 See [the design and engineering review](docs/game-design-review.md) for the
 current assessment, completed polish and engineering work, rating recommendations,
 and the proposed three-sector expedition mode. The current Pilot Rating is a
-local practice estimate, not an online competitive rank. Replay format v8 rejects older
-recordings because curved courses and lethal boundaries change the physics;
+local practice estimate, not an online competitive rank. Replay format v9 rejects older
+recordings because stronger curves and curve-aware obstacle routes change the physics;
 earned cosmetics and progression remain available. Historical competition policy
 retains its original simulation version and cannot be verified under the new rules.
 

@@ -11,7 +11,7 @@ import { crashCenter, type CrashOrigin } from "./crashMotion";
 import { chaseFraming } from "./cameraFraming";
 
 /**
- * Chase camera: lateral lag, bank roll, speed FOV, impact shake and a
+ * Chase camera: ship-anchored follow, bank roll, speed FOV, impact shake and a
  * death slow-mo pull-back.
  */
 export function CameraRig() {
@@ -22,6 +22,7 @@ export function CameraRig() {
   const state = useRef({
     x: 0,
     lookX: 0,
+    craftX: 0,
     fov: 68,
     trauma: 0,
     roll: 0,
@@ -45,6 +46,7 @@ export function CameraRig() {
         Object.assign(state.current, {
           x: world.x,
           lookX: world.x,
+          craftX: world.x,
           trauma: 0,
           roll: 0,
           nearWhip: 0,
@@ -129,8 +131,15 @@ export function CameraRig() {
 
     const whipScale = reduceMotion ? 0.18 : 1;
     const framing = chaseFraming(
-      craftX, idle ? 0 : world.courseOffsetAt(dist), bend, s.nearWhip * whipScale,
+      craftX, idle ? 0 : world.courseOffsetAt(dist), bend, s.nearWhip * whipScale, camera.aspect,
     );
+    // Keep the ship anchored while it steers across a broad bend. Smoothing
+    // absolute world x would leave several metres of camera lag at racing
+    // speed, enough to crop the craft on a portrait display.
+    const translation = craftX - s.craftX;
+    s.x += translation;
+    s.lookX += translation;
+    s.craftX = craftX;
     s.x = damp(s.x, framing.x, 7.5, dt);
     s.lookX = damp(s.lookX, framing.lookX, 6, dt);
 

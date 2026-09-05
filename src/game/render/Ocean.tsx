@@ -20,6 +20,10 @@ import {
   cameraPosition,
   normalize,
   pow,
+  clamp,
+  floor,
+  fract,
+  uniformArray,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { OCEAN_DEPTH } from "./visualConstants";
@@ -31,8 +35,13 @@ import { EFFECT_PIXEL_DENSITY, effectResolutionScale } from "./effectPolicy";
  * fades in/out through transitions and reads as wet sheen elsewhere.
  */
 export function Ocean({ resolutionScale }: { resolutionScale: number }) {
-  const { env } = useGameBundle();
+  const { env, world, ambient } = useGameBundle();
   const renderer = useThree((s) => s.gl);
+  const course = useMemo(() => {
+    const rows = Math.ceil(OCEAN_DEPTH / 8);
+    const values = Array<number>(rows + 1).fill(0);
+    return { rows, step: OCEAN_DEPTH / rows, values, node: uniformArray<"float">(values, "float") };
+  }, []);
 
   const { group, reflection } = useMemo(() => {
     const g = new THREE.Group();
@@ -55,6 +64,14 @@ export function Ocean({ resolutionScale }: { resolutionScale: number }) {
     const mat = new THREE.MeshBasicNodeMaterial();
     mat.transparent = true;
     mat.depthWrite = false;
+    // The reflective strip follows the same course as the road and terrain;
+    // a fixed strip at x=0 would visibly cut across the stronger bends.
+    const index = clamp(
+      float(OCEAN_DEPTH / 2).sub(positionLocal.z).div(course.step), 0, course.rows - 0.0001,
+    );
+    const row = floor(index);
+    const courseX = mix(course.node.element(row), course.node.element(row.add(1)), fract(index));
+    mat.positionNode = positionLocal.add(vec3(courseX, 0, 0));
 
     mat.colorNode = Fn(() => {
       const view = normalize(cameraPosition.sub(positionWorld));
@@ -78,7 +95,7 @@ export function Ocean({ resolutionScale }: { resolutionScale: number }) {
       return env.uReflectivity.mul(edgeFade);
     })();
 
-    const geo = new THREE.PlaneGeometry(130, OCEAN_DEPTH);
+    const geo = new THREE.PlaneGeometry(130, OCEAN_DEPTH, 1, course.rows);
     geo.rotateX(-Math.PI / 2);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(0, 0.05, -OCEAN_DEPTH / 2 + 120);
@@ -86,12 +103,18 @@ export function Ocean({ resolutionScale }: { resolutionScale: number }) {
     mesh.renderOrder = -1;
     g.add(mesh);
     return { group: g, reflection: reflectionNode };
-  }, [env, resolutionScale]);
+  }, [env, course, resolutionScale]);
 
   useFrame(() => {
     // A fully transparent water plane must not trigger an invisible scene
     // render. Any nonzero sheen, including biome transitions, stays visible.
     group.visible = env.uReflectivity.value > 0;
+    if (group.visible) {
+      const distance = world.status === "idle" ? ambient.value : world.renderDistance;
+      for (let i = 0; i <= course.rows; i++) {
+        course.values[i] = world.courseOffsetAt(distance - 120 + i * course.step);
+      }
+    }
     reflection.reflector.resolutionScale = effectResolutionScale(
       resolutionScale, env.uDrsScale.value,
       renderer.getPixelRatio(), EFFECT_PIXEL_DENSITY.reflection,

@@ -9,7 +9,7 @@ import { competitionRunConfig, selectCompetitionCourse } from "../src/game/compe
 import { verifyCompetitionFlight } from "../src/game/competition/verify";
 import { superhumanPilot } from "./pilots";
 
-const selection = { seasonId: "2026-preview-v8", courseId: "sprint-2026-w36" };
+const selection = { seasonId: "2026-preview-v9", courseId: "sprint-2026-w36" };
 const { course } = selectCompetitionCourse(selection);
 assert.equal(course.seed, "cubefield-sprint-2026-W36");
 const world = new SimWorld();
@@ -38,5 +38,5 @@ assert.equal(verified.steps, 21600);
 assert.equal(verified.duration, 180);
 assert.equal(verified.score, world.stats.score);
 assert.equal(verified.distance, world.stats.distance);
-writeFileSync(new URL("../src/game/competition/fixtures/sprint-v8.flight", import.meta.url), payload + "\n");
+writeFileSync(new URL("../src/game/competition/fixtures/sprint-v9.flight", import.meta.url), payload + "\n");
 console.log(JSON.stringify([verified.terminal, verified.steps, verified.duration, verified.score, verified.distance]));

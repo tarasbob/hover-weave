@@ -5,11 +5,11 @@ import { FIXED_DT } from "../src/game/core/constants";
 import type { InputState } from "../src/game/core/input";
 import { resimulate } from "../src/game/core/replay";
 import { SimWorld } from "../src/game/core/world";
-import { autopilot, lookaheadPilot } from "./pilots";
+import { autopilot, lookaheadPilot, superhumanPilot } from "./pilots";
 
 const seconds = 140;
 let baked = false;
-for (let candidate = 0; candidate < 120 && !baked; candidate++) {
+for (let candidate = 0; candidate < 140 && !baked; candidate++) {
   const seed = `render-route-v1-${candidate}`;
   const world = new SimWorld();
   world.start({ seed, mode: "endless" });
@@ -21,7 +21,11 @@ for (let candidate = 0; candidate < 120 && !baked; candidate++) {
   const sections: { seconds: number; distance: number; biome: number; activeObstacles: number }[] = [];
   for (let step = 0; step < seconds / FIXED_DT && world.status === "running"; step++) {
     if (candidate < 20) autopilot(world, input);
-    else lookaheadPilot(world, input, memory);
+    else if (candidate < 120) lookaheadPilot(world, input, memory);
+    else superhumanPilot(world, input, {
+      horizonSeconds: 3.2,
+      switchFractions: [0.5, 0.25, 0.75, 0.125],
+    });
     world.update(FIXED_DT, input);
     biomes.add(world.biomeIndex);
     if (step % 120 === 0) {
@@ -38,8 +42,9 @@ for (let candidate = 0; candidate < 120 && !baked; candidate++) {
   const replayed = resimulate(recording, new SimWorld());
   assert.deepEqual(replayed.stats, world.stats);
   const fixture = {
-    id: "dense-biomes-v2", label: "Dense sections and biome transitions",
-    generatedBy: candidate < 20 ? "offline greedy pilot" : "offline lookahead pilot",
+    id: "dense-biomes-v3", label: "Dense sections and biome transitions",
+    generatedBy: candidate < 20 ? "offline greedy pilot" :
+      candidate < 120 ? "offline lookahead pilot" : "offline rollout pilot",
     seconds, maxObstacles, biomes: [...biomes], patterns: [...patterns].sort(), sections, recording,
   };
   writeFileSync(new URL("../src/game/profiling/route.json", import.meta.url), JSON.stringify(fixture) + "\n");

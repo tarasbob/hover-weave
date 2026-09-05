@@ -1,7 +1,7 @@
 # Simulation boundaries
 
 Implemented and verified September 5, 2026. This is the current architecture,
-not a proposed split. Replay v8 adds broad curves and lethal track edges.
+not a proposed split. Replay v9 adds demanding curves and curvature-aware route validation.
 
 `SimWorld` remains the public entry point. It owns run identity, craft and reward
 state, the input recorder, and fixed-step orchestration. The systems here receive
@@ -39,7 +39,7 @@ and dash transitions onto fixed ticks in `SimWorld.update`. Already-sampled
 replay and pilot inputs retain the original path. A sub-tick action receives a
 press tick and a release tick; gamepad buttons remain polled browser snapshots.
 
-`npm run test:world` locks exact v8 state, ordered events, pool contents,
+`npm run test:world` locks exact v9 state, ordered events, pool contents,
 forensics and recording output across reused runs. It excludes only the recording
 export's wall-clock timestamp. The deeper simulation and frontier suites cover
 contacts, ramps, movement techniques, fairness and replay invariants.

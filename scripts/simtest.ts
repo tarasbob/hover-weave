@@ -76,19 +76,21 @@ import { autopilot, lookaheadPilot, scanGaps, steerToward, superhumanPilot } fro
 
 const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
 
-// --- Conservative-bot survival + pool pressure + first-2km economy gate ----
+// --- Conservative-bot survival + pool pressure + opening economy gate ----
 
 // Conservative-bot baselines (no boost), recalibrated 2026-09-05 for the
-// v8 broad bends and lethal edges. The same eight seeds sample economy at
-// 500m, before any conservative pilot crashes; longer surviving seeds also
-// sample 2km. Procedural layouts and fixed trial geometry remain unchanged.
+// v9 steering-intensive bends and curvature-aware obstacle routing. The
+// same eight seeds now sample economy at 250m before their first crashes;
+// five also reach 500m. None survives 2km with this single-band policy.
+// The separate 220-row gauntlet still checks sustained boost income below.
 // Keep the same ±15% per-seed and ±10% average economy drift limits.
-const BASELINE_500: Record<string, number> = {
-  "test-0": 921, "test-1": 1501, "test-2": 1420, "test-3": 1371,
-  "test-4": 2822, "test-5": 1499, "test-6": 1326, "test-7": 2083,
+const BASELINE_250: Record<string, number> = {
+  "test-0": 798, "test-1": 956, "test-2": 965, "test-3": 873,
+  "test-4": 1303, "test-5": 824, "test-6": 905, "test-7": 902,
 };
-const BASELINE_2KM: Record<string, number> = {
-  "test-1": 3936, "test-2": 4248, "test-4": 4718, "test-7": 3510,
+const BASELINE_500: Record<string, number> = {
+  "test-0": 990, "test-1": 1202, "test-2": 1158,
+  "test-4": 1558, "test-7": 1136,
 };
 
 let totalDeaths = 0;
@@ -98,8 +100,8 @@ let minDist = Infinity;
 const peakByKind = new Map<string, number>();
 let peakShards = 0;
 let peakShields = 0;
+const score250: Record<string, number> = {};
 const score500: Record<string, number> = {};
-const score2km: Record<string, number> = {};
 const runs = 8;
 for (let r = 0; r < runs; r++) {
   const world = new SimWorld();
@@ -126,11 +128,11 @@ for (let r = 0; r < runs; r++) {
   while (world.status === "running" && steps < maxSteps) {
     autopilot(world, input);
     world.update(FIXED_DT, input);
+    if (score250[seed] === undefined && world.distance >= 250) {
+      score250[seed] = Math.floor(world.score);
+    }
     if (score500[seed] === undefined && world.distance >= 500) {
       score500[seed] = Math.floor(world.score);
-    }
-    if (score2km[seed] === undefined && world.distance >= 2000) {
-      score2km[seed] = Math.floor(world.score);
     }
     if (steps % 60 === 0) {
       const active = world.obstacles.filter((o) => o.active).length;
@@ -173,9 +175,11 @@ console.log(
   `pillar ${POOL_SIZES.pillar} / crystal ${POOL_SIZES.crystal})`,
 );
 const avgDist = totalDist / runs;
-assert.ok(minDist > 450, `opening is too punishing for the conservative bot (${minDist.toFixed(0)}m)`);
-assert.ok(avgDist > 900, `average survival collapsed to ${avgDist.toFixed(0)}m`);
-assert.ok(avgDist < 9000, `challenge curve is too gentle (${avgDist.toFixed(0)}m average)`);
+// Frozen v9 policy: minimum 314m, mean 870m. It must clear the launch and
+// initial steering lesson, but its limited preview struggles on real turns.
+assert.ok(minDist > 300, `opening is too punishing for the conservative bot (${minDist.toFixed(0)}m)`);
+assert.ok(avgDist > 750, `average survival collapsed to ${avgDist.toFixed(0)}m`);
+assert.ok(avgDist < 3000, `challenge curve is too gentle (${avgDist.toFixed(0)}m average)`);
 assert.ok(peakActive < 500, `active obstacle pressure is unexpectedly high (${peakActive})`);
 for (const kind of ["box", "pillar", "crystal", "sphere", "ring", "glass", "bumper", "beam", "ramp"] as const) {
   assert.ok(
@@ -189,6 +193,16 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
 // Keep the conservative route's economy stable between deliberate re-bakes.
 {
   const drifts: number[] = [];
+  for (const [seed, base] of Object.entries(BASELINE_250)) {
+    const now = score250[seed];
+    assert.ok(now !== undefined, `${seed} no longer reaches 250m`);
+    const drift = now / base - 1;
+    drifts.push(drift);
+    assert.ok(
+      Math.abs(drift) < 0.15,
+      `${seed} first-250m score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
+    );
+  }
   for (const [seed, base] of Object.entries(BASELINE_500)) {
     const now = score500[seed];
     assert.ok(now !== undefined, `${seed} no longer reaches 500m`);
@@ -199,22 +213,12 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
       `${seed} first-500m score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
     );
   }
-  for (const [seed, base] of Object.entries(BASELINE_2KM)) {
-    const now = score2km[seed];
-    assert.ok(now !== undefined, `${seed} no longer reaches 2km`);
-    const drift = now / base - 1;
-    drifts.push(drift);
-    assert.ok(
-      Math.abs(drift) < 0.15,
-      `${seed} first-2km score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
-    );
-  }
   const avgDrift = drifts.reduce((a, b) => a + b, 0) / drifts.length;
   assert.ok(
     Math.abs(avgDrift) < 0.1,
     `novice-proxy scoring drifted ${(avgDrift * 100).toFixed(1)}% on average`,
   );
-  console.log(`first-2km economy gate: PASS (avg drift ${(avgDrift * 100).toFixed(1)}%)`);
+  console.log(`opening economy gate: PASS (avg drift ${(avgDrift * 100).toFixed(1)}%)`);
 }
 
 // --- Boost uptime: the risk loop must reward grazing, not shard-hoarding ---
@@ -993,8 +997,8 @@ console.log("edge-case assertions: PASS");
 // The treadmill must never stop: every bot tier has to die (no immortal
 // line), and better play has to buy meaningfully more distance — stable,
 // distinct walls per tier. Greedy reads one band, lookahead plans across
-// two, superhuman tracks the validator's solved path and is limited only by
-// steering bandwidth against overdrive speed/density.
+// several, and superhuman searches real control trajectories against live
+// obstacles. No pilot reads the validator's solved path.
 {
   type Tier = "greedy" | "lookahead" | "superhuman";
   const TIER_CAP_S: Record<Tier, number> = {
@@ -1048,12 +1052,12 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Re-baked for v8 on these same six seeds. Broad bends change route choice;
-  // the search pilot also treats edges as fatal instead of planning rebounds.
+  // Re-baked for v9 on these same six seeds. Stronger turns change route
+  // choice and consume steering authority alongside obstacle avoidance.
   const WALL_BASELINE: Record<Tier, number> = {
-    greedy: 1674,
-    lookahead: 4921,
-    superhuman: 38921,
+    greedy: 929,
+    lookahead: 1407,
+    superhuman: 17739,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);
@@ -1083,9 +1087,10 @@ console.log("edge-case assertions: PASS");
   const g = median(walls.greedy);
   const l = median(walls.lookahead);
   const s = median(walls.superhuman);
-  // The mainline beat grid (fun-frontier 2.1) compressed greedy→lookahead
-  // separation from ~1.9× to ~1.48×: phase-locked movers are more readable
-  // for the reactive tier — by design. The tiers must still be distinct.
+  // v9's stronger road keeps the tiers distinct: lookahead now survives
+  // 1.51× farther than greedy, and every seed clears the opening bend.
+  assert.ok(Math.min(...walls.lookahead) > 800,
+    "lookahead must negotiate the opening and first complete bend");
   assert.ok(
     l > g * 1.35,
     `lookahead wall (${l.toFixed(0)}m) must clear greedy (${g.toFixed(0)}m) by ≥1.35×`,
@@ -1100,9 +1105,8 @@ console.log("edge-case assertions: PASS");
     "otherwise Phase 2 scaling is never exercised",
   );
   for (const tier of ["greedy", "lookahead", "superhuman"] as Tier[]) {
-    // The local planner has more seed variance across broad bends (v8
-    // observed trimmed spread 5.08); keep its guard within 10% of that bake.
-    const spreadLimit = tier === "lookahead" ? 5.5 : 4.5;
+    // Re-baked v9 trimmed spread: lookahead 1.70×, other tiers below 2.6×.
+    const spreadLimit = tier === "lookahead" ? 2.5 : 4.5;
     assert.ok(
       trimmedSpread(walls[tier]) < spreadLimit,
       `${tier} wall is unstable across seeds (trimmed spread ×${trimmedSpread(walls[tier]).toFixed(2)})`,
@@ -1146,7 +1150,7 @@ console.log("edge-case assertions: PASS");
   live.start(config);
   assert.equal(live.timeLimit, SPRINT_MODE.DURATION);
   // A deeper offline search handles broad bends while retaining real inputs
-  // and the full authored course, matching the verified v8 sprint fixture.
+  // and the full authored course, matching the verified v9 sprint fixture.
   const maxSteps = Math.floor((SPRINT_MODE.DURATION + 30) / FIXED_DT);
   for (let i = 0; i < maxSteps && live.status === "running"; i++) {
     superhumanPilot(live, input, { horizonSeconds: 3.2, switchFractions: [0.5, 0.25, 0.75, 0.125] });
@@ -1236,10 +1240,12 @@ console.log("edge-case assertions: PASS");
 
   // Calibration gates on three representative trials (deterministic seeds:
   // exact until tuning moves; loose drift bands catch real regressions).
-  // Baselines from scripts/trialcal.ts, 2026-07.
+  // Frozen trial geometry; the piston lookahead wall is recalibrated for
+  // v9's corrected planner. Other historical bands still hold, preserving
+  // their authored medal-neighborhood checks and fixed reference ratings.
   const TRIAL_WALLS: Record<string, { greedy: number; lookahead: number }> = {
     slalomGates: { greedy: 589, lookahead: 932 },
-    pistonCorridor: { greedy: 2689, lookahead: 5336 },
+    pistonCorridor: { greedy: 2689, lookahead: 2689 },
     splitDecision: { greedy: 198, lookahead: 918 },
   };
   const CAP_S = { greedy: 240, lookahead: 300 } as const;
@@ -1353,6 +1359,8 @@ console.log("edge-case assertions: PASS");
     const cruise = (heat: HeatId[]): number => {
       const world = new SimWorld();
       world.start({ mode: "endless", seed: "heat-cruise", heat });
+      // This isolates passive heat income over an uninterrupted straight cruise.
+      world.course = new Course(null);
       world.clearField();
       (world as unknown as { generator: null }).generator = null;
       const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
@@ -1557,17 +1565,17 @@ console.log("edge-case assertions: PASS");
 // --- Phase 4.4: pilot rating ---------------------------------------------------
 {
   // Monotone in distance, anchored to the calibrated legacy reporting walls
-  // (re-baked 2026-09-05 for v8). Trial performance normalization is unchanged.
+  // (re-baked 2026-09-05 for v9). Trial performance normalization is unchanged.
   let prev = -1;
-  for (const d of [50, 150, 400, 1674, 2500, 4921, 5000, 8000, 20000, 38921, 100000]) {
+  for (const d of [50, 150, 400, 929, 1407, 2500, 5000, 8000, 17739, 20000, 100000]) {
     const p = runPerformance(d);
     assert.ok(p >= prev, `runPerformance must be monotone (${d}m)`);
     assert.ok(p >= RATING.FLOOR && p <= RATING.CEIL, "performance must stay clamped");
     prev = p;
   }
-  assert.ok(Math.abs(runPerformance(1674) - 1200) < 1, "greedy wall anchor");
-  assert.ok(Math.abs(runPerformance(4921) - 1700) < 1, "lookahead wall anchor");
-  assert.ok(Math.abs(runPerformance(38921) - 3000) < 1, "superhuman wall anchor");
+  assert.ok(Math.abs(runPerformance(929) - 1200) < 1, "greedy wall anchor");
+  assert.ok(Math.abs(runPerformance(1407) - 1700) < 1, "lookahead wall anchor");
+  assert.ok(Math.abs(runPerformance(17739) - 3000) < 1, "superhuman wall anchor");
   assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
   assert.equal(referencePerformance(0, 5000), RATING.FLOOR);
   assert.equal(referencePerformance(5000, 5000), 3000);
@@ -1586,7 +1594,7 @@ console.log("edge-case assertions: PASS");
   let rating: number = RATING.START;
   const deltas: number[] = [];
   for (let runs = 0; runs < 40; runs++) {
-    const next = updateRating(rating, runs, 4921);
+    const next = updateRating(rating, runs, 1407);
     deltas.push(Math.abs(next - rating));
     rating = next;
   }
@@ -1604,7 +1612,7 @@ console.log("edge-case assertions: PASS");
     assert.ok(RATING_TIERS[i].min > RATING_TIERS[i - 1].min);
   }
   assert.equal(ratingTier(0).name, "DRIFTER");
-  assert.equal(ratingTier(runPerformance(38921)).name, "WEAVER");
+  assert.equal(ratingTier(runPerformance(17739)).name, "WEAVER");
   console.log(`rating gate: PASS (convergence at ${rating}, ${ratingTier(rating).name})`);
 }
 
@@ -2079,6 +2087,8 @@ console.log("edge-case assertions: PASS");
   {
     const world = new SimWorld();
     world.start(endless("resonant-mainline"));
+    // Hand-authored straight passes isolate timing and the award formula.
+    world.course = new Course(null);
     world.clearField();
     (world as unknown as { generator: null }).generator = null;
     for (let i = 0; i < 12; i++) {

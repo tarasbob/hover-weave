@@ -6,7 +6,7 @@ import { REPLAY_VERSION } from "../core/replay";
 import { trialById } from "../track/trials";
 
 export const VERIFIER_VERSION = 1;
-export const SIMULATION_VERSION = "hover-weave-v8-r1";
+export const SIMULATION_VERSION = "hover-weave-v9-r1";
 export const VERIFICATION_LIMITS = Object.freeze({
   bytes: 2 * 1024 * 1024,
   rleNumbers: 240_000,
@@ -83,6 +83,27 @@ export const COMPETITION_SEASONS: readonly CompetitionSeason[] = Object.freeze([
     label: "2026 curved-course verification preview",
     replayVersion: 8,
     simulationVersion: "hover-weave-v8-r1",
+    opensAt: Date.UTC(2026, 8, 5),
+    closesAt: Date.UTC(2027, 0, 1),
+    courses: Object.freeze([
+      ...trialIds.map((trialId) => course({
+        id: `trial-${trialId}`,
+        mode: "trial",
+        seed: `cubefield-trial-${trialId}`,
+        trialId,
+      })),
+      course({ id: "daily-2026-09-05", mode: "daily", seed: "cubefield-daily-2026-09-05" }),
+      course({ id: "sprint-2026-w36", mode: "sprint", seed: "cubefield-sprint-2026-W36", maxSteps: 120 * 180 }),
+      course({ id: "endless-reference", mode: "endless", seed: "test-3" }),
+      course({ id: "heat-reference", mode: "endless", seed: "world-contract", heat: ["denseField", "fastMovers"] }),
+    ]),
+  }),
+  Object.freeze({
+    id: "2026-preview-v9",
+    revision: 1,
+    label: "2026 stronger-curves verification preview",
+    replayVersion: 9,
+    simulationVersion: "hover-weave-v9-r1",
     opensAt: Date.UTC(2026, 8, 5),
     closesAt: Date.UTC(2027, 0, 1),
     courses: Object.freeze([

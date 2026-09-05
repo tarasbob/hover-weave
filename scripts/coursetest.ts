@@ -26,7 +26,7 @@ for (let seed = 0; seed < 16; seed++) {
   const repeated = new Course(`curve-readability-${seed}`);
   assert.equal(course.offsetAt(0), 0);
   assert.equal(course.offsetAt(-10), 0);
-  assert.ok(Math.abs(course.offsetAt(300)) > 5, "a bend must be visible in the opening");
+  assert.ok(Math.abs(course.offsetAt(300)) > 18, "the first bend must be visibly displacing the road by 300m");
   assert.ok(Math.abs(course.offsetAt(COURSE.RAMP_IN)) >= COURSE.MIN_OFFSET);
   assert.ok(course.offsetAt(COURSE.RAMP_IN) * course.offsetAt(COURSE.RAMP_IN + COURSE.BEND_LENGTH) < 0,
     "successive broad bends must turn in opposite directions");
@@ -36,8 +36,8 @@ for (let seed = 0; seed < 16; seed++) {
     assert.equal(offset, repeated.offsetAt(s), "seeded bends must be deterministic");
     assert.ok(Math.abs(offset) <= COURSE.MAX_OFFSET);
     const slope = Math.abs(offset - previous);
-    assert.ok(slope < 0.15, "bends must reserve steering authority for obstacles");
-    if (difficultyAt(s) >= COURSE.TAPER_D1) assert.ok(slope < 0.045, "late bends must ease for dense fields");
+    assert.ok(slope < COURSE.SLOPE_EARLY, "bends must stay inside their steering budget");
+    if (difficultyAt(s) >= COURSE.TAPER_D1) assert.ok(slope < 0.22, "late bends ease without flattening out");
     previous = offset;
   }
   // Arbitrary access order must produce the same centerline for ghosts and streaming.
@@ -47,7 +47,7 @@ for (let seed = 0; seed < 16; seed++) {
     const rightSlope = (course.offsetAt(s + 0.001) - course.offsetAt(s)) / 0.001;
     assert.ok(Math.abs(rightSlope - leftSlope) < 0.00001, "apex tangent must stay continuous");
   }
-  const generator = new TrackGenerator(createRng(`curve-readability-${seed}`));
+  const generator = new TrackGenerator(createRng(`curve-readability-${seed}`), true, null, undefined, (s) => course.offsetAt(s));
   generator.fill(40000, {
     chunk(chunk) {
       for (const [, x] of chunk.path) {
@@ -65,7 +65,22 @@ for (let seed = 0; seed < 16; seed++) {
     assert.equal(world.status, "running", "a smooth centerline must be physically steerable");
     assert.ok(Math.abs(world.x - world.courseOffsetAt(world.distance)) < 3);
   }
-  assert.ok(peakAxis < 0.65, "following bends alone must leave ample steering authority");
+  assert.ok(peakAxis > 0.4, "following the road must require substantial deliberate steering");
+  assert.ok(peakAxis < 0.85, "a skilled pilot must retain room to correct their line");
+  const coasting = emptyWorld(`curve-readability-${seed}`);
+  for (let tick = 0; tick < 30 / FIXED_DT && coasting.status === "running"; tick++) {
+    coasting.update(FIXED_DT, input());
+  }
+  assert.equal(coasting.stats.deathCause?.cause, "edge", "even an obstacle-free first bend requires steering");
+  assert.ok(coasting.distance > 300 && coasting.distance < 450, "the first turn must demand a response early in the run");
+  // The old taper left a straight corridor through most late bends. Every
+  // pair of late apices must now force a lane change across the road width.
+  for (let apex = 8; apex < 40; apex++) {
+    const s = COURSE.RAMP_IN + apex * COURSE.BEND_LENGTH;
+    assert.ok(Math.abs(course.offsetAt(s)) > TRACK.X_LIMIT, "late bends must remain wider than the half-track");
+    assert.ok(Math.abs(course.offsetAt(s + COURSE.BEND_LENGTH) - course.offsetAt(s)) > 2 * TRACK.X_LIMIT,
+      "there must be no constant world-space line through successive late bends");
+  }
 }
 assert.equal(new Course(null).offsetAt(12345), 0, "fixed trial courses stay straight");
 

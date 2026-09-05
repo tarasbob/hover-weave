@@ -195,7 +195,10 @@ export function GameScene() {
     env.update(world, dt, ambient.value);
     audio.update(world, dt);
     haptics.update(world, dt);
-    const lightX = world.status === "idle" ? 0 : world.renderX * 0.28;
+    // Follow the road's full translation so wide bends stay inside the
+    // shadow camera; retain the subtle light follow for local steering.
+    const roadX = world.courseOffsetAt(world.renderDistance);
+    const lightX = world.status === "idle" ? 0 : roadX + (world.renderX - roadX) * 0.28;
     dirLight.target.position.set(lightX, 0, -46);
     dirLight.position.set(
       lightX + SUN_DIRECTION[0] * 82,

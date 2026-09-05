@@ -4,7 +4,9 @@ import { createRng } from "../core/rng";
 import { difficultyAt } from "./generator";
 
 /**
- * Seeded, broad S bends. Each apex alternates sides, with a seeded amplitude;
+ * Seeded S bends spanning several track widths. Every apex, including late
+ * in a run, moves beyond the original corridor and demands active steering.
+ * Each apex alternates sides, with a seeded amplitude;
  * smooth interpolation keeps the tangent continuous, including at launch.
  * Patterns and their solved path share this exact centerline in world space.
  * The late taper reserves steering authority for the denser obstacle field.

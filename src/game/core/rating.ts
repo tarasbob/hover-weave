@@ -15,15 +15,15 @@ import { clamp } from "./mathUtils";
 
 /**
  * (distance m, rating) anchors — bot walls from the simtest calibration.
- * Re-baked for v8's broad bends and lethal edges on the same six seeds.
+ * Re-baked for v9's stronger bends on the same six seeds.
  * These legacy reporting anchors do not rate trials.
  */
 const ANCHORS: readonly [number, number][] = [
   [150, 400], // barely off the launch ramp
-  [1674, 1200], // greedy band-scan wall
-  [4921, 1700], // lookahead planner wall
+  [929, 1200], // greedy band-scan wall
+  [1407, 1700], // lookahead planner wall
   [8000, 2200], // overdrive threshold — beyond every heuristic tier
-  [38921, 3000], // TAS rollout searcher wall
+  [17739, 3000], // TAS rollout searcher wall
 ];
 
 export const RATING = {
