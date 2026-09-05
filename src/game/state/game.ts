@@ -8,7 +8,7 @@ import type { PatternSkill } from "../core/types";
 import type { DeathForensics, RunStats, SectionGrade } from "../core/world";
 import type { Medal } from "../track/trials";
 
-export type GamePhase = "boot" | "title" | "running" | "paused" | "dead";
+export type GamePhase = "boot" | "title" | "running" | "paused" | "crashing" | "dead";
 export type { GameMode };
 export type FlightLessonStep = "steer" | "graze" | "boost" | "rhythm" | "jump";
 

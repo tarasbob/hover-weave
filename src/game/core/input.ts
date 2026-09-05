@@ -1,5 +1,6 @@
 import { clamp } from "./mathUtils";
 import { ActionEventBuffer, type ActionFrame } from "./actionInput";
+import { TiltControls } from "./tilt";
 
 export interface InputState {
   /** Steering axis, -1 (left) .. 1 (right). */
@@ -90,14 +91,12 @@ const nowMs = (): number =>
  * Merges keyboard, pointer hold-zones (touch) and gamepad into one input
  * state. Pure DOM listeners; no React.
  *
- * Steering is two buttons everywhere by design (roadmap 5.2 cut): the
- * pointer's screen half, the stick's sign, and the d-pad all produce the
- * same digital -1 / 0 / +1 the keyboard does. Depth lives in the momentum
- * model — and, since fun-frontier 1.1, in *cadence*: keyboard and touch
- * transitions are integrated sub-tick, so the axis the sim sees is the
- * fraction of the frame each direction was actually held.
+ * Keyboard and touch hold-zones integrate sub-tick transitions. Opt-in
+ * device rotation contributes a continuous axis; touch, keys and gamepad
+ * can always override it without changing the selected control mode.
  */
 export class InputManager {
+  readonly tilt = new TiltControls();
   private actionEvents = new ActionEventBuffer();
   readonly state: InputState = {
     axis: 0, boost: false, dash: false, restart: false, pause: false,
@@ -116,6 +115,7 @@ export class InputManager {
   private gamepadPauseHeld = false;
   private gamepadBoost = false;
   private gamepadDash = false;
+  private uiBoost = false;
   /** Sub-tick integrators (keyboard and touch are separate sources). */
   private keySteer = new SubTickAxis();
   private touchSteer = new SubTickAxis();
@@ -221,6 +221,7 @@ export class InputManager {
     this.focused = false;
     this.reset();
     this.pointerTarget = null;
+    this.tilt.disable();
   }
 
   /** Drop held controls and pending actions when focus or listeners are lost. */
@@ -235,22 +236,30 @@ export class InputManager {
     this.gamepadPauseHeld = false;
     this.gamepadBoost = false;
     this.gamepadDash = false;
+    this.uiBoost = false;
     this.baselineGamepad = false;
     this.state.axis = 0;
     this.state.boost = false;
     this.state.dash = false;
     this.state.restart = false;
     this.state.pause = false;
+    this.tilt.reset();
   }
 
   /** Merge held sources before recording edges, so releasing one never cancels another. */
   private syncActions(t: number): void {
-    this.state.boost = this.gamepadBoost || this.pointers.size >= 2 ||
+    this.state.boost = this.uiBoost || this.gamepadBoost || this.pointers.size >= 2 ||
       this.keys.has("Space") || this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") ||
       this.keys.has("KeyW") || this.keys.has("ArrowUp");
     this.state.dash = this.gamepadDash || this.pointers.size >= 3 ||
       this.keys.has("KeyS") || this.keys.has("ArrowDown");
     this.actionEvents.set(this.state.boost, this.state.dash, t);
+  }
+
+  /** Dedicated mobile boost control; never participates in steering hold zones. */
+  setBoostHeld(held: boolean): void {
+    this.uiBoost = held && this.focused;
+    this.syncActions(nowMs());
   }
 
   /**
@@ -279,7 +288,10 @@ export class InputManager {
     const keyAxis = this.keySteer.drain(t);
     const touchAxis = this.touchSteer.drain(t);
     // Touch replaces keyboard while any finger contributed to the window.
-    let axis = this.pointers.size > 0 || touchAxis !== 0 ? touchAxis : keyAxis;
+    const tiltAxis = this.tilt.poll(t);
+    let axis = this.pointers.size > 0 || touchAxis !== 0
+      ? touchAxis
+      : this.keySteer.held || keyAxis !== 0 ? keyAxis : tiltAxis;
 
     this.gamepadBoost = false;
     this.gamepadDash = false;

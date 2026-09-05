@@ -221,10 +221,23 @@ test("a real collision produces a flight report and retry starts the daily cours
   await page.getByRole("group", { name: "Choose a flight mode" })
     .getByRole("button", { name: /Daily course/ }).click();
   await launch(page, "daily");
-  // On this fixed daily course, coasting naturally collides after 16.8 sim
-  // seconds. Let the production loop, collision code, and result events run.
+  // Let the production loop, collision code, and result events run. The
+  // report must leave enough time for the visible ship breakup first.
+  await expect.poll(async () => Number(await page.getByLabel("Distance traveled").getAttribute("data-distance")),
+    { timeout: 30_000 }).toBeGreaterThanOrEqual(500);
+  await testInfo.attach("curved-track", { body: await page.screenshot(), contentType: "image/png" });
   const report = page.getByRole("dialog", { name: "SIGNAL LOST", exact: true });
+  await expect(game(page)).toHaveAttribute("data-game-phase", "crashing", { timeout: 60_000 });
+  await expect(report).toBeHidden();
+  const crashObservedAt = await page.evaluate(() => performance.now());
+  await page.waitForTimeout(1_200);
+  await expect(game(page)).toHaveAttribute("data-game-phase", "crashing");
+  await expect(report).toBeHidden();
+  await expect(page.getByText("NEW COSMETIC UNLOCKED", { exact: true })).toBeHidden();
+  await testInfo.attach("ship-breakup", { body: await page.screenshot(), contentType: "image/png" });
   await expect(report).toBeVisible({ timeout: 60_000 });
+  expect(await page.evaluate(() => performance.now()) - crashObservedAt,
+    "The crash presentation precedes the results dialog by a few seconds").toBeGreaterThan(2_500);
   await expect(game(page)).toHaveAttribute("data-game-phase", "dead");
   await expect(report).toContainText("FLIGHT REPORT / DAILY");
   if ((await readPerformance(page))?.gpuStatus !== "unsupported") {
@@ -247,6 +260,34 @@ test("a real collision produces a flight report and retry starts the daily cours
       return sample?.gpuStatus === "available" && sample.gpuPasses.length > 0 &&
         !sample.gpuSubmittedPasses.some((name) => /DoF/i.test(name));
     }, { message: "Retry deactivates the crash blur passes without rebuilding the pipeline" }).toBe(true);
+  }
+});
+
+test("leaving either track edge crashes instead of clamping the ship", async ({ page }, testInfo) => {
+  await exploreModes(page);
+  await page.getByRole("group", { name: "Choose a flight mode" })
+    .getByRole("button", { name: /Daily course/ }).click();
+  await launch(page, "daily");
+  const report = page.getByRole("dialog", { name: "SIGNAL LOST", exact: true });
+  for (const key of ["ArrowLeft", "ArrowRight"]) {
+    // Clear the opening's roadside pillar before the committed edge exit.
+    // Read the actual flight distance so display refresh cannot shift the line.
+    await expect.poll(async () => Number(await page.getByLabel("Distance traveled").getAttribute("data-distance")),
+      { intervals: [30], timeout: 10_000 }).toBeGreaterThanOrEqual(110);
+    await page.keyboard.down(key);
+    await expect(game(page)).toHaveAttribute("data-game-phase", "crashing", { timeout: 12_000 });
+    await page.keyboard.up(key);
+    await expect(report).toBeHidden();
+    // Restart shortcuts cannot skip the crash or accidentally launch a run
+    // while the player is still reacting to the impact.
+    await page.keyboard.press("Enter");
+    await expect(game(page)).toHaveAttribute("data-game-phase", "crashing");
+    await page.waitForTimeout(750);
+    await testInfo.attach(`edge-breakup-${key}`, { body: await page.screenshot(), contentType: "image/png" });
+    await expect(report).toBeVisible();
+    await expect(report).toContainText(/track edge|left edge|right edge|off track/i);
+    await report.getByRole("button", { name: "RETRY COURSE", exact: true }).click();
+    await expect(game(page)).toHaveAttribute("data-game-phase", "running");
   }
 });
 

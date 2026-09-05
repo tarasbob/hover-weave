@@ -1,44 +1,80 @@
 /** True on devices whose primary pointer is a finger (phones, tablets). */
 export function isTouchDevice(): boolean {
-  return typeof window !== "undefined" && matchMedia("(pointer: coarse)").matches;
+  return typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
 }
 
-/**
- * Best-effort hard landscape lock for touch devices. Android Chrome honors
- * `screen.orientation.lock` only in fullscreen, so we chain the two; iOS
- * Safari supports neither and silently falls through to the rotate-device
- * overlay (OrientationGate). Must be called from a user gesture.
- */
-export function lockLandscape(): void {
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitFullscreenEnabled?: boolean;
+  webkitExitFullscreen?: () => Promise<void> | void;
+};
+type FullscreenRoot = Omit<HTMLElement, "requestFullscreen"> & {
+  requestFullscreen?: (options?: FullscreenOptions) => Promise<void>;
+  webkitRequestFullscreen?: () => Promise<void> | void;
+};
+
+export function isStandalone(): boolean {
+  return typeof window !== "undefined" && (window.matchMedia("(display-mode: standalone)").matches ||
+    (window.matchMedia("(display-mode: fullscreen)").matches && !isFullscreen()) ||
+    Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+}
+
+export function isFullscreen(): boolean {
+  return typeof document !== "undefined" && Boolean(document.fullscreenElement ||
+    (document as FullscreenDocument).webkitFullscreenElement);
+}
+
+export function supportsFullscreen(): boolean {
+  if (typeof document === "undefined") return false;
+  const root = document.documentElement as FullscreenRoot;
+  const doc = document as FullscreenDocument;
+  return Boolean((root.requestFullscreen && document.fullscreenEnabled !== false) ||
+    (root.webkitRequestFullscreen && doc.webkitFullscreenEnabled !== false));
+}
+
+async function requestLandscape(): Promise<void> {
   if (!isTouchDevice()) return;
-  const lock = () => {
-    try {
-      // lock() is absent from iOS Safari (and some TS lib targets) —
-      // feature-detect at runtime and swallow rejections.
-      const orientation = screen.orientation as
-        | (ScreenOrientation & { lock?: (type: string) => Promise<void> })
-        | undefined;
-      orientation?.lock?.("landscape").catch(() => undefined);
-    } catch {
-      // Unsupported — the OrientationGate overlay enforces instead.
-    }
-  };
-  const doc = document as Document & { webkitFullscreenElement?: Element | null };
-  const root = document.documentElement as HTMLElement & {
-    webkitRequestFullscreen?: () => void;
-  };
-  const inFullscreen = Boolean(document.fullscreenElement ?? doc.webkitFullscreenElement);
   try {
-    if (!inFullscreen && root.requestFullscreen) {
-      root.requestFullscreen({ navigationUI: "hide" }).then(lock, lock);
-    } else if (!inFullscreen && root.webkitRequestFullscreen) {
-      // Older iOS exposes only the prefixed, void-returning variant.
-      root.webkitRequestFullscreen();
-      lock();
-    } else {
-      lock();
-    }
+    const orientation = window.screen?.orientation as
+      (ScreenOrientation & { lock?: (type: string) => Promise<void> }) | undefined;
+    await orientation?.lock?.("landscape");
   } catch {
-    lock();
+    // Browsers may disallow locking. The portrait overlay pauses active runs.
   }
+}
+
+export type FullscreenResult = "entered" | "exited" | "standalone" | "unsupported" | "failed";
+
+/** Must be called from a user gesture. Detect capabilities rather than iOS versions. */
+export async function enterFullscreen(): Promise<FullscreenResult> {
+  if (isStandalone()) { await requestLandscape(); return "standalone"; }
+  if (!supportsFullscreen()) return "unsupported";
+  try {
+    if (!isFullscreen()) {
+      const root = document.documentElement as FullscreenRoot;
+      if (root.requestFullscreen) await root.requestFullscreen({ navigationUI: "hide" });
+      else await root.webkitRequestFullscreen?.();
+    }
+    await requestLandscape();
+    return isFullscreen() ? "entered" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+export async function toggleFullscreen(): Promise<FullscreenResult> {
+  if (!isFullscreen()) return enterFullscreen();
+  try {
+    const doc = document as FullscreenDocument;
+    if (doc.exitFullscreen) await doc.exitFullscreen();
+    else await doc.webkitExitFullscreen?.();
+    return "exited";
+  } catch {
+    return "failed";
+  }
+}
+
+/** Best effort on launch; explicit setup controls provide failure/install guidance. */
+export function lockLandscape(): void {
+  if (isTouchDevice()) void enterFullscreen();
 }

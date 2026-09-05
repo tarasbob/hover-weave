@@ -51,6 +51,7 @@ import { GRADE_MIN_INTENSITY, RunAnalysis } from "./simulation/runAnalysis";
 import {
   emptyStats,
   type ChunkRecord,
+  type DeathCause,
   type DeathForensics,
   type RouteChoiceResult,
   type RunStats,
@@ -216,7 +217,11 @@ export class SimWorld {
   // Death.
   deathTimer = 0;
   deathX = 0;
+  deathY: number = CRAFT.HOVER_HEIGHT;
   deathSpeed = 0;
+  deathLatVel = 0;
+  deathVy = 0;
+  deathBank = 0;
 
   // Pools own slot allocation; presentation keeps stable array references.
   private readonly entities = new EntityPools();
@@ -342,7 +347,12 @@ export class SimWorld {
     this.lastForeshadowS0 = -Infinity;
     this.nextForeshadowTime = 0;
     this.deathTimer = 0;
+    this.deathX = 0;
+    this.deathY = CRAFT.HOVER_HEIGHT;
     this.deathSpeed = 0;
+    this.deathLatVel = 0;
+    this.deathVy = 0;
+    this.deathBank = 0;
     this.accumulator = 0;
     this.pendingAxisTime = 0;
     this.tickActions.reset();
@@ -374,6 +384,8 @@ export class SimWorld {
     if (skipTo > 0) {
       this.distance = skipTo;
       this.prevDistance = skipTo;
+      this.x = this.course.offsetAt(skipTo);
+      this.prevX = this.x;
       this.speed = this.speedCurve(skipTo);
       this.time = SPEED.LAUNCH_RAMP; // Skip the launch ramp too.
       this.lastBiomeIndex = biomeIndexAt(skipTo);
@@ -630,29 +642,9 @@ export class SimWorld {
         this.latVel = clamp(this.latVel, -maxLat, maxLat);
         this.x += this.latVel * dt;
       }
-      // The clamp follows the winding centerline: the corridor itself drifts,
-      // so even an empty stretch asks for a gentle steer. Damping acts on the
-      // WALL-RELATIVE velocity — a wall that chases the craft must not eat
-      // its escape speed on every contact frame (flat course: wallVel = 0,
-      // bit-identical to the classic clamp).
-      const courseX = this.course.offsetAt(this.distance);
-      const wallVel =
-        (courseX - this.course.offsetAt(this.distance - this.speed * dt)) / dt;
-      if (this.x < courseX - TRACK.X_LIMIT) {
-        this.x = courseX - TRACK.X_LIMIT;
-        if (this.labFx.carve && !this.airborne && axis >= CARVE.COMMIT) {
-          this.wallKiss(1, wallVel, maxLat);
-        } else {
-          this.latVel = wallVel + Math.max(0, this.latVel - wallVel) * 0.4;
-        }
-      } else if (this.x > courseX + TRACK.X_LIMIT) {
-        this.x = courseX + TRACK.X_LIMIT;
-        if (this.labFx.carve && !this.airborne && axis <= -CARVE.COMMIT) {
-          this.wallKiss(-1, wallVel, maxLat);
-        } else {
-          this.latVel = wallVel + Math.min(0, this.latVel - wallVel) * 0.4;
-        }
-      }
+      // There is no invisible wall: carried momentum takes the craft off the
+      // road. This also applies to airborne, shielded, dashing and carving runs.
+      if (this.checkTrackEdge()) return;
       // Glide readout for FX/HUD (0 everywhere but a carving or flying craft).
       if (this.labFx.carve || this.airborne) {
         this.glide = clamp01((Math.abs(this.latVel) / maxLat - 1) / (CARVE.OVER_RATIO - 1));
@@ -821,30 +813,6 @@ export class SimWorld {
       this.latVel = clamp(this.latVel, -maxLat, maxLat);
     }
     this.x += this.latVel * dt;
-  }
-
-  /**
-   * Wall-kiss (carve): pressing away from the clamp at the moment of contact
-   * reflects the into-wall velocity component instead of absorbing it — the
-   * track edges become springboards for a carving craft. `away` is the
-   * direction off the wall (+1 off the left wall, -1 off the right).
-   */
-  private wallKiss(away: number, wallVel: number, maxLat: number): void {
-    const rel = (this.latVel - wallVel) * away; // negative = into the wall
-    const out = rel < 0 ? -rel * CARVE.WALL_KISS_KEEP : rel;
-    this.latVel = wallVel + out * away;
-    if (rel < -0.3 * maxLat && this.pumpCooldown <= 0) {
-      this.pumpCooldown = CARVE.PUMP_COOLDOWN;
-      this.stats.pumps++;
-      const quality = clamp01(-rel / maxLat);
-      this.stats.pumpQualitySum += quality;
-      this.events.emit("pump", {
-        dir: away,
-        x: this.x,
-        wall: true,
-        strength: quality,
-      });
-    }
   }
 
   /**
@@ -1392,6 +1360,8 @@ export class SimWorld {
     this.score += scoreAward;
     this.stats.bounces++;
     this.events.emit("bounce", { x: o.cx, s: o.cs, dir, scoreAward });
+    // A bumper may eject the craft beyond the edge in this same fixed tick.
+    this.checkTrackEdge();
   }
 
   private onHit(o: Obstacle): void {
@@ -1406,27 +1376,57 @@ export class SimWorld {
       this.events.emit("shieldBreak", { x: this.x });
       return;
     }
+    this.onCrash({
+      cause: "obstacle",
+      patternId: o.patternId,
+      obstacleKind: o.kind,
+      motion: o.motion,
+    });
+  }
+
+  /** The center leaves the track; preserve position and velocity for the wreck. */
+  private checkTrackEdge(): boolean {
+    if (this.status !== "running") return false;
+    const localX = this.x - this.course.offsetAt(this.distance);
+    if (Math.abs(localX) < TRACK.X_LIMIT) return false;
+    const edge = localX < 0 ? -1 : 1;
+    this.onCrash({
+      cause: "edge",
+      edge,
+      patternId: edge < 0 ? "leftEdge" : "rightEdge",
+      obstacleKind: null,
+      motion: 0,
+    });
+    return true;
+  }
+
+  private onCrash(cause: DeathCause): void {
+    if (this.status !== "running") return;
     this.status = "dead";
     this.deathTimer = 0;
     this.deathX = this.x;
+    this.deathY = this.y;
     this.deathSpeed = this.speed;
+    this.deathLatVel = this.latVel;
+    this.deathVy = this.vy;
+    this.deathBank = this.bank;
     this.analysis.pushTrace(); // The impact itself always lands in the trace.
     this.analysis.finalizeSection(); // Partial section where the run ended still counts.
     this.stats.lineRating = this.analysis.computeLineRating();
     this.stats.score = Math.floor(this.score);
     this.stats.distance = this.distance;
     this.stats.duration = this.time;
-    this.stats.deathCause = {
-      patternId: o.patternId,
-      obstacleKind: o.kind,
-      motion: o.motion,
-    };
+    this.stats.deathCause = cause;
     this.events.emit("death", {
       x: this.x,
+      y: this.y,
+      s: this.distance,
       speed: this.speed,
-      patternId: o.patternId,
-      obstacleKind: o.kind,
-      motion: o.motion,
+      latVel: this.latVel,
+      vy: this.vy,
+      bank: this.bank,
+      ...cause,
+      cause: cause.cause ?? "obstacle",
     });
   }
 

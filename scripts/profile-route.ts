@@ -9,7 +9,7 @@ import { autopilot, lookaheadPilot } from "./pilots";
 
 const seconds = 140;
 let baked = false;
-for (let candidate = 0; candidate < 40 && !baked; candidate++) {
+for (let candidate = 0; candidate < 120 && !baked; candidate++) {
   const seed = `render-route-v1-${candidate}`;
   const world = new SimWorld();
   world.start({ seed, mode: "endless" });
@@ -32,13 +32,13 @@ for (let candidate = 0; candidate < 40 && !baked; candidate++) {
     }
   }
   console.log(`${seed}: ${world.time.toFixed(1)}s ${world.distance.toFixed(0)}m ${world.status}`);
-  if (world.status !== "running" || biomes.size < 2) continue;
+  if (world.status !== "running" || biomes.size < 3) continue;
   const recording = world.getRecording()!;
   recording.at = 0;
   const replayed = resimulate(recording, new SimWorld());
   assert.deepEqual(replayed.stats, world.stats);
   const fixture = {
-    id: "dense-biomes-v1", label: "Dense sections and biome transitions",
+    id: "dense-biomes-v2", label: "Dense sections and biome transitions",
     generatedBy: candidate < 20 ? "offline greedy pilot" : "offline lookahead pilot",
     seconds, maxObstacles, biomes: [...biomes], patterns: [...patterns].sort(), sections, recording,
   };

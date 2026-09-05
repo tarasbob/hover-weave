@@ -13,7 +13,7 @@ import { VerificationError, verifyCompetitionFlight, type VerificationCode } fro
 import { autopilot } from "./pilots";
 
 const receivedAt = Date.UTC(2026, 8, 5, 12);
-const selection = { seasonId: "2026-preview", courseId: "trial-slalomGates" };
+const selection = { seasonId: "2026-preview-v8", courseId: "trial-slalomGates" };
 const { season, course, courseKey } = selectCompetitionCourse(selection);
 
 function record(courseId: string, pilot = false): { world: SimWorld; payload: string } {
@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   assert.equal(result.courseKey, courseKey);
   assert.equal(result.receivedAt, receivedAt);
   assert.deepEqual([result.steps, result.score, result.distance], [782, 441, 219.9782198540227],
-    "v7-r1 neutral trial fingerprint: changing rules requires version review");
+    "v8-r1 neutral trial fingerprint: changing rules requires version review");
   assert.deepEqual(await verifyFlightInWorker(payload, selection, { receivedAt }), result,
     "isolated Node worker must reproduce the deterministic result");
 
@@ -121,22 +121,27 @@ async function main(): Promise<void> {
   assert.notEqual(competitionCourseKey({ ...season, id: "2027" }, course), courseKey);
   assert.notEqual(competitionCourseKey({ ...season, revision: 2 }, course), courseKey);
   assert.notEqual(competitionCourseKey({ ...season, simulationVersion: "v8" }, course), courseKey);
-  assert.notEqual(competitionCourseKey({ ...season, replayVersion: 8 }, course), courseKey);
+  assert.notEqual(competitionCourseKey({ ...season, replayVersion: 9 }, course), courseKey);
   assert.notEqual(competitionCourseKey(season, { ...course, revision: 2 }), courseKey);
   assert.notEqual(competitionCourseKey(season, { ...course, seed: "different" }), courseKey);
   assert.notEqual(competitionCourseKey(season, { ...course, heat: ["tinHull"] }), courseKey);
   assert.notEqual(competitionCourseKey(season, { ...course, maxSteps: 100 }), courseKey);
   assert.equal(new Set(COMPETITION_SEASONS.flatMap((item) =>
-    item.courses.map((entry) => competitionCourseKey(item, entry)))).size, season.courses.length);
+    item.courses.map((entry) => competitionCourseKey(item, entry)))).size,
+    COMPETITION_SEASONS.reduce((count, item) => count + item.courses.length, 0));
+  assert.throws(() => selectCompetitionCourse({ ...selection, seasonId: "2026-preview" }),
+    /archived simulation/, "historical v7 policy cannot silently use v8 physics");
   assert.ok(Object.isFrozen(season) && Object.isFrozen(course) && Object.isFrozen(course.heat));
 
   // Static synthetic fixture: validates a genuine finish without regenerating
   // the slow TAS pilot, and fails if this version's course/physics silently drift.
-  const sprintPayload = readFileSync(new URL("../src/game/competition/fixtures/sprint-v7.flight", import.meta.url), "utf8");
+  const oldSprint = readFileSync(new URL("../src/game/competition/fixtures/sprint-v7.flight", import.meta.url), "utf8");
+  rejects(oldSprint, "payload", "historical input streams require their original simulation");
+  const sprintPayload = readFileSync(new URL("../src/game/competition/fixtures/sprint-v8.flight", import.meta.url), "utf8");
   const sprintSelection = { ...selection, courseId: "sprint-2026-w36" };
   const finished = verifyCompetitionFlight(sprintPayload, sprintSelection, receivedAt);
   assert.deepEqual([finished.terminal, finished.steps, finished.duration, finished.score, finished.distance],
-    ["finished", 21600, 180, 71735, 11000.458285391102]);
+    ["finished", 21600, 180, 191808, 11363.06923088346]);
   const sprintPrefix = JSON.parse(sprintPayload);
   sprintPrefix.recording.steps--;
   const prefixData = sprintPrefix.recording.data;

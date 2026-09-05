@@ -39,7 +39,7 @@ export const LABS: LabDef[] = [
   {
     id: "carve",
     name: "Carve Physics",
-    desc: "The craft becomes an instrument: taps bite harder, reversing at full carve pumps extra speed, pumped momentum glides past the steering cap, and track edges kiss back.",
+    desc: "The craft becomes an instrument: taps bite harder, reversing at full carve pumps extra speed, and pumped momentum glides past the steering cap. Keep the glide inside the track.",
   },
 ];
 
@@ -66,7 +66,7 @@ export interface LabEffects {
   surge: boolean;
   /** Third verb: short lateral displacement on a cooldown (roadmap 5.3). */
   dash: boolean;
-  /** Flick / pump / glide / wall-kiss steering dynamics (fun-frontier 1.2). */
+  /** Flick / pump / glide steering dynamics (fun-frontier 1.2). */
   carve: boolean;
 }
 

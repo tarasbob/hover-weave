@@ -12,7 +12,7 @@ the game requires no authored texture, model or audio asset files.
 ## Play
 
 - **Steer** — ← → or A / D · left/right screen halves on touch · gamepad
-  d-pad / stick. Keyboard and touch hold times are integrated between frames,
+  d-pad / stick · optional device tilt. Keyboard and touch hold times are integrated between frames,
   so short steering taps survive render frames with no physics tick.
 - **Boost** — hold Shift / Space (second finger on touch). Spends shard
   energy; speed and steering authority follow the same continuous thrust
@@ -21,6 +21,25 @@ the game requires no authored texture, model or audio asset files.
   Lab prototype is enabled.
 - **Restart** — R or Enter, instantly.
 - **Pause** — Esc or P.
+
+On a phone, choose **Enable tilt steering** on the flight deck or in Settings.
+Allow the browser's motion permission, then hold the phone comfortably
+in landscape. Rotate it like a steering wheel: a small rotation makes a gentle
+turn, and a larger rotation steers harder. The default reaches full steering at
+28°, with a small center deadzone and smoothing. Calibrate the center at any time
+from the pause menu; launch and resume also recenter the wheel. Touch steering
+remains available, and all touch devices get a dedicated Boost button.
+
+Use **Full screen** where the browser supports it. On iPhone, the mobile setup
+explains how to use Safari's Share → Add to Home Screen and launch the installed
+app for a fullscreen experience. Layouts respect the phone's safe areas and
+adapt to the available viewport. Motion access requires HTTPS (or localhost).
+
+Follow the broad, seeded curves and stay inside the luminous track markings.
+Crossing either edge ends the run, including while airborne or shielded. A fatal
+obstacle impact or edge departure breaks the ship into flying fragments; the
+flight report appears after the three-second crash sequence. Reduced motion
+calms the presentation while preserving the same delay.
 
 Keyboard and touch boost/dash transitions are also timestamped and consumed at
 120 Hz. A sub-tick tap gets a press tick followed by a release tick, preserving
@@ -77,9 +96,9 @@ distance** on that exact seed. The compound **Weaver Circuit** links precision,
 rhythm, and state-dependent refuel/flow/tempo forks into one course. Fixed-seed
 trial results drive Pilot Rating; random endless seed luck does not. The
 **Lab** hosts unranked physics prototypes; the current headline is
-**Carve Physics**: flick taps that bite harder, pump reversals that rebound
-a full carve past the steering cap into a glide, and track edges that kiss
-back. Pump payout scales continuously with reversal quality. Gamepads get
+**Carve Physics**: flick taps that bite harder and pump reversals that rebound
+a full carve past the steering cap into a glide. Track edges remain lethal.
+Pump payout scales continuously with reversal quality. Gamepads get
 skill-graded rumble.
 
 The post-run technique sheet identifies the next weakest skill. Complete
@@ -105,12 +124,16 @@ Useful dev tools:
   trail/geometry invariants and post-processing resource ownership
 - `npm run test:session` — UTC course identity, exact fixed-course retries,
   focus/input cleanup and steering/boost/dash playback at 30/60/144/240 Hz
-- `npm run test:world` — exact pre-refactor simulation, event, entity-pool,
+- `npm run test:world` — versioned simulation, event, entity-pool,
   analysis and replay fingerprints
 - `npm run test:competition` — strict season/course verification, hostile
   recording rejection and isolated worker limits
 - `npm run test:profiling` — real recorded route, exact playback across refresh
   rates, bounded capture distributions and repeating thermal routes
+- `npm run test:mobile` — wheel geometry, sensor permissions, calibration,
+  fallback controls and fullscreen lifecycle
+- `npm run test:course` — seeded bend continuity, steering headroom, lethal
+  boundaries and exact crash replays
 - `npm run profile -- --backend webgpu --quality high --dpr 2` — sustained
   capture against an existing production build; use `--backend webgl2` for fallback
 - `npx playwright install chromium` — install the browser used by the smoke suite
@@ -124,11 +147,10 @@ Useful dev tools:
 See [the design and engineering review](docs/game-design-review.md) for the
 current assessment, completed polish and engineering work, rating recommendations,
 and the proposed three-sector expedition mode. The current Pilot Rating is a
-local practice estimate, not an online competitive rank. Replay format v7 rejects older
-recordings because opening encounters changed; earned cosmetics and progression
-remain available.
-The subsequent simulation refactor and action-input fixes preserve v7 playback;
-they do not invalidate existing v7 recordings.
+local practice estimate, not an online competitive rank. Replay format v8 rejects older
+recordings because curved courses and lethal boundaries change the physics;
+earned cosmetics and progression remain available. Historical competition policy
+retains its original simulation version and cannot be verified under the new rules.
 
 ## Architecture
 
@@ -198,7 +220,7 @@ AA and DPR floors remain intact.
 
 Open `?profile=1` for a local performance/playtest capture panel, or use the
 [sustained profiling guide](docs/profiling.md) for automated recorded-route runs.
-The real 140-second route includes dense sections and four biomes and repeats
+The real 140-second route includes dense sections and multiple biomes and repeats
 for thermal testing. Human capture records trusted input observations, events
 and notes. Benchmark flights never earn progression.
 

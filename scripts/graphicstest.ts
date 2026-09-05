@@ -8,11 +8,15 @@ import {
   TERRAIN_DEPTH,
 } from "../src/game/render/visualConstants";
 import { QUALITY_CONFIGS, type QualityTier } from "../src/game/state/settings";
-import { createHullGeometry, createWingGeometry } from "../src/game/render/craftGeometry";
+import { createHullFragments, createHullGeometry, createWingGeometry } from "../src/game/render/craftGeometry";
+import { CraftWreck } from "../src/game/render/CraftWreck";
+import { crashCenter, type CrashOrigin } from "../src/game/render/crashMotion";
+import { chaseFraming } from "../src/game/render/cameraFraming";
+import { Course } from "../src/game/track/course";
 import { TrailRibbon } from "../src/game/render/TrailRibbon";
 import { GpuFrameTimer, ResolutionController, TimingWindow } from "../src/game/render/performance";
 import { createDepthOfField, disposePostResources } from "../src/game/render/disposePostResources";
-import { PerspectiveCamera, Scene, type Node, type RenderTarget } from "three/webgpu";
+import { Euler, Mesh, MeshBasicNodeMaterial, PerspectiveCamera, Scene, Vector3, type BufferGeometry, type Node, type RenderTarget } from "three/webgpu";
 import { pass, rtt } from "three/tsl";
 import { bloom } from "three/addons/tsl/display/BloomNode.js";
 import { dof } from "three/addons/tsl/display/DepthOfFieldNode.js";
@@ -65,6 +69,32 @@ for (const tier of tiers) {
 }
 
 console.log("Graphics quality budgets valid.");
+
+// Wide seeded bends must not push the ship out of a portrait viewport by
+// accidentally damping its absolute course translation toward global x=0.
+{
+  for (const seed of ["cubefield-daily-2026-09-05", "mobile-camera-bends"]) {
+    const course = new Course(seed);
+    for (const aspect of [390 / 844, 844 / 390, 16 / 9]) {
+      const camera = new PerspectiveCamera(66, aspect, 0.1, 2000);
+      for (let distance = 0; distance <= 12000; distance += 50) {
+        const center = course.offsetAt(distance);
+        const bend = course.offsetAt(distance + 78) - course.offsetAt(distance + 6);
+        for (const localX of [-29, 0, 29]) {
+          const x = center + localX;
+          const frame = chaseFraming(x, center, bend);
+          camera.position.set(frame.x, 5, 8.6);
+          camera.lookAt(frame.lookX, 1.7, -13);
+          camera.updateMatrixWorld();
+          const ship = new Vector3(x, 1.15, 0).project(camera);
+          assert.ok(Math.abs(ship.x) < 0.85 && Math.abs(ship.y) < 0.95,
+            `ship left viewport on ${seed} at ${distance}m, lane ${localX}, aspect ${aspect}`);
+        }
+      }
+    }
+  }
+  console.log("Ship framing stays visible across broad bends in portrait and landscape.");
+}
 
 // --- Speed-proportional lookahead: static no-pop-in invariant ---------------
 // Geometry finishes materializing at MATERIALIZE_START_FRAC × viewDistance,
@@ -185,6 +215,79 @@ console.log("Graphics quality budgets valid.");
     wing.dispose();
   }
   console.log("Sculpted craft geometry is correctly wound and within its triangle budget.");
+}
+
+// A crash uses closed sections of the selected hull, with no missing volume.
+// Its edge flight must remain outside the road, above the terrain, and reusable.
+{
+  const volume = (geometry: BufferGeometry): number => {
+    const p = geometry.getAttribute("position");
+    let value = 0;
+    for (let i = 0; i < p.count; i += 3) {
+      value += (
+        p.getX(i) * (p.getY(i + 1) * p.getZ(i + 2) - p.getZ(i + 1) * p.getY(i + 2)) +
+        p.getY(i) * (p.getZ(i + 1) * p.getX(i + 2) - p.getX(i + 1) * p.getZ(i + 2)) +
+        p.getZ(i) * (p.getX(i + 1) * p.getY(i + 2) - p.getY(i + 1) * p.getX(i + 2))
+      ) / 6;
+    }
+    return value;
+  };
+  const hull = createHullGeometry();
+  const sections = createHullFragments();
+  const pieceVolume = sections.map(volume);
+  assert.ok(pieceVolume.every((v) => v > 0), "each closed fragment must face outward");
+  assert.ok(Math.abs(pieceVolume.reduce((sum, v) => sum + v, 0) - volume(hull)) < 1e-7,
+    "fracture must preserve the actual hull's complete volume");
+  const material = new MeshBasicNodeMaterial();
+  const wreck = new CraftWreck();
+  sections.forEach((geometry) => wreck.add(new Mesh(geometry, material)));
+  const base: CrashOrigin = {
+    x: 0, y: 1.1, speed: 62, latVel: 12, vy: 0, bank: -0.2, cause: "obstacle",
+  };
+  for (const reduceMotion of [false, true]) {
+    wreck.start(base, new Euler(0, 0, base.bank));
+    for (const elapsed of [0.7, 1.2, 1.8, 2.5]) {
+      wreck.update(elapsed, reduceMotion);
+      wreck.group.updateMatrixWorld(true);
+      for (const fragment of wreck.fragments) {
+        fragment.mesh.traverse((object) => {
+          if (!(object instanceof Mesh)) return;
+          const vertices = object.geometry.getAttribute("position");
+          for (let vertex = 0; vertex < vertices.count; vertex++) {
+            const position = new Vector3().fromBufferAttribute(vertices, vertex).applyMatrix4(object.matrixWorld);
+            assert.ok(position.z > -0.65,
+              "a frontal collision's fragments must remain on the camera-facing side of its pillar");
+          }
+        });
+      }
+    }
+    for (const edge of [-1, 1] as const) {
+      const origin = { ...base, x: edge * TRACK.X_LIMIT, cause: "edge" as const, edge };
+      wreck.start(origin, new Euler(0, 0, origin.bank));
+      for (let frame = 0; frame <= 180; frame++) {
+        const time = frame / 60;
+        wreck.update(time, reduceMotion);
+        const center = crashCenter(origin, time, reduceMotion);
+        assert.ok(edge * (center.x - origin.x) >= 0, "edge departure must continue out of the course");
+        assert.ok(center.y >= 0, "edge trajectory must not disappear through the terrain");
+        for (const fragment of wreck.fragments) {
+          assert.ok(fragment.mesh.position.y + center.y >= 0.13, "wreck sections must land on terrain");
+          assert.ok([...fragment.mesh.position, ...fragment.mesh.quaternion].every(Number.isFinite));
+        }
+      }
+      const final = wreck.fragments.map((fragment) => fragment.mesh.position.toArray());
+      wreck.update(0, reduceMotion);
+      wreck.update(3, reduceMotion);
+      assert.deepEqual(wreck.fragments.map((fragment) => fragment.mesh.position.toArray()), final,
+        "paused or dropped frames must not change the final breakup");
+      wreck.reset();
+      assert.equal(wreck.group.visible, false, "retry clears every fragment immediately");
+    }
+  }
+  hull.dispose();
+  sections.forEach((geometry) => geometry.dispose());
+  material.dispose();
+  console.log("Crash fragments preserve the ship, fly outward, land visibly, and reset deterministically.");
 }
 
 // Frame tails must include every frame and keep bounded storage. One hitch

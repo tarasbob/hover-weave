@@ -5,7 +5,7 @@
  */
 
 export const TRACK = {
-  /** Craft lateral clamp. */
+  /** Lethal track edge, measured from the current course centerline. */
   X_LIMIT: 30,
   /** Patterns may place geometry within this half width. */
   X_PATTERN: 33,
@@ -115,20 +115,26 @@ export const CRAFT = {
 /**
  * The winding track (seeded course centerline). Patterns are still built and
  * validated in a straight local frame; the offset is applied when chunks
- * spawn into the world, and the craft clamp follows offset ± X_LIMIT. The
+ * spawn into the world, and the lethal edges follow offset ± X_LIMIT. The
  * drift itself demands steering, so its worst-case slope must stay well
  * under the craft's physical slope (~0.5) minus the validator's planning
  * slope (0.25 early, 0.375 when difficulty ≥ 0.64) — hence the late taper.
  */
 export const COURSE = {
   /** Hard bound on |offset| (amplitude budget + margin, for tests/render). */
-  MAX_OFFSET: 17.5,
-  /** Distance (m) over which the wander ramps in from a straight launch. */
-  RAMP_IN: 900,
-  /** Worst-case wave slope at full amplitude (sum over octaves). */
-  SLOPE_EARLY: 0.062,
+  MAX_OFFSET: 36,
+  /** First broad apex; the launch begins centered with zero lateral slope. */
+  RAMP_IN: 650,
+  /** Straight launch runway before gently entering the first visible bend. */
+  LAUNCH_STRAIGHT: 100,
+  /** Distance between subsequent alternating apices (m). */
+  BEND_LENGTH: 820,
+  /** Minimum seeded apex offset (m), so every course has readable turns. */
+  MIN_OFFSET: 24,
+  /** Maximum centerline slope before the late difficulty taper. */
+  SLOPE_EARLY: 0.135,
   /** Amplitude multiplier once the difficulty taper has fully applied. */
-  LATE_SCALE: 0.35,
+  LATE_SCALE: 0.3,
   /** Difficulty band across which the late taper blends in. */
   TAPER_D0: 0.5,
   TAPER_D1: 0.68,
@@ -372,8 +378,6 @@ export const RESONANCE = {
  * - Glide: pump chains may push lateral speed past the steering ratio, up
  *   to OVER_RATIO × the cap. Only the excess decays (slowly), and steering
  *   *into* the glide adds nothing — pumps are the only fuel.
- * - Wall-kiss: pressing away from the lateral clamp at the moment of
- *   contact reflects the into-wall component instead of absorbing it.
  *
  * Not `as const`: the dev console exposes this object (`__carve`) as the
  * feel-tuning harness — mutate values live, restart the run, re-feel.
@@ -399,8 +403,6 @@ export const CARVE = {
   OVER_RATIO: 1.45,
   /** Per-second decay of the excess above maxLat while gliding. */
   GLIDE_DRAG: 1.6,
-  /** Fraction of the into-wall velocity component a wall-kiss reflects. */
-  WALL_KISS_KEEP: 0.8,
   /** Committed-direction threshold on the quantized axis. */
   COMMIT: 0.25,
 };
@@ -574,6 +576,11 @@ export function onBeatAt(time: number): boolean {
   const pos = time / RESONANCE_BEAT;
   return Math.abs(pos - Math.round(pos)) * RESONANCE_BEAT <= RESONANCE.WINDOW;
 }
+
+/** Crash presentation uses wall-clock time independently of simulation slow-mo. */
+export const CRASH = {
+  PRESENTATION_SECONDS: 3,
+} as const;
 
 export const RUN = {
   /** Sim timescale during the death slow-mo. */

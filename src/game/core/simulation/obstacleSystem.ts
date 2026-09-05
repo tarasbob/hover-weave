@@ -214,9 +214,10 @@ export class ObstacleSystem {
           }
 
           if (hit && o.kind === "bumper") {
-            // Elastic: a boing, never a death. Per-obstacle cooldown rides
+            // Elastic contact can eject the craft off the track. Cooldown rides
             // in `state` so an overlapping frame can't machine-gun flings.
             if (this.state.time >= o.state) this.contacts.onBounce(o);
+            if (this.state.status !== "running") return;
             continue;
           }
           if (hit && o.kind === "glass" && this.state.boostCharge >= GLASS.SMASH_CHARGE) {

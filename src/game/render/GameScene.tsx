@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { densityFogFactor, fog, positionWorld, smoothstep } from "three/tsl";
 import { useGameBundle } from "../GameController";
+import { CRASH } from "../core/constants";
 import { advanceProfile, isBenchmarkRun, recordProfileSimulation } from "../profiling/runtime";
 import { MEDAL_RANK, medalFor, nextMedalFor, trialById } from "../track/trials";
 import { useGame } from "../state/game";
@@ -166,7 +167,10 @@ export function GameScene() {
       bundle.togglePause();
       g = useGame.getState();
     }
-    if ((g.phase === "running" || g.phase === "dead") && !throttled) {
+    if (
+      (g.phase === "running" || g.phase === "crashing" || g.phase === "dead") &&
+      !throttled && !document.hidden
+    ) {
       // Time kiss: dip the wall-clock rate briefly after a perfect/thread.
       let kissScale = 1;
       // Accessibility presentation settings never change ranked reaction
@@ -179,6 +183,10 @@ export function GameScene() {
       if (!advanceProfile(world, dt * kissScale)) world.update(dt * kissScale, input.state);
       recordProfileSimulation(world);
       ghost.sync(world.time);
+      if (g.phase === "crashing" && world.deathTimer >= CRASH.PRESENTATION_SECONDS) {
+        g.setPhase("dead");
+        g = useGame.getState();
+      }
     } else if (g.phase === "title") {
       ambient.value += dt * 9;
     }
@@ -208,7 +216,7 @@ export function GameScene() {
     hudClock.current += dt;
     if (hudClock.current >= HUD_INTERVAL) {
       hudClock.current = 0;
-      if (g.phase === "running" || g.phase === "dead") {
+      if (g.phase === "running" || g.phase === "crashing" || g.phase === "dead") {
         // Mode-aware pressure line: global PB for endless/daily, week best
         // for sprint, the next medal for trials (roadmap 3.5 / 4.1 / 4.2).
         const meta = useMeta.getState();

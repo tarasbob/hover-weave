@@ -1,4 +1,8 @@
 /**
+ * v8: broad seeded S bends and lethal track edges replace the gentle wander
+ * and lateral barrier. Collision results now capture wreck motion. Previous
+ * input streams require their original simulation and cannot be replayed here.
+ *
  * Input recording + replay (roadmap 3.1).
  *
  * The sim is deterministic at a fixed 120 Hz, so a run is fully described by
@@ -38,7 +42,7 @@ import type { SimWorld } from "./world";
  * v2 streams no longer re-simulate. (v2: the winding course, glass/bumper/
  * beam obstacles, the Leviathan, and run events.)
  */
-export const REPLAY_VERSION = 7;
+export const REPLAY_VERSION = 8;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;

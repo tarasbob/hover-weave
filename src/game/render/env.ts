@@ -232,7 +232,8 @@ export class EnvState {
     this.uBoost.value = world.boostCharge;
     this.flowSmooth = damp(this.flowSmooth, Math.min(world.flowTier / 4, 1.25), 3, dt);
     this.uFlow.value = this.flowSmooth;
-    this.uDeath.value = world.status === "dead" ? clamp01(world.deathTimer * 1.6) : 0;
+    // Let the breakup remain crisp before the results' cinematic grade settles in.
+    this.uDeath.value = world.status === "dead" ? clamp01((world.deathTimer - 1.35) / 1.35) : 0;
     this.uContrast.value = this.highContrast ? 1 : 0;
 
     // Lightning in stormy stretches.

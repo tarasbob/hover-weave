@@ -17,8 +17,10 @@
     "profile:route": "tsx scripts/profile-route.ts",
     "test:session": "tsx scripts/sessiontest.ts",
     "test:world": "tsx scripts/worldtest.ts",
+    "test:mobile": "tsx scripts/mobiletest.ts",
+    "test:course": "tsx scripts/coursetest.ts",
     "test:browser": "npm run build && playwright test",
-    "test": "npm run test:game && npm run test:graphics && npm run test:session && npm run test:world && npm run test:competition && npm run test:profiling"
+    "test": "npm run test:game && npm run test:graphics && npm run test:session && npm run test:world && npm run test:mobile && npm run test:course && npm run test:competition && npm run test:profiling"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",

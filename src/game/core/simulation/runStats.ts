@@ -5,8 +5,11 @@ import type { GameMode } from "../modes";
 import type { MotionType, ObstacleKind, PatternSkill, RouteReward } from "../types";
 
 export interface DeathCause {
+  /** Older persisted results omit this field and represent obstacle impacts. */
+  cause?: "obstacle" | "edge";
+  edge?: -1 | 1;
   patternId: string;
-  obstacleKind: ObstacleKind;
+  obstacleKind: ObstacleKind | null;
   motion: MotionType;
 }
 
@@ -110,7 +113,7 @@ export interface RunStats {
   threads: number;
   /** Phase dashes fired (lab 5.3 only; 0 otherwise). */
   dashes: number;
-  /** Carve pumps + wall-kisses landed (lab "carve" only; 0 otherwise). */
+  /** Carve pumps landed (lab "carve" only; 0 otherwise). */
   pumps: number;
   /** Sum of normalized pump quality, for post-run technique analysis. */
   pumpQualitySum: number;

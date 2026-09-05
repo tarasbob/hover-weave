@@ -31,6 +31,7 @@ import {
 import { DeathForensicsPanel } from "@/ui/DeathForensics";
 import { GRADE_COLORS } from "@/ui/Hud";
 import { TitleScreen } from "@/ui/TitleScreen";
+import { MobileSetup } from "@/ui/MobileSetup";
 
 const panel =
   "rounded-2xl border border-slate-200/15 bg-[#08151f]/95 backdrop-blur-xl shadow-[0_20px_100px_rgba(0,0,0,0.4)]";
@@ -70,6 +71,8 @@ export function Screens() {
           ? "Run started"
           : phase === "paused"
             ? "Game paused"
+            : phase === "crashing"
+              ? "Ship crashed"
             : phase === "dead"
               ? "Run ended"
               : phase === "title"
@@ -192,6 +195,7 @@ function PauseScreen() {
           </button>
         </div>
         <div className="text-xs text-white/40">ESC / P to resume</div>
+        <MobileSetup compact />
       </div>
     </Screen>
   );
@@ -408,8 +412,9 @@ function GameOverScreen() {
           <div className="mt-4 text-xs leading-relaxed text-slate-400">
             {s.deathCause && (
               <div>
-                {formatPattern(s.deathCause.patternId)} ·{" "}
-                {s.deathCause.obstacleKind} impact
+                {s.deathCause.cause === "edge"
+                  ? `${s.deathCause.edge === -1 ? "LEFT" : "RIGHT"} EDGE · OFF TRACK`
+                  : <>{formatPattern(s.deathCause.patternId)} · {s.deathCause.obstacleKind} impact</>}
               </div>
             )}
             {s.heat.length > 0 && (
@@ -483,6 +488,9 @@ function GameOverScreen() {
 export function deathCoach(outcome: RunOutcome): string | null {
   const cause = outcome.stats.deathCause;
   if (outcome.finished || !cause) return null;
+  if (cause.cause === "edge") {
+    return "FOLLOW THE BEND EARLY · EASE BACK TOWARD THE CENTER BEFORE YOU REACH THE TRACK EDGE";
+  }
   const { stats, forensics } = outcome;
   if (forensics) {
     const points = forensics.path.flat();
@@ -1162,7 +1170,7 @@ function OverlayShell({ title, children }: { title: string; children: React.Reac
         animate={{ y: 0, scale: 1, opacity: 1 }}
         exit={{ y: 18, scale: 0.98, opacity: 0 }}
         transition={{ duration: 0.28, ease: "easeOut" }}
-        className={`${panel} max-h-[86vh] w-[min(94vw,660px)] overflow-y-auto px-7 py-6`}
+        className={`${panel} overlay-panel max-h-[86dvh] w-[min(94vw,660px)] overflow-y-auto px-7 py-6`}
       >
         <div className="mb-5 flex items-center justify-between">
           <div id={titleId} className="font-display text-xl font-black tracking-[0.3em] text-white">{title}</div>
@@ -1308,6 +1316,7 @@ function SettingsOverlay() {
   return (
     <OverlayShell title="SETTINGS">
       <div className="flex flex-col gap-5">
+        <MobileSetup />
         <Row label="QUALITY" hint={`active tier: ${["LOW", "MEDIUM", "HIGH"][tier]}`}>
           <div className="flex gap-1.5">
             {(["auto", "low", "medium", "high"] as QualityPreset[]).map((q) => (
@@ -1422,10 +1431,12 @@ function HelpOverlay() {
     <OverlayShell title="HOW TO FLY">
       <div className="flex flex-col gap-4 text-sm leading-relaxed text-white/75">
         <div>
-          Your craft accelerates on its own. You only steer, and steering is two buttons —{" "}
+          Your craft accelerates on its own. Steer with{" "}
           <Key>←</Key> <Key>→</Key> or <Key>A</Key> <Key>D</Key>, hold the left or right half of
-          the screen on touch, or a gamepad d-pad / stick. Momentum is real: commit to lines
-          early.
+          the screen on touch, or use a gamepad d-pad / stick. On mobile, enable tilt steering
+          to turn your phone like a steering wheel: the farther you rotate, the harder you turn.
+          Follow the track’s sweeping bends and commit to lines early. Flying past either
+          edge ends the run, even with a shield.
         </div>
         <div>
           <span className="font-bold text-cyan-200">Near misses build FLOW.</span> Graze obstacles
@@ -1443,7 +1454,7 @@ function HelpOverlay() {
         <div>
           <span className="font-bold text-cyan-200">Shards are fuel.</span> Collect them quickly to
           build a combo, then hold <Key>SHIFT</Key> or <Key>SPACE</Key> to spend that energy on a
-          boost. On touch, a second finger boosts — hold both halves of the screen to boost
+          boost. On mobile, hold the BOOST button. A second finger also boosts — hold both halves of the screen to boost
           straight ahead, or two fingers on one half to boost through a turn. Larger risk-route
           shards do not magnetize, but pay 60% extra. Boosting is fast, but steering authority
           drops — respect it.
@@ -1486,8 +1497,8 @@ function HelpOverlay() {
         </div>
         <div>
           The <span className="font-bold text-violet-300">Lab</span> hosts experimental flight
-          systems still on the bench, including Carve&apos;s timed reversals, glides, and
-          wall-kisses. Lab runs are unranked and save nothing — fly them for the feel, not the
+          systems still on the bench, including Carve&apos;s timed reversals and glides.
+          Lab runs are unranked and save nothing — fly them for the feel, not the
           ladder. Export a <span className="font-bold text-sky-200">.flight</span> after a run
           to share it; imported flights launch an unranked ghost race on the exact course.
         </div>

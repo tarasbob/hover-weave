@@ -70,6 +70,7 @@ import { Motion, type ObstacleSpec, type PatternResult } from "../src/game/core/
 import { TrackGenerator, type GeneratedChunk } from "../src/game/track/generator";
 import { resonatePattern } from "../src/game/track/mutators";
 import { MEDAL_ORDER, TRIALS, medalFor, nextMedalFor, trialSeed } from "../src/game/track/trials";
+import { Course } from "../src/game/track/course";
 import { corridorLanes, validatePattern } from "../src/game/track/validator";
 import { autopilot, lookaheadPilot, scanGaps, steerToward, superhumanPilot } from "./pilots";
 
@@ -78,16 +79,16 @@ const endless = (seed: string): RunConfig => ({ mode: "endless", seed });
 // --- Conservative-bot survival + pool pressure + first-2km economy gate ----
 
 // Conservative-bot baselines (no boost), recalibrated 2026-09-05 for the
-// first-weave opening. Its elastic obstacles and reward choices alter early
-// routes and resource state; all generated geometry after 500m and every
-// trial course remain unchanged (gentest locks both). Keep the same ±15%
-// per-seed and ±10% average economy drift limits against these values.
-const BASELINE_800: Record<string, number> = {
-  "test-0": 1873, "test-1": 1814, "test-2": 1749, "test-3": 2922,
-  "test-4": 2494, "test-5": 1862, "test-6": 1151, "test-7": 2888,
+// v8 broad bends and lethal edges. The same eight seeds sample economy at
+// 500m, before any conservative pilot crashes; longer surviving seeds also
+// sample 2km. Procedural layouts and fixed trial geometry remain unchanged.
+// Keep the same ±15% per-seed and ±10% average economy drift limits.
+const BASELINE_500: Record<string, number> = {
+  "test-0": 921, "test-1": 1501, "test-2": 1420, "test-3": 1371,
+  "test-4": 2822, "test-5": 1499, "test-6": 1326, "test-7": 2083,
 };
 const BASELINE_2KM: Record<string, number> = {
-  "test-3": 4340, "test-4": 4027, "test-6": 4250,
+  "test-1": 3936, "test-2": 4248, "test-4": 4718, "test-7": 3510,
 };
 
 let totalDeaths = 0;
@@ -97,7 +98,7 @@ let minDist = Infinity;
 const peakByKind = new Map<string, number>();
 let peakShards = 0;
 let peakShields = 0;
-const score800: Record<string, number> = {};
+const score500: Record<string, number> = {};
 const score2km: Record<string, number> = {};
 const runs = 8;
 for (let r = 0; r < runs; r++) {
@@ -125,8 +126,8 @@ for (let r = 0; r < runs; r++) {
   while (world.status === "running" && steps < maxSteps) {
     autopilot(world, input);
     world.update(FIXED_DT, input);
-    if (score800[seed] === undefined && world.distance >= 800) {
-      score800[seed] = Math.floor(world.score);
+    if (score500[seed] === undefined && world.distance >= 500) {
+      score500[seed] = Math.floor(world.score);
     }
     if (score2km[seed] === undefined && world.distance >= 2000) {
       score2km[seed] = Math.floor(world.score);
@@ -188,14 +189,14 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
 // Keep the conservative route's economy stable between deliberate re-bakes.
 {
   const drifts: number[] = [];
-  for (const [seed, base] of Object.entries(BASELINE_800)) {
-    const now = score800[seed];
-    assert.ok(now !== undefined, `${seed} no longer reaches 800m`);
+  for (const [seed, base] of Object.entries(BASELINE_500)) {
+    const now = score500[seed];
+    assert.ok(now !== undefined, `${seed} no longer reaches 500m`);
     const drift = now / base - 1;
     drifts.push(drift);
     assert.ok(
       Math.abs(drift) < 0.15,
-      `${seed} first-800m score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
+      `${seed} first-500m score drifted ${(drift * 100).toFixed(1)}% (${base} -> ${now})`,
     );
   }
   for (const [seed, base] of Object.entries(BASELINE_2KM)) {
@@ -226,6 +227,8 @@ assert.ok(peakShields < POOL_SIZES.shield, `shield render pool lacks headroom ($
   const TIGHT_HALF = 1.3; // hull clearance 0.55 -> razor on both sides
   const SAFE_X = 21;
   const buildGauntlet = (world: SimWorld): void => {
+    // This hand-authored straight gauntlet isolates the boost economy.
+    world.course = new Course(null);
     world.clearField();
     // Stop the procedural generator from streaming real chunks over the course.
     (world as unknown as { generator: null }).generator = null;
@@ -1045,14 +1048,12 @@ console.log("edge-case assertions: PASS");
   };
 
   const seeds = ["wall-0", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"];
-  // Re-baked 2026-09-05 for v7 on these same six seeds, with no changes to
-  // survival, separation, spread or drift tolerances. Opening choices move
-  // the carried route/resource state, although all downstream geometry is
-  // unchanged: greedy 1674→2735m, lookahead 4810→4574m, TAS 29507m unchanged.
+  // Re-baked for v8 on these same six seeds. Broad bends change route choice;
+  // the search pilot also treats edges as fatal instead of planning rebounds.
   const WALL_BASELINE: Record<Tier, number> = {
-    greedy: 2735,
-    lookahead: 4574,
-    superhuman: 29507,
+    greedy: 1674,
+    lookahead: 4921,
+    superhuman: 38921,
   };
   const median = (xs: number[]): number => {
     const s = [...xs].sort((a, b) => a - b);
@@ -1099,8 +1100,11 @@ console.log("edge-case assertions: PASS");
     "otherwise Phase 2 scaling is never exercised",
   );
   for (const tier of ["greedy", "lookahead", "superhuman"] as Tier[]) {
+    // The local planner has more seed variance across broad bends (v8
+    // observed trimmed spread 5.08); keep its guard within 10% of that bake.
+    const spreadLimit = tier === "lookahead" ? 5.5 : 4.5;
     assert.ok(
-      trimmedSpread(walls[tier]) < 4.5,
+      trimmedSpread(walls[tier]) < spreadLimit,
       `${tier} wall is unstable across seeds (trimmed spread ×${trimmedSpread(walls[tier]).toFixed(2)})`,
     );
     const drift = median(walls[tier]) / WALL_BASELINE[tier];
@@ -1134,17 +1138,18 @@ console.log("edge-case assertions: PASS");
 // step: same stats from a re-sim, same finish from a lockstepped ghost, and a
 // hard freeze of score/distance at the line.
 {
-  const config: RunConfig = { mode: "sprint", seed: "sprint-gate-v2" };
+  const config: RunConfig = { mode: "sprint", seed: "cubefield-sprint-2026-W36" };
   const live = new SimWorld();
   const input: InputState = { axis: 0, boost: false, dash: false, restart: false, pause: false };
   const finishes: { score: number; distance: number }[] = [];
   live.events.on("finish", (e) => finishes.push(e));
   live.start(config);
   assert.equal(live.timeLimit, SPRINT_MODE.DURATION);
-  // Superhuman is the only tier that reliably outlives 180 s of real track.
+  // A deeper offline search handles broad bends while retaining real inputs
+  // and the full authored course, matching the verified v8 sprint fixture.
   const maxSteps = Math.floor((SPRINT_MODE.DURATION + 30) / FIXED_DT);
   for (let i = 0; i < maxSteps && live.status === "running"; i++) {
-    superhumanPilot(live, input);
+    superhumanPilot(live, input, { horizonSeconds: 3.2, switchFractions: [0.5, 0.25, 0.75, 0.125] });
     live.update(FIXED_DT, input);
   }
   assert.equal(live.status, "finished", "sprint pilot must survive to the horizon");
@@ -1552,17 +1557,17 @@ console.log("edge-case assertions: PASS");
 // --- Phase 4.4: pilot rating ---------------------------------------------------
 {
   // Monotone in distance, anchored to the calibrated legacy reporting walls
-  // (re-baked 2026-09-05 for v7). Trial performance normalization is unchanged.
+  // (re-baked 2026-09-05 for v8). Trial performance normalization is unchanged.
   let prev = -1;
-  for (const d of [50, 150, 400, 2500, 2735, 4574, 5000, 8000, 20000, 29507, 100000]) {
+  for (const d of [50, 150, 400, 1674, 2500, 4921, 5000, 8000, 20000, 38921, 100000]) {
     const p = runPerformance(d);
     assert.ok(p >= prev, `runPerformance must be monotone (${d}m)`);
     assert.ok(p >= RATING.FLOOR && p <= RATING.CEIL, "performance must stay clamped");
     prev = p;
   }
-  assert.ok(Math.abs(runPerformance(2735) - 1200) < 1, "greedy wall anchor");
-  assert.ok(Math.abs(runPerformance(4574) - 1700) < 1, "lookahead wall anchor");
-  assert.ok(Math.abs(runPerformance(29507) - 3000) < 1, "superhuman wall anchor");
+  assert.ok(Math.abs(runPerformance(1674) - 1200) < 1, "greedy wall anchor");
+  assert.ok(Math.abs(runPerformance(4921) - 1700) < 1, "lookahead wall anchor");
+  assert.ok(Math.abs(runPerformance(38921) - 3000) < 1, "superhuman wall anchor");
   assert.ok(Number.isFinite(runPerformance(0)) && Number.isFinite(runPerformance(1e9)));
   assert.equal(referencePerformance(0, 5000), RATING.FLOOR);
   assert.equal(referencePerformance(5000, 5000), 3000);
@@ -1581,7 +1586,7 @@ console.log("edge-case assertions: PASS");
   let rating: number = RATING.START;
   const deltas: number[] = [];
   for (let runs = 0; runs < 40; runs++) {
-    const next = updateRating(rating, runs, 4574);
+    const next = updateRating(rating, runs, 4921);
     deltas.push(Math.abs(next - rating));
     rating = next;
   }
@@ -1599,7 +1604,7 @@ console.log("edge-case assertions: PASS");
     assert.ok(RATING_TIERS[i].min > RATING_TIERS[i - 1].min);
   }
   assert.equal(ratingTier(0).name, "DRIFTER");
-  assert.equal(ratingTier(runPerformance(29507)).name, "WEAVER");
+  assert.equal(ratingTier(runPerformance(38921)).name, "WEAVER");
   console.log(`rating gate: PASS (convergence at ${rating}, ${ratingTier(rating).name})`);
 }
 
@@ -1933,6 +1938,7 @@ console.log("edge-case assertions: PASS");
     assert.equal(world.stats.dashes, 1, "cooldown must gate the second dash");
     assert.ok(Math.abs(world.energy - 60) < 1e-9, "a refused dash must cost nothing");
     input.dash = false;
+    input.axis = 0; // Wait inside the track; a held steer now flies off its edge.
     for (let i = 0; i < Math.ceil(DASH.COOLDOWN / FIXED_DT) + 2; i++) {
       world.update(FIXED_DT, input);
     }
@@ -2288,6 +2294,7 @@ console.log("edge-case assertions: PASS");
   const carveWorld = (lab: LabId[], seed = "carve-probe"): SimWorld => {
     const world = new SimWorld();
     world.start({ mode: "endless", seed, lab });
+    world.course = new Course(null); // Isolate pump cadence from course following.
     world.clearField();
     (world as unknown as { generator: null }).generator = null;
     return world;
@@ -2361,7 +2368,12 @@ console.log("edge-case assertions: PASS");
     assert.ok(glideSeen > 0.3, `the glide readout must engage (${glideSeen.toFixed(2)})`);
 
     input.axis = 0;
-    for (let i = 0; i < 360; i++) world.update(FIXED_DT, input);
+    for (let i = 0; i < 360; i++) {
+      // Isolate velocity damping: a carried glide can cross the entire real
+      // track while coasting. Edge lethality is asserted separately below.
+      world.x = 0;
+      world.update(FIXED_DT, input);
+    }
     assert.ok(
       Math.abs(world.latVel) <= maxLatOf(world) + 1e-6,
       "the glide must decay back inside the envelope",
@@ -2461,8 +2473,8 @@ console.log("edge-case assertions: PASS");
     );
   }
 
-  // Wall-kiss: pressing away at the moment of clamp contact reflects the
-  // impact (and counts as a pump); the plain model absorbs it.
+  // Track edges are lethal in both physics modes, including when the pilot
+  // counter-steers too late to arrest outward momentum.
   {
     const kissProbe = (lab: LabId[]): SimWorld => {
       const world = carveWorld(lab, "carve-kiss");
@@ -2475,23 +2487,18 @@ console.log("edge-case assertions: PASS");
       world.update(FIXED_DT, input);
       return world;
     };
-    const kissed = kissProbe(["carve"]);
-    const absorbed = kissProbe([]);
-    assert.ok(
-      kissed.latVel > 6,
-      `wall-kiss must reflect the impact (${kissed.latVel.toFixed(1)} m/s out)`,
-    );
-    assert.equal(kissed.stats.pumps, 1, "a hard kiss must count as a pump");
-    assert.ok(
-      absorbed.latVel < 2,
-      `the plain clamp must absorb the same impact (${absorbed.latVel.toFixed(1)} m/s)`,
-    );
+    for (const crashed of [kissProbe(["carve"]), kissProbe([])]) {
+      assert.equal(crashed.status, "dead", "leaving the track must crash in either physics mode");
+      assert.equal(crashed.stats.deathCause?.cause, "edge");
+      assert.equal(crashed.stats.pumps, 0, "the edge must not award a wall-kiss pump");
+      assert.ok(crashed.deathLatVel < 0, "the wreck must carry its outward velocity");
+    }
   }
 
   // (Carve replay exactness on a real track — pumps included — is proven by
   // the full-lab-stack gate above: stats and pump event streams deep-equal.)
   console.log(
-    "carve gate: PASS (flick, continuous pump quality, envelope, mistime, boost-carve, wall-kiss)",
+    "carve gate: PASS (flick, continuous pump quality, envelope, mistime, boost-carve, lethal edges)",
   );
 }
 

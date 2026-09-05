@@ -1,7 +1,7 @@
 # Simulation boundaries
 
 Implemented and verified September 5, 2026. This is the current architecture,
-not a proposed split; the refactor preserves replay format v7.
+not a proposed split. Replay v8 adds broad curves and lethal track edges.
 
 `SimWorld` remains the public entry point. It owns run identity, craft and reward
 state, the input recorder, and fixed-step orchestration. The systems here receive
@@ -20,7 +20,7 @@ have no React, renderer, DOM or wall-clock dependency.
 
 The order in `SimWorld.step` is a gameplay and replay contract:
 
-1. Consume/record quantized input; advance speed and craft motion.
+1. Consume/record quantized input; advance speed and craft motion. Stop immediately if the craft leaves an edge.
 2. Stream course geometry; resolve route choices and previews.
 3. Advance the event director using the streamed safe paths.
 4. Attribute the current step to its section.
@@ -39,7 +39,7 @@ and dash transitions onto fixed ticks in `SimWorld.update`. Already-sampled
 replay and pilot inputs retain the original path. A sub-tick action receives a
 press tick and a release tick; gamepad buttons remain polled browser snapshots.
 
-`npm run test:world` locks exact pre-refactor state, ordered events, pool contents,
+`npm run test:world` locks exact v8 state, ordered events, pool contents,
 forensics and recording output across reused runs. It excludes only the recording
 export's wall-clock timestamp. The deeper simulation and frontier suites cover
 contacts, ramps, movement techniques, fairness and replay invariants.

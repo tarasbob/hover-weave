@@ -29,9 +29,10 @@ from a stall/focus pause; compare elapsed and active duration before treating a
 capture as an uninterrupted thermal trial. The frame that causes a long-stall
 pause remains in the measured frame-tail distribution.
 
-The versioned route is `dense-biomes-v1`, seed `render-route-v1-17`: a genuine
-140-second, 7,435 m endless recording. The original pilot remained alive through
-four biomes and 18 generated pattern IDs, with up to 161 active obstacle pool
+The versioned route is `dense-biomes-v2`, seed `render-route-v1-45`: a genuine
+140-second, 7,654 m endless recording using the v8 curved course and lethal edges.
+The offline pilot remained alive through
+four biomes and 17 generated pattern IDs, with up to 109 active obstacle pool
 entries. A longer capture repeats that complete route. There is no invulnerability,
 teleporting, altered speed, removed obstacle, browser clock mocking, or online
 pilot computation. Real fixed inputs are applied at 120 Hz under native RAF;

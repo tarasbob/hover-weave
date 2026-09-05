@@ -15,16 +15,15 @@ import { clamp } from "./mathUtils";
 
 /**
  * (distance m, rating) anchors — bot walls from the simtest calibration.
- * Re-baked 2026-09-05 for v7's first-weave opening on the same six seeds.
- * Early route/resource state moved the heuristic walls; the TAS median
- * stayed unchanged. These legacy reporting anchors do not rate trials.
+ * Re-baked for v8's broad bends and lethal edges on the same six seeds.
+ * These legacy reporting anchors do not rate trials.
  */
 const ANCHORS: readonly [number, number][] = [
   [150, 400], // barely off the launch ramp
-  [2735, 1200], // greedy band-scan wall
-  [4574, 1700], // lookahead planner wall
+  [1674, 1200], // greedy band-scan wall
+  [4921, 1700], // lookahead planner wall
   [8000, 2200], // overdrive threshold — beyond every heuristic tier
-  [29507, 3000], // TAS rollout searcher wall
+  [38921, 3000], // TAS rollout searcher wall
 ];
 
 export const RATING = {

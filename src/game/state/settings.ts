@@ -90,6 +90,8 @@ interface SettingsState {
   musicVolume: number;
   sfxVolume: number;
   sensitivity: number;
+  mobileControl: "touch" | "tilt";
+  tiltFullAngle: number;
   reduceMotion: boolean;
   reduceFlash: boolean;
   highContrast: boolean;
@@ -103,6 +105,8 @@ interface SettingsState {
   setMusicVolume(v: number): void;
   setSfxVolume(v: number): void;
   setSensitivity(v: number): void;
+  setMobileControl(v: "touch" | "tilt"): void;
+  setTiltFullAngle(v: number): void;
   setReduceMotion(v: boolean): void;
   setReduceFlash(v: boolean): void;
   setHighContrast(v: boolean): void;
@@ -119,6 +123,8 @@ export const useSettings = create<SettingsState>()(
       musicVolume: 0.8,
       sfxVolume: 0.9,
       sensitivity: 1,
+      mobileControl: "touch",
+      tiltFullAngle: 28,
       reduceMotion: false,
       reduceFlash: false,
       highContrast: false,
@@ -130,6 +136,8 @@ export const useSettings = create<SettingsState>()(
       setMusicVolume: (musicVolume) => set({ musicVolume }),
       setSfxVolume: (sfxVolume) => set({ sfxVolume }),
       setSensitivity: (sensitivity) => set({ sensitivity }),
+      setMobileControl: (mobileControl) => set({ mobileControl }),
+      setTiltFullAngle: (tiltFullAngle) => set({ tiltFullAngle: Math.min(45, Math.max(15, tiltFullAngle)) }),
       setReduceMotion: (reduceMotion) => set({ reduceMotion }),
       setReduceFlash: (reduceFlash) => set({ reduceFlash }),
       setHighContrast: (highContrast) => set({ highContrast }),

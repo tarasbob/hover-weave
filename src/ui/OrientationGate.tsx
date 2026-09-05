@@ -3,14 +3,15 @@
 import { useEffect, useState } from "react";
 import { useGameBundle } from "@/game/GameController";
 import { useGame } from "@/game/state/game";
+import { MobileSetup } from "@/ui/MobileSetup";
 
 /**
- * Hard portrait blocker for touch devices. Android gets a true lock via
- * lockLandscape(); iOS Safari can't lock, so this overlay is the enforcement
- * there. Desktop windows (fine pointer) never see it, however narrow.
+ * Pause play in portrait while keeping the title and setup usable in either
+ * orientation. Devices without orientation lock can rotate back and resume.
  */
 export function OrientationGate() {
   const bundle = useGameBundle();
+  const phase = useGame((s) => s.phase);
   const [blocked, setBlocked] = useState(false);
 
   useEffect(() => {
@@ -29,14 +30,14 @@ export function OrientationGate() {
   // Rotating mid-run shouldn't kill you behind the curtain.
   useEffect(() => {
     if (blocked && useGame.getState().phase === "running") bundle.togglePause();
-  }, [blocked, bundle]);
+  }, [blocked, bundle, phase]);
 
-  if (!blocked) return null;
+  if (!blocked || (phase !== "running" && phase !== "paused")) return null;
 
   return (
     <div
       data-ui
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-[#07060f] px-8 text-center font-body"
+      className="orientation-gate fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 overflow-y-auto bg-[#07060f] px-8 text-center font-body"
       role="alert"
     >
       <PhoneRotateIcon />
@@ -44,8 +45,10 @@ export function OrientationGate() {
         ROTATE YOUR DEVICE
       </div>
       <div className="text-xs tracking-[0.28em] text-cyan-200/70">
-        HOVER WEAVE FLIES IN LANDSCAPE
+        FLIGHT PAUSED · ROTATE TO LANDSCAPE, THEN RESUME
       </div>
+      <MobileSetup />
+      <button className="mobile-option" onClick={() => bundle.backToTitle()}>Back to menu</button>
     </div>
   );
 }

@@ -3,9 +3,10 @@
 The repository now provides the engineering prerequisite for a future ghost
 league: a versioned, server-owned season/course policy and an isolated Node
 verifier that recomputes a submitted `.flight` using the real simulation. This is
-a verification preview, not a deployed competition. The offline game, replay
-format v7, saved cosmetics, practice rating and existing personal best keys are
-unchanged.
+a verification preview, not a deployed competition. Curved tracks and lethal
+edges use replay format v8 and simulation `hover-weave-v8-r1`. The original v7
+season remains immutable and requires its archived build. Saved cosmetics,
+practice rating and existing personal best keys remain available.
 
 ## Use the verifier
 
@@ -19,7 +20,7 @@ npm run verify:flight -- --list
 Export a completed Slalom run from the game's expanded flight report, then run:
 
 ```sh
-npm run verify:flight -- 2026-preview trial-slalomGates /path/to/run.flight
+npm run verify:flight -- 2026-preview-v8 trial-slalomGates /path/to/run.flight
 npm run test:competition
 ```
 
@@ -117,5 +118,5 @@ truncated and trailing streams, unavailable seasons/courses, season receipt
 boundaries, version-key isolation, equivalent-export deduplication, and actual
 child-process success, rejection and forced timeout.
 A stored synthetic sprint fixture reaches the real 180-second finish, pins
-its exact v7 result, and verifies that a recording ending one tick earlier is
+its exact v8 result, and verifies that a recording ending one tick earlier is
 rejected. It is a simulation regression fixture, not a claimed human run.

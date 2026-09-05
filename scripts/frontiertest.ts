@@ -32,7 +32,9 @@ const SEEDS = ["frontier-0", "frontier-1", "frontier-2", "frontier-3", "frontier
 const MAX_SECONDS = 140;
 const MAX_TRIMMED_SPREAD = 3.5;
 const MIN_SEPARATION = 1.03;
-const FIRST_FLIGHT_DISTANCE = 600;
+// The opening weave arrives by 350m; the broad first apex now approaches at
+// 650m. Separate the opening's accessibility floor from that new challenge.
+const FIRST_FLIGHT_DISTANCE = 400;
 
 const PROFILES = [
   MODELED_NOVICE_PROFILE,
@@ -174,6 +176,8 @@ for (const run of adaptive[0].runs) {
       `(${run.seed}: ${run.distance.toFixed(0)}m)`,
   );
 }
+assert.ok(adaptive[0].aggregate.medianDistance >= 500,
+  "the median modeled novice must complete the opening weave before the first broad apex");
 
 for (const report of adaptive) {
   assert.ok(

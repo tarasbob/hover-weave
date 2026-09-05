@@ -230,7 +230,9 @@ export function Decor() {
       const grow = smoothstep(matStart, matEnd, ahead);
       if (grow <= 0.002) return;
       const bob = slot.bobAmp > 0 ? Math.sin(t * slot.bobSpeed + slot.phase) * slot.bobAmp : 0;
-      _p.set(slot.x, slot.y + bob, -(ahead));
+      // Decorative roadside objects stay outside the playable corridor as
+      // it bends, so they never masquerade as non-colliding track obstacles.
+      _p.set(slot.x + world.courseOffsetAt(s), slot.y + bob, -(ahead));
       _e.set(slot.pitch, slot.yaw + (slot.spin ? t * slot.spin : 0), 0);
       _q.setFromEuler(_e);
       _s.set(slot.sx, slot.sy, slot.sz).multiplyScalar(Math.max(grow, 0.001));

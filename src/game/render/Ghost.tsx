@@ -1,7 +1,7 @@
 "use client";
 
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import {
   Fn,
@@ -32,6 +32,7 @@ export function Ghost() {
   const showGhost = useSettings((s) => s.showGhost);
 
   const uOpacity = useMemo(() => uniform(0), []);
+  const warmed = useRef(false);
 
   const { group } = useMemo(() => {
     const g = new THREE.Group();
@@ -77,6 +78,15 @@ export function Ghost() {
   }, [group]);
 
   useFrame(() => {
+    if (!warmed.current && showGhost) {
+      // The first completed run arms a PB ghost on retry. Compile its small
+      // transparent material during startup so that retry never pays for a
+      // brand-new shader after the simulation has already started moving.
+      group.visible = true;
+      uOpacity.value = 0;
+      warmed.current = true;
+      return;
+    }
     if (!showGhost || !ghost.active || world.status === "idle") {
       group.visible = false;
       return;

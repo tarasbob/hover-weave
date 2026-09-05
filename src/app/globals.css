@@ -714,3 +714,164 @@ input[type="range"]::-moz-range-thumb {
     display: none;
   }
 }
+
+/* Mobile setup stays in the normal menu flow so it cannot cover launch. */
+.mobile-setup {
+  width: 100%;
+  max-width: 540px;
+  padding: 16px;
+  border: 1px solid #b7dfd42b;
+  border-radius: 12px;
+  background: #09202bc2;
+  text-align: left;
+  font-family: var(--font-space-grotesk), sans-serif;
+}
+.mobile-setup-compact {
+  margin-top: 14px;
+  padding: 10px 12px;
+}
+.mobile-control-heading {
+  margin-bottom: 10px;
+  color: #c3f5ec;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+.mobile-control-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mobile-option {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d1e5ec35;
+  border-radius: 8px;
+  background: #d1e5ec0a;
+  color: #e0e9e7;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.mobile-option[aria-pressed="true"] {
+  border-color: #b8e6d3;
+  background: #b8e6d31a;
+  color: #c3f5ec;
+}
+.mobile-option > span { margin-right: 5px; }
+.mobile-fullscreen-control { flex: 1; min-width: 135px; }
+.mobile-control-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #afc2ce;
+}
+.mobile-standalone-status {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: #c3f5ec;
+  font-size: 11px;
+}
+.mobile-install-guide {
+  min-width: min(250px, 100%);
+  margin-top: 10px;
+  color: #b6c9d5;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.mobile-install-guide strong { color: #e0e9e7; }
+.mobile-install-guide p { margin-top: 8px; }
+.mobile-tilt-adjustment { margin-top: 14px; }
+.mobile-tilt-adjustment label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #e0e9e7;
+  font-size: 12px;
+}
+.mobile-tilt-adjustment input { width: 170px; accent-color: #c3f5ec; }
+.mobile-steering-meter {
+  position: relative;
+  width: 180px;
+  height: 8px;
+  margin: 10px auto 20px;
+  background: linear-gradient(90deg, #c3f5ec33, #c3f5ec0a 45%, #c3f5ec0a 55%, #c3f5ec33);
+  border-radius: 8px;
+}
+.mobile-steering-meter::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  height: 14px;
+  border-left: 1px solid #c3f5ec55;
+}
+.mobile-steering-meter span {
+  position: absolute;
+  left: calc(50% - 5px);
+  top: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #c3f5ec;
+  transition: transform 100ms linear;
+}
+.mobile-boost {
+  position: absolute;
+  bottom: 76px;
+  left: 12px;
+  min-width: 72px;
+  min-height: 48px;
+  padding: 12px;
+  border: 1px solid #d8ebdd66;
+  border-radius: 12px;
+  background: #08151fcc;
+  color: #e3efdc;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  touch-action: none !important;
+}
+.mobile-boost:active { background: #e3efdc; color: #15262b; }
+.orientation-gate {
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+}
+@media (pointer: coarse) {
+  [data-ui] button { min-height: 44px; }
+  [data-ui] input[type="range"] {
+    min-height: 44px;
+    background: transparent;
+  }
+  [data-ui] input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 6px;
+    background: #ffffff26;
+  }
+  [data-ui] input[type="range"]::-webkit-slider-thumb { margin-top: -7px; width: 20px; height: 20px; }
+  [data-ui] input[type="range"]::-moz-range-track { height: 6px; border-radius: 6px; background: #ffffff26; }
+  [data-ui] input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; }
+  [data-ui] [role="switch"] { min-width: 44px; }
+  [data-ui] [role="switch"] > span { top: calc(50% - 10px); }
+  .overlay-panel {
+    max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
+  }
+  .flight-lesson { bottom: 140px; }
+}
+@media (max-width: 1000px) and (min-width: 701px) {
+  .flight-menu-inner {
+    padding-left: max(24px, env(safe-area-inset-left));
+    padding-right: max(24px, env(safe-area-inset-right));
+  }
+}
+@media (max-height: 500px) and (min-width: 701px) {
+  .flight-intro > .mobile-setup { grid-column: 1 / -1; max-width: none; margin-top: 6px; }
+  .mobile-setup-compact .mobile-control-hint { margin-top: 4px; }
+  .mobile-setup-compact { padding: 8px 10px; }
+  .flight-first-brief { display: none; }
+  .overlay-panel { padding: 16px 22px; }
+}

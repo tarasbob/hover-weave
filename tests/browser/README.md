@@ -8,6 +8,10 @@ server on port 3100, and runs the same scenarios on WebGPU and forced WebGL2:
 - Free flight, daily, and sprint selection retained across settings.
 - Keyboard pause, frozen sprint timer, settings while paused, and real tab focus loss.
 - A natural collision, flight report, and daily-course retry.
+- Three seconds of visible ship breakup before the flight report, and lethal
+  exits from both track edges with restart shortcuts gated during the crash.
+- Phone-sized portrait/landscape setup, motion permission/fallback, proportional
+  tilt calibration, safe-area controls, and fullscreen/install guidance.
 - Repeated low/high quality changes, live frame measurements, and bounded textures.
 - High-quality crash blur runs at death and stops again on retry, verified from
   submitted render passes on both backends.
@@ -52,7 +56,7 @@ High-DPI profiles omit active-flight screenshots: their readback can stall the
 main thread long enough to trigger the game's intentional automatic pause.
 
 Keep `npm test` as the deeper generator, simulation, replay, graphics-budget,
-session and exact pre-refactor world fingerprint gate. Browser smoke tests
+session and versioned world fingerprint gate. Browser smoke tests
 complement those checks.
 
 ## Verified implementation — September 5, 2026

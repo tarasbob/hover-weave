@@ -21,7 +21,8 @@ import { CRAFT, FIXED_DT } from "../core/constants";
 import { clamp } from "../core/mathUtils";
 import { CRAFTS, TRAILS, useMeta } from "../state/meta";
 import { useSettings } from "../state/settings";
-import { createHullGeometry, createWingGeometry } from "./craftGeometry";
+import { createHullFragments, createHullGeometry, createWingGeometry } from "./craftGeometry";
+import { CraftWreck } from "./CraftWreck";
 import { TrailRibbon } from "./TrailRibbon";
 
 export function Craft() {
@@ -44,8 +45,9 @@ export function Craft() {
     uFlashScale.value = reduceFlash ? 0.2 : 1;
   }, [reduceFlash, uFlashScale]);
 
-  const { group, engineLight, shieldMesh, exhausts } = useMemo(() => {
+  const { group, engineLight, shieldMesh, exhausts, wreck } = useMemo(() => {
     const g = new THREE.Group();
+    const wreck = new CraftWreck();
     const bodyColor = new THREE.Color(design.body);
     const trimColor = new THREE.Color(design.trim);
     const engineColor = new THREE.Color(design.engine);
@@ -68,6 +70,12 @@ export function Craft() {
     hull.scale.set(sx, sy, sz);
     hull.castShadow = true;
     g.add(hull);
+    for (const geometry of createHullFragments()) {
+      const section = new THREE.Mesh(geometry, hullMat);
+      section.scale.copy(hull.scale);
+      section.castShadow = true;
+      wreck.add(section);
+    }
 
     // Canopy.
     const canopyMat = new THREE.MeshStandardNodeMaterial();
@@ -82,6 +90,7 @@ export function Craft() {
     canopy.position.set(0, 0.2 * sy, -0.29 * sz);
     canopy.scale.set(0.19 * sx, 0.13 * sy, 0.48 * sz);
     g.add(canopy);
+    wreck.add(canopy);
 
     // Swept wing plates, with inset light strips and mechanical trailing vents.
     const finGeo = createWingGeometry(design.finSweep);
@@ -95,21 +104,26 @@ export function Craft() {
     ventMat.metalness = 0.55;
     ventMat.roughness = 0.5;
     for (const side of [-1, 1]) {
+      const wingParts: THREE.Object3D[] = [];
       const fin = new THREE.Mesh(finGeo, hullMat);
       fin.scale.set(side * sx, sy, sz);
       fin.castShadow = true;
       g.add(fin);
+      wingParts.push(fin);
       const seam = new THREE.Mesh(seamGeo, seamMat);
       seam.position.set(side * 0.28 * sx, 0.17 * sy, 0.17 * sz);
       seam.rotation.z = -side * 0.22;
       seam.scale.z = sz;
       g.add(seam);
+      wingParts.push(seam);
       for (let vent = 0; vent < 3; vent++) {
         const slot = new THREE.Mesh(ventGeo, ventMat);
         slot.position.set(side * 0.64 * sx, 0.065 * sy, (0.49 + vent * 0.07) * sz);
         slot.rotation.y = -side * 0.18;
         g.add(slot);
+        wingParts.push(slot);
       }
+      wreck.add(...wingParts);
     }
 
     // Engine pods + glow.
@@ -150,6 +164,7 @@ export function Craft() {
       glow.position.set(side * 0.42 * sx, -0.02, 0.55 * sz + 0.34);
       g.add(glow);
       exhausts.push(glow);
+      wreck.add(pod, nozzle, glow);
     }
 
     // Shield bubble.
@@ -173,9 +188,11 @@ export function Craft() {
 
     const light = new THREE.PointLight(engineColor, 14, 26, 1.8);
     light.position.set(0, 0.4, 1.2);
-    g.add(light);
+    // Keep this light in the scene while the intact ship is hidden. Removing
+    // a light changes Three's lighting graph and recompiles every lit material
+    // on the first retry frame; an intensity fade preserves compiled pipelines.
 
-    return { group: g, engineLight: light, shieldMesh: shield, exhausts };
+    return { group: g, engineLight: light, shieldMesh: shield, exhausts, wreck };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [design.id, env, uFlashScale]);
 
@@ -208,7 +225,6 @@ export function Craft() {
   /** Line-smoothness EMA (trail calligraphy): carves widen, jitter thins. */
   const smoothness = useRef(1);
   const prevBank = useRef(0);
-  const deathSpin = useRef(new THREE.Vector3(2.3, 3.1, Math.PI * 2.4));
   const engineAnchors = useMemo(() => [new THREE.Vector3(), new THREE.Vector3()], []);
 
   useEffect(() => {
@@ -220,6 +236,7 @@ export function Craft() {
         shieldKick.current = 0;
         smoothness.current = 1;
         prevBank.current = 0;
+        wreck.reset();
       }),
       world.events.on("nearMiss", (event) => {
         if (event.grade === "perfect") trailFlash.current = 1;
@@ -240,33 +257,32 @@ export function Craft() {
         shieldKick.current = -0.85;
       }),
       world.events.on("death", (event) => {
-        deathSpin.current.set(
-          event.obstacleKind === "ring" ? 1.2 : 2.3,
-          event.obstacleKind === "pillar" ? 4.2 : 3.1,
-          event.obstacleKind === "crystal" ? Math.PI * 3.1 : Math.PI * 2.4,
-        );
+        wreck.start(event, group.rotation);
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [world, trails]);
+  }, [world, trails, wreck, group]);
 
   // Free GPU resources when a different craft design is selected.
   useEffect(() => {
     return () => {
       const geometries = new Set<THREE.BufferGeometry>();
       const materials = new Set<THREE.Material>();
-      group.traverse((obj) => {
+      const collect = (obj: THREE.Object3D) => {
         if (obj instanceof THREE.Mesh) {
           geometries.add(obj.geometry);
           for (const material of Array.isArray(obj.material) ? obj.material : [obj.material]) {
             materials.add(material);
           }
         }
-      });
+      };
+      group.traverse(collect);
+      wreck.group.traverse(collect);
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((material) => material.dispose());
+      engineLight.dispose();
     };
-  }, [group]);
+  }, [group, wreck, engineLight]);
 
   useEffect(() => () => {
     trails.left.geometry.dispose();
@@ -292,17 +308,10 @@ export function Craft() {
     const flightPitch = idle || dead ? 0 : clamp(-world.vy * 0.028, -0.34, 0.42);
 
     if (dead) {
-      const t = Math.min(world.deathTimer / 1.1, 1);
-      const motion = reduceMotion ? 0.28 : 1;
-      group.position.set(x + world.latVel * t * 0.025, y + t * 1.2 * motion, t * 3.4);
-      group.rotation.set(
-        -0.12 - t * deathSpin.current.x * motion,
-        -world.latVel * 0.006 + t * deathSpin.current.y * motion,
-        bank + t * deathSpin.current.z * motion,
-      );
-      group.scale.setScalar(1 - t * 0.18);
-      group.visible = world.deathTimer < 1.08;
+      group.visible = false;
+      wreck.update(world.deathTimer, reduceMotion);
     } else {
+      wreck.group.visible = false;
       // Nose into the winding course tangent so bends read on the craft too.
       const courseYaw = idle
         ? 0
@@ -325,8 +334,16 @@ export function Craft() {
     prevBank.current = bank;
     const steady = Math.max(0, 1 - bankRate * 0.55);
     smoothness.current += (steady - smoothness.current) * Math.min(1, frameDt * 3);
-    engineLight.intensity =
-      7 + world.speedNorm * 8 + world.boostCharge * 14 + env.uBoostPulse.value * 5;
+    engineLight.intensity = dead
+      ? Math.max(0, 1 - world.deathTimer / 2) * (reduceFlash ? 3 : 7)
+      : 7 + world.speedNorm * 8 + world.boostCharge * 14 + env.uBoostPulse.value * 5;
+    if (dead) {
+      engineLight.position.copy(wreck.group.position);
+      engineLight.position.y += 0.4;
+    } else {
+      group.updateMatrixWorld();
+      engineLight.position.set(0, 0.4, 1.2).applyMatrix4(group.matrixWorld);
+    }
     for (const plume of exhausts) {
       plume.scale.set(1, 0.8, 1.7 + world.speedNorm * 1.3 + world.boostCharge * 3.8);
     }
@@ -367,6 +384,8 @@ export function Craft() {
   return (
     <>
       <primitive object={group} />
+      <primitive object={engineLight} />
+      <primitive object={wreck.group} />
       <primitive object={trails.lMesh} />
       <primitive object={trails.rMesh} />
     </>

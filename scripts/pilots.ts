@@ -49,6 +49,7 @@ export function scanGaps(
   bandEnd: number,
 ): [number, number][] {
   const blocked: [number, number][] = [];
+  const off = world.courseOffsetAt((bandStart + bandEnd) / 2);
   for (const o of world.obstacles) {
     if (!o.active || !o.collidable) continue;
     const sExt = Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx + 2;
@@ -56,12 +57,18 @@ export function scanGaps(
     const restY = pilotRestY(o);
     const vHalf = o.kind === "ring" ? o.hx : o.hy;
     if (restY - vHalf > CRAFT.Y_MAX || restY + vHalf < CRAFT.Y_MIN) continue;
-    for (const r of blockedRanges(specOf(o))) blocked.push(r);
+    // Read lateral gaps in the road's local frame. Broad bends otherwise
+    // make successive rows look like overlapping walls in absolute x.
+    const bend = off - world.courseOffsetAt(o.s);
+    for (const [left, right] of blockedRanges(specOf(o))) {
+      const lo = Math.max(off - TRACK.X_LIMIT, left + bend);
+      const hi = Math.min(off + TRACK.X_LIMIT, right + bend);
+      if (lo < hi) blocked.push([lo, hi]);
+    }
   }
   blocked.sort((a, b) => a[0] - b[0]);
 
-  // The playable band follows the winding course clamp.
-  const off = world.courseOffsetAt((bandStart + bandEnd) / 2);
+  // The playable band follows the winding course edges.
   const gaps: [number, number][] = [];
   let cursor = off - TRACK.X_LIMIT;
   for (const [b0, b1] of blocked) {
@@ -150,7 +157,7 @@ export function lookaheadPilot(
       }
     }
   }
-  // Rasterize the course clamp itself: lanes outside offset ± X_LIMIT at each
+  // Rasterize the course edges: lanes outside offset ± X_LIMIT at each
   // slice are unreachable in the sim.
   for (let k = 0; k < slices; k++) {
     const off = world.courseOffsetAt(band0 + k * DS);
@@ -332,17 +339,12 @@ function rollout(
     if (v > maxLat) v = maxLat;
     else if (v < -maxLat) v = -maxLat;
     x += v * ROLL_DT;
-    // Mirror the sim's course clamp exactly (wall-relative damping).
-    const off = offsetAt(s);
-    const wallVel = (off - offsetAt(s - speed * ROLL_DT)) / ROLL_DT;
-    if (x < off - TRACK.X_LIMIT) {
-      x = off - TRACK.X_LIMIT;
-      v = wallVel + Math.max(0, v - wallVel) * 0.4;
-    } else if (x > off + TRACK.X_LIMIT) {
-      x = off + TRACK.X_LIMIT;
-      v = wallVel + Math.min(0, v - wallVel) * 0.4;
-    }
     s += speed * ROLL_DT;
+    // Leaving either course edge is fatal; never plan on a barrier rebound.
+    const off = offsetAt(s);
+    const edgeClearance = TRACK.X_LIMIT - Math.abs(x - off);
+    if (edgeClearance <= 0) return { survived: i, clearance: 0 };
+    clearance = Math.min(clearance, edgeClearance);
     for (const e of envs) {
       if (e.s0 > s) break;
       if (e.s1 < s) continue;
@@ -362,14 +364,18 @@ function rollout(
  * mismatch — it only dies when *no* input stream survives its horizon, which
  * is precisely the overdrive wall Phase 2 is supposed to build.
  */
-export function superhumanPilot(world: SimWorld, input: InputState): void {
+export function superhumanPilot(
+  world: SimWorld,
+  input: InputState,
+  options: { horizonSeconds?: number; switchFractions?: readonly number[] } = {},
+): void {
   // Decide at 60 Hz (hold the axis on odd sim steps): exact-step rollouts at
   // a deeper horizon doubled the search cost — this claws the budget back.
   if (Math.round(world.time / (1 / 120)) % 2 === 1) return;
   const speed = Math.max(world.speed, 10);
   // 2.4 s: the winding course + denser pattern pool punish the old 1.9 s
   // commitment window (the TAS could get walled after a forced retreat).
-  const horizonS = 2.4;
+  const horizonS = options.horizonSeconds ?? 2.4;
   const steps = Math.round(horizonS / ROLL_DT);
   gatherEnvelopes(world, envScratch, world.distance + speed * horizonS + 12);
   const offsetAt = (s: number) => world.courseOffsetAt(s);
@@ -398,8 +404,10 @@ export function superhumanPilot(world: SimWorld, input: InputState): void {
   // Classic half-split first; if nothing fully survives, widen the search
   // with an early-jink shape — the winding course + denser pattern pool
   // produce funnel entries the single-shape search could not thread.
-  search(0.5);
-  if (bestSurvived < steps) search(0.25);
+  for (const fraction of options.switchFractions ?? [0.5, 0.25]) {
+    search(fraction);
+    if (bestSurvived >= steps) break;
+  }
   input.axis = bestAxis;
   input.boost = false;
 }

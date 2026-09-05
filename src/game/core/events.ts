@@ -47,9 +47,16 @@ export type GameEvents = {
   shieldBreak: { x: number };
   death: {
     x: number;
+    y: number;
+    s: number;
     speed: number;
+    latVel: number;
+    vy: number;
+    bank: number;
+    cause: "obstacle" | "edge";
+    edge?: -1 | 1;
     patternId: string;
-    obstacleKind: ObstacleKind;
+    obstacleKind: ObstacleKind | null;
     motion: MotionType;
   };
   /** A time-limited run (sprint) reached its horizon alive (roadmap 4.2). */
@@ -60,13 +67,13 @@ export type GameEvents = {
   surge: { window: number };
   /** A phase dash fired (lab prototype, roadmap 5.3). */
   dash: { dir: number; x: number };
-  /** A carve pump (or wall-kiss) landed (lab prototype, fun-frontier 1.2). */
+  /** A carve pump landed (lab prototype, fun-frontier 1.2). */
   pump: {
     dir: number;
     x: number;
     /** 0..1 — how much of the glide envelope the pump reached. */
     strength: number;
-    /** True when the pump was a wall-kiss off the lateral clamp. */
+    /** Reserved for historical wall-kiss telemetry; current pumps are false. */
     wall: boolean;
   };
   /** The craft crossed one authored branch in a strategic fork. */

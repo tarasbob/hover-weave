@@ -81,6 +81,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       // Called from a tap/click, so the fullscreen + orientation-lock
       // gesture requirement is satisfied here (Android; no-op elsewhere).
       lockLandscape();
+      input.tilt.recalibrate();
       const { config } = launched;
       const { mode } = config;
       // Heat and lab prototypes ride only on endless launches (roadmap 4.3 /
@@ -133,6 +134,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         throw new Error("Imported flight is not eligible for a rival race");
       }
       lockLandscape();
+      input.tilt.recalibrate();
       const config = recordingConfig(recording);
       session.config = config;
       session.periodKey = null;
@@ -157,6 +159,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         g.setPhase("paused");
         audio.pauseMusic();
       } else if (g.phase === "paused") {
+        input.tilt.recalibrate();
         g.setPhase("running");
         audio.startMusic();
       }
@@ -315,11 +318,23 @@ export function GameProvider({ children }: { children: ReactNode }) {
         forensics: world.buildForensics(),
         unlocked,
       });
-      g.setPhase("dead");
+      // Bank the terminal result immediately; the scene owns the visible
+      // crash clock and opens the report after the breakup has played.
+      g.clearRunFeedback();
+      g.setPhase(finished ? "dead" : "crashing");
     };
 
     const offs: (() => void)[] = [
       world.events.on("runStart", ({ config }) => {
+        // Clear the previous run's readout synchronously; the throttled HUD
+        // snapshot otherwise shows stale score/distance during the first frame.
+        useGame.getState().setHud({
+          ...useGame.getInitialState().hud,
+          distance: Math.floor(world.distance),
+          speedKmh: Math.round(world.speed * 3.6),
+          energy: world.energy,
+          timeLeft: world.timeLimit > 0 ? Math.max(0, world.timeLimit - world.time) : null,
+        });
         quest.counters = { riskShards: 0, fastPerfects: 0 };
         if (config.mode === "daily" && bundle.session.periodKey && !bundle.rival.recording) {
           quest.day = bundle.session.periodKey;
@@ -596,6 +611,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       bundle.env.reduceFlash = s.reduceFlash;
       bundle.env.highContrast = s.highContrast;
       bundle.haptics.enabled = s.haptics;
+      bundle.input.tilt.axis.fullAngle = s.tiltFullAngle;
     };
     apply();
     return useSettings.subscribe(apply);

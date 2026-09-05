@@ -37,8 +37,6 @@ export const viewport: Viewport = {
   themeColor: "#07060f",
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
   // Draw edge-to-edge under the notch; HUD respects safe-area insets.
   viewportFit: "cover",
 };

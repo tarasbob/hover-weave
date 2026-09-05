@@ -11,6 +11,7 @@ import { dailyKey, weeklyKey } from "@/game/core/rng";
 import { useGame } from "@/game/state/game";
 import { CRAFTS, useMeta } from "@/game/state/meta";
 import { TRIALS, medalFor } from "@/game/track/trials";
+import { MobileSetup } from "@/ui/MobileSetup";
 
 type FlightMode = "endless" | "daily" | "sprint";
 
@@ -196,6 +197,7 @@ export function TitleScreen({ inactive = false }: { inactive?: boolean }) {
                       ? dailyKey() + " · Your ghost remembers your best line"
                       : "A clear finish. A new personal best to chase."}
             </div>
+            <MobileSetup compact />
             {!firstFlight && selected === "endless" && (
               <div className="flight-modifiers">
                 <button onClick={() => setOverlay("heat")}>
@@ -258,7 +260,7 @@ export function TitleScreen({ inactive = false }: { inactive?: boolean }) {
               <p className="flight-profile-hint">
                 Steer into the gaps.
                 <br />
-                Skim the edges to build Flow.
+                Skim obstacles to build Flow.
                 <br />
                 Spend your energy on speed.
               </p>

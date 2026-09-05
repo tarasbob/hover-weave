@@ -15,6 +15,7 @@ import {
 } from "@/game/state/game";
 import { useMeta } from "@/game/state/meta";
 import { useSettings } from "@/game/state/settings";
+import { MobileBoost } from "@/ui/MobileSetup";
 
 /** In-run heads-up display. Pure DOM over the canvas, throttled by the loop. */
 export function Hud() {
@@ -34,7 +35,7 @@ export function Hud() {
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const bestScore = useMeta((s) => s.bestScore);
 
-  const inRun = phase === "running" || phase === "paused" || phase === "dead";
+  const inRun = phase === "running" || phase === "paused" || phase === "crashing" || phase === "dead";
   if (!inRun) return null;
 
   return (
@@ -63,6 +64,7 @@ export function Hud() {
             </svg>
           </button>
         )}
+        {phase === "running" && <MobileBoost />}
       {/* Score block */}
       <div className="absolute left-3 top-3 sm:left-5 sm:top-5">
         <div className="text-[11px] tracking-[0.3em] text-white/50">SCORE</div>
@@ -176,7 +178,7 @@ export function Hud() {
 
       {/* Distance + speed + ghost race */}
       <div className="absolute bottom-3 right-3 text-right sm:bottom-5 sm:right-5">
-        <div className="text-2xl font-bold tabular-nums text-white/90">
+        <div aria-label="Distance traveled" data-distance={hud.distance} className="text-2xl font-bold tabular-nums text-white/90">
           {hud.distance.toLocaleString()}
           <span className="ml-1 text-sm font-normal text-white/50">m</span>
         </div>
@@ -283,7 +285,7 @@ export function Hud() {
         key={`grade-${sectionGrade?.at ?? "none"}`}
         toast={sectionGrade}
       />
-      <UnlockToasts />
+      {phase === "dead" && <UnlockToasts />}
       </div>
     </MotionConfig>
   );
@@ -349,7 +351,7 @@ function formatTimer(seconds: number): string {
 
 function boostHint(): string {
   const touch = typeof window !== "undefined" && matchMedia("(pointer: coarse)").matches;
-  return touch ? "2ND FINGER" : "SHIFT / SPACE";
+  return touch ? "HOLD BOOST" : "SHIFT / SPACE";
 }
 
 /** Quiet visual twin of the audio leitmotif at the lookahead horizon. */
@@ -387,18 +389,20 @@ function AheadCueToast({ cue }: { cue: AheadCue | null }) {
 
 /** Progressive first-flight prompt: one idea at a time, dismissed by play. */
 function FlightLesson({ step }: { step: FlightLessonStep }) {
+  const { input } = useGameBundle();
   const touch = typeof window !== "undefined" && matchMedia("(pointer: coarse)").matches;
+  const tilting = input.tilt.getSnapshot() === "ready";
   const copy: Record<FlightLessonStep, { title: string; detail: string }> = {
     steer: {
-      title: touch ? "HOLD EITHER SCREEN HALF" : "HOLD ← / → OR A / D",
-      detail: "MOMENTUM IS REAL · TURN BEFORE THE GAP",
+      title: touch ? (tilting ? "TURN YOUR PHONE TO STEER" : "HOLD EITHER SCREEN HALF") : "HOLD ← / → OR A / D",
+      detail: "FOLLOW THE BENDS · STAY INSIDE THE TRACK",
     },
     graze: {
-      title: "SKIM A GLOWING EDGE",
+      title: "SKIM A GLOWING OBSTACLE",
       detail: "CLOSE PASSES BUILD FLOW AND REFILL BOOST",
     },
     boost: {
-      title: touch ? "SECOND FINGER TO BOOST" : "HOLD SHIFT / SPACE TO BOOST",
+      title: touch ? "HOLD BOOST TO GO FASTER" : "HOLD SHIFT / SPACE TO BOOST",
       detail: "FASTER, BUT WITH LESS TURN AUTHORITY",
     },
     rhythm: {

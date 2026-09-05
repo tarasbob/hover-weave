@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three/webgpu";
 import {
   Fn,
@@ -21,8 +22,11 @@ import {
   vec3,
   saturate,
   transformNormalToView,
+  uniformArray,
+  clamp,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
+import { TRACK } from "../core/constants";
 import { SCROLL_PERIOD } from "./env";
 import { TERRAIN_DEPTH } from "./visualConstants";
 import type { NodeAny } from "./tsl-utils";
@@ -34,7 +38,21 @@ import type { NodeAny } from "./tsl-utils";
  * course; neon grid lines and biome sparkle live near the track.
  */
 export function Terrain({ segments }: { segments: [number, number] }) {
-  const { env } = useGameBundle();
+  const { env, world, ambient } = useGameBundle();
+  // Sampling the simulation's course keeps terrain, markings and collisions
+  // on the same centerline, including seeded bends and late-run easing.
+  const course = useMemo(() => {
+    const rows = Math.ceil(TERRAIN_DEPTH / 8);
+    const values = Array<number>(rows + 1).fill(0);
+    return { rows, step: TERRAIN_DEPTH / rows, values, node: uniformArray<"float">(values, "float") };
+  }, []);
+
+  useFrame(() => {
+    const distance = world.status === "idle" ? ambient.value : world.renderDistance;
+    for (let i = 0; i <= course.rows; i++) {
+      course.values[i] = world.courseOffsetAt(distance - 120 + i * course.step);
+    }
+  });
 
   const mesh = useMemo(() => {
     const WIDTH = 860;
@@ -69,7 +87,15 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       return float(near.add(farRidge));
     };
 
-    const worldX: NodeAny = positionLocal.x;
+    const centerAt = (ahead = 0): NodeAny => {
+      const index = clamp(
+        float(DEPTH / 2 + ahead).sub(positionLocal.z).div(course.step),
+        0, course.rows - 0.0001,
+      );
+      const row = floor(index);
+      return mix(course.node.element(row), course.node.element(row.add(1)), fract(index));
+    };
+    const worldX: NodeAny = positionLocal.x.sub(centerAt());
     const sCoord: NodeAny = env.uScroll.sub(positionLocal.z);
     const eps = 2.5;
     const h0: NodeAny = heightAt(worldX, sCoord).toVar();
@@ -77,14 +103,16 @@ export function Terrain({ segments }: { segments: [number, number] }) {
 
     // Finite-difference normal (s increases toward -z).
     const hx = heightAt(worldX.add(eps), sCoord);
-    const hz = heightAt(worldX, sCoord.add(eps));
+    const hz = heightAt(positionLocal.x.sub(centerAt(eps)), sCoord.add(eps));
     mat.normalNode = transformNormalToView(
       vec3(h0.sub(hx), float(eps), hz.sub(h0)).normalize(),
     );
 
     mat.colorNode = Fn(() => {
       const t = saturate(h0.div(max(env.uDispAmp, 1)).mul(0.5).add(0.5));
-      return mix(env.uTerrainA, env.uTerrainB, t);
+      const terrain = mix(env.uTerrainA, env.uTerrainB, t);
+      const road = float(1).sub(smoothstep(TRACK.X_LIMIT - 0.4, TRACK.X_LIMIT + 0.4, abs(worldX)));
+      return mix(terrain, terrain.mul(0.48).add(env.uGridColor.mul(0.016)), road);
     })();
 
     mat.emissiveNode = Fn(() => {
@@ -142,10 +170,16 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const resolved = float(1).sub(smoothstep(0.08, 0.65, max(fwidth(gridCoord.x), fwidth(gridCoord.y))));
       const grid = line.mul(trackFade).mul(resolved).mul(env.uGridIntensity);
 
-      // Track edge rails with a traveling pulse.
-      const edge = smoothstep(1.6, 0.25, abs(abs(worldX).sub(31)));
-      const railSpeed = env.uSpeedNorm.mul(5).add(6);
-      const railPulse = sin(sCoord.mul(0.35).sub(env.uTime.mul(railSpeed))).mul(0.25).add(0.75);
+      // Continuous boundaries trace each bend. Amber approach stripes make
+      // the lethal edge legible without suggesting a physical guardrail.
+      const boundaryDistance = abs(abs(worldX).sub(TRACK.X_LIMIT));
+      const edgeAA = max(fwidth(worldX), 0.025);
+      const edge = float(1).sub(smoothstep(float(0.16).sub(edgeAA), float(0.16).add(edgeAA), boundaryDistance));
+      const shoulder = smoothstep(TRACK.X_LIMIT - 1.7, TRACK.X_LIMIT - 1.45, abs(worldX))
+        .mul(float(1).sub(smoothstep(TRACK.X_LIMIT - 0.6, TRACK.X_LIMIT - 0.4, abs(worldX))));
+      const warningPattern = sin(sCoord.mul(0.85).add(abs(worldX).mul(1.8)));
+      const warningAA = max(fwidth(warningPattern), 0.02);
+      const stripes = shoulder.mul(smoothstep(warningAA.negate(), warningAA, warningPattern));
 
       // Crystal facet sparkle: tiny glints, not whole cells.
       const cellCoord = vec2(worldX, sCoord).div(3);
@@ -157,7 +191,8 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const sparkle = step(0.82, hcell).mul(dot2).mul(twinkle).mul(env.uSparkle).mul(trackFade);
 
       const e = env.uGridColor.mul(grid).mul(0.24)
-        .add(env.uPrimary.mul(edge).mul(railPulse).mul(0.42))
+        .add(env.uPrimary.mul(edge).mul(1.3))
+        .add(vec3(1, 0.3, 0.06).mul(stripes).mul(0.46))
         .add(env.uAccent.mul(sparkle).mul(0.65))
         .add(env.uGridColor.mul(env.uFlash).mul(0.12))
         .add(env.uAccent.mul(env.uTransition).mul(edge).mul(0.48))
@@ -172,7 +207,7 @@ export function Terrain({ segments }: { segments: [number, number] }) {
     m.frustumCulled = false;
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [env, segments[0], segments[1]]);
+  }, [env, course, segments[0], segments[1]]);
 
   useEffect(() => () => {
     mesh.geometry.dispose();

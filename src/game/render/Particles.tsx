@@ -9,6 +9,7 @@ import { createRng } from "../core/rng";
 import { CRAFT } from "../core/constants";
 import { TRAILS, useMeta } from "../state/meta";
 import { useSettings } from "../state/settings";
+import { crashCenter, type CrashOrigin } from "./crashMotion";
 
 interface Particle {
   alive: boolean;
@@ -22,6 +23,8 @@ interface Particle {
   /** 0 = billboard spark, 1 = z-stretched streak. */
   kind: 0 | 1;
   stretch: number;
+  /** Wreck sparks stay in the cinematic frame after the road stops gliding. */
+  crash: boolean;
 }
 
 const rng = createRng("particles-visual");
@@ -46,7 +49,7 @@ export function Particles({ max }: { max: number }) {
     const pool: Particle[] = Array.from({ length: max }, () => ({
       alive: false, x: 0, y: 0, s: 0, vx: 0, vy: 0, vs: 0,
       drag: 0, grav: 0, age: 0, life: 1, size0: 1, size1: 1,
-      r: 1, g: 1, b: 1, a: 1, kind: 0 as const, stretch: 1,
+      r: 1, g: 1, b: 1, a: 1, kind: 0 as const, stretch: 1, crash: false,
     }));
     let cursor = 0;
 
@@ -74,11 +77,11 @@ export function Particles({ max }: { max: number }) {
       cursor = (cursor + 1) % pool.length;
       Object.assign(it, {
         alive: true, age: 0, drag: 0, grav: 0, vx: 0, vy: 0, vs: 0,
-        kind: 0, stretch: 1, a: 1, size1: 0,
+        kind: 0, stretch: 1, a: 1, size1: 0, crash: false,
       }, p);
     };
 
-    return { pool, mesh, colorAttr, spawn };
+    return { pool, mesh, colorAttr, spawn, deathClock: 0, crashOrigin: null as CrashOrigin | null };
   }, [max]);
 
   useEffect(() => {
@@ -88,7 +91,7 @@ export function Particles({ max }: { max: number }) {
     };
   }, [sys]);
 
-  const emit = useMemo(() => ({ ember: 0, streak: 0, mote: 0, magnet: 0 }), []);
+  const emit = useMemo(() => ({ ember: 0, streak: 0, mote: 0, magnet: 0, crash: 0 }), []);
 
   // --- Event-driven bursts -------------------------------------------------
   useEffect(() => {
@@ -96,6 +99,12 @@ export function Particles({ max }: { max: number }) {
     const burstScale = Math.min(reduceMotion ? 0.4 : 1, reduceFlash ? 0.58 : 1);
     const brightness = reduceFlash ? 0.62 : 1;
     const offs = [
+      world.events.on("runStart", () => {
+        for (const particle of sys.pool) particle.alive = false;
+        sys.deathClock = 0;
+        sys.crashOrigin = null;
+        emit.crash = 0;
+      }),
       world.events.on("nearMiss", (e) => {
         c.copy(env.uWarn.value);
         const gradeCount = e.grade === "perfect" ? 24 : e.grade === "razor" ? 16 : 10;
@@ -355,19 +364,22 @@ export function Particles({ max }: { max: number }) {
           });
         }
       }),
-      world.events.on("death", () => {
+      world.events.on("death", (event) => {
+        sys.deathClock = 0;
+        sys.crashOrigin = { ...event };
+        emit.crash = 0;
         const count = Math.max(18, Math.round(70 * burstScale));
         for (let i = 0; i < count; i++) {
           const hot = rng.chance(0.45);
           c.copy(hot ? env.uWarn.value : env.uPrimary.value);
           const ang = rng.range(0, Math.PI * 2);
-          const sp = rng.range(3, 18);
+          const sp = rng.range(2, 8) * (reduceMotion ? 0.4 : 1);
           sys.spawn({
-            x: world.x, y: CRAFT.HOVER_HEIGHT + rng.range(-0.3, 0.5), s: world.distance,
-            vx: Math.cos(ang) * sp, vy: rng.range(2, 14),
-            vs: rng.range(-8, 14),
-            grav: -18, drag: 1.1, life: rng.range(0.6, 1.7),
-            size0: rng.range(0.1, 0.42), size1: 0.02,
+            x: event.x, y: event.y + rng.range(-0.15, 0.3), s: 0, crash: true,
+            vx: Math.cos(ang) * sp + event.latVel * 0.12, vy: rng.range(1.5, 6),
+            vs: event.cause === "edge" ? rng.range(-2, 5) : rng.range(-6, -1),
+            grav: -7, drag: 1.1, life: rng.range(1.1, 2.5),
+            size0: rng.range(0.08, 0.24), size1: 0.01,
             r: c.r * 2.4 * brightness,
             g: c.g * 2.4 * brightness,
             b: c.b * 2.4 * brightness,
@@ -399,10 +411,33 @@ export function Particles({ max }: { max: number }) {
   const _e = new THREE.Euler();
 
   useFrame((_, rawDt) => {
-    const dt = Math.min(rawDt, 0.08);
+    if (document.hidden) return;
+    const dead = world.status === "dead";
+    const dt = dead
+      ? Math.min(0.25, Math.max(0, world.deathTimer - sys.deathClock))
+      : Math.min(rawDt, 0.08);
+    sys.deathClock = world.deathTimer;
     const running = world.status === "running";
     const dist = world.status === "idle" ? 0 : world.renderDistance;
     const continuousScale = reduceMotion ? 0.35 : reduceFlash ? 0.65 : 1;
+
+    // Lingering embers trace the falling wreck after the initial impact burst.
+    if (dead && sys.crashOrigin && world.deathTimer < 1.7) {
+      const center = crashCenter(sys.crashOrigin, world.deathTimer, reduceMotion);
+      emit.crash += dt * 22 * continuousScale * (1 - world.deathTimer / 2);
+      while (emit.crash >= 1) {
+        emit.crash -= 1;
+        const c = env.uWarn.value;
+        sys.spawn({
+          x: center.x + rng.range(-0.65, 0.65), y: center.y + rng.range(0, 0.5),
+          s: -center.z, crash: true,
+          vx: rng.range(-0.7, 0.7), vy: rng.range(0.5, 1.8), vs: rng.range(-0.6, 0.8),
+          drag: 1, grav: -1.5, life: rng.range(0.65, 1.35),
+          size0: rng.range(0.06, 0.14), size1: 0.01,
+          r: c.r * 1.8, g: c.g * 1.8, b: c.b * 1.8, a: reduceFlash ? 0.4 : 0.75,
+        });
+      }
+    }
 
     // Boost embers.
     if (running && world.boostCharge > 0.15) {
@@ -506,7 +541,7 @@ export function Particles({ max }: { max: number }) {
       p.y += p.vy * dt;
       p.s += p.vs * dt;
 
-      const z = -(p.s - dist);
+      const z = p.crash ? -p.s : -(p.s - dist);
       if (z > 24 || z < -420) {
         p.alive = false;
         continue;

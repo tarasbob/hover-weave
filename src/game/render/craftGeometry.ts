@@ -7,15 +7,27 @@ interface HullSection {
   bottom: number;
 }
 
-/** A six-sided aerospace section, with a broad dorsal panel and bevelled chines. */
-export function createHullGeometry(): THREE.BufferGeometry {
-  const sections: readonly HullSection[] = [
+const HULL_SECTIONS: readonly HullSection[] = [
     { z: -1.5, width: 0.025, top: -0.01, bottom: -0.04 },
     { z: -0.75, width: 0.28, top: 0.14, bottom: -0.14 },
     { z: 0.02, width: 0.49, top: 0.22, bottom: -0.2 },
     { z: 0.58, width: 0.44, top: 0.15, bottom: -0.15 },
     { z: 0.94, width: 0.27, top: 0.07, bottom: -0.1 },
-  ];
+];
+
+/** A six-sided aerospace section, with a broad dorsal panel and bevelled chines. */
+export function createHullGeometry(): THREE.BufferGeometry {
+  return hullFromSections(HULL_SECTIONS);
+}
+
+/** Closed sections of the actual hull: the wreck preserves the selected ship. */
+export function createHullFragments(): THREE.BufferGeometry[] {
+  return HULL_SECTIONS.slice(1).map((section, index) =>
+    hullFromSections([HULL_SECTIONS[index], section]),
+  );
+}
+
+function hullFromSections(sections: readonly HullSection[]): THREE.BufferGeometry {
   const positions: number[] = [];
   const indices: number[] = [];
   for (const { z, width, top, bottom } of sections) {

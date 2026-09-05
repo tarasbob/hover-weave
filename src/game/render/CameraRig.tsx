@@ -7,6 +7,8 @@ import { useGameBundle } from "../GameController";
 import { CRAFT } from "../core/constants";
 import { damp, lerp } from "../core/mathUtils";
 import { useSettings } from "../state/settings";
+import { crashCenter, type CrashOrigin } from "./crashMotion";
+import { chaseFraming } from "./cameraFraming";
 
 /**
  * Chase camera: lateral lag, bank roll, speed FOV, impact shake and a
@@ -27,6 +29,9 @@ export function CameraRig() {
     boostKick: 0,
     flowKick: 0,
     deathSpeed: 0,
+    deathOrigin: null as CrashOrigin | null,
+    deathCamera: new THREE.Vector3(),
+    deathTarget: new THREE.Vector3(),
     /** Smoothed vertical follow of the craft's flight height. */
     lift: 0,
     launchKick: 0,
@@ -38,14 +43,15 @@ export function CameraRig() {
     const offs = [
       world.events.on("runStart", () => {
         Object.assign(state.current, {
-          x: world.x * 0.92,
-          lookX: world.x * 0.55,
+          x: world.x,
+          lookX: world.x,
           trauma: 0,
           roll: 0,
           nearWhip: 0,
           boostKick: 0,
           flowKick: 0,
           deathSpeed: 0,
+          deathOrigin: null,
           lift: 0,
           launchKick: 0,
         });
@@ -53,6 +59,9 @@ export function CameraRig() {
       world.events.on("death", (event) => {
         state.current.trauma = 1;
         state.current.deathSpeed = event.speed;
+        state.current.deathOrigin = { ...event };
+        state.current.deathCamera.copy(camera.position);
+        state.current.deathTarget.copy(target);
       }),
       world.events.on("shieldBreak", () => {
         state.current.trauma = Math.max(state.current.trauma, 0.65);
@@ -92,9 +101,10 @@ export function CameraRig() {
       }),
     ];
     return () => offs.forEach((off) => off());
-  }, [world]);
+  }, [world, camera, target]);
 
   useFrame((_, rawDt) => {
+    if (document.hidden) return;
     const dt = Math.min(rawDt, 0.08);
     const s = state.current;
     const idle = world.status === "idle";
@@ -117,9 +127,12 @@ export function CameraRig() {
       ? 0
       : (world.courseOffsetAt(dist + 78) - world.courseOffsetAt(dist + 6)) * bendScale;
 
-    s.x = damp(s.x, craftX * 0.92, 7.5, dt);
     const whipScale = reduceMotion ? 0.18 : 1;
-    s.lookX = damp(s.lookX, craftX * 0.55 + s.nearWhip * whipScale + bend * 0.5, 6, dt);
+    const framing = chaseFraming(
+      craftX, idle ? 0 : world.courseOffsetAt(dist), bend, s.nearWhip * whipScale,
+    );
+    s.x = damp(s.x, framing.x, 7.5, dt);
+    s.lookX = damp(s.lookX, framing.lookX, 6, dt);
 
     const speedK = world.speedNorm;
     const motionScale = reduceMotion ? 0.25 : 1;
@@ -131,14 +144,15 @@ export function CameraRig() {
     let py = baseY;
     let pz = baseZ;
 
-    if (dead) {
-      // Slow pull up + back while the wreck tumbles.
-      const t = Math.min(world.deathTimer / 1.6, 1);
+    if (dead && s.deathOrigin) {
+      // Keep the actual breakup framed, including an outward flight off an edge.
+      const center = crashCenter(s.deathOrigin, world.deathTimer, reduceMotion);
+      const t = Math.min(world.deathTimer / 2.5, 1);
       const e = 1 - Math.pow(1 - t, 3);
       const impactScale = Math.min(1.35, 0.7 + s.deathSpeed / 140);
-      py += e * 4.2 * impactScale * motionScale;
-      pz += e * 7 * impactScale * motionScale;
-      px = damp(s.x, world.deathX, 4, dt);
+      py = s.deathCamera.y + e * 2.4 * impactScale * motionScale;
+      pz = s.deathCamera.z + e * 4.6 * impactScale * motionScale;
+      px = lerp(s.deathCamera.x, center.x, e * 0.8);
     }
     if (idle) {
       // Gentle cinematic drift on the title screen.
@@ -161,6 +175,15 @@ export function CameraRig() {
     // The look target lifts with a fraction of the flight so the horizon
     // dips slightly during a jump — height becomes legible at a glance.
     target.set(s.lookX + shX * 0.4, 1.7 + shY * 0.3 + s.lift * 0.6, -13);
+    if (dead && s.deathOrigin) {
+      const center = crashCenter(s.deathOrigin, world.deathTimer, reduceMotion);
+      const follow = 1 - Math.exp(-world.deathTimer * 3.5);
+      target.set(
+        lerp(s.deathTarget.x, center.x, follow),
+        lerp(s.deathTarget.y, Math.max(0.25, center.y * 0.55), follow),
+        lerp(s.deathTarget.z, center.z, follow),
+      );
+    }
     camera.lookAt(target);
 
     // Bank roll on top of lookAt (plus a light lean into upcoming bends).

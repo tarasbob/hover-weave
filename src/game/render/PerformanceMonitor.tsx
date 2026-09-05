@@ -82,7 +82,7 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     // The optional diagnostic overlay can inspect the crash effect too. Never
     // carry those expensive samples into a resumed run's resolution decisions.
     m.gpu.begin(m.started, !document.hidden && (phase === "running" || phase === "title" ||
-      (phase === "dead" && useSettings.getState().showFps)));
+      ((phase === "crashing" || phase === "dead") && useSettings.getState().showFps)));
   }, -100);
 
   // PostFX owns rendering at priority 1; this callback only measures it.
