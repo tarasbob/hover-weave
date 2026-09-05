@@ -15,15 +15,13 @@ import { InputManager } from "./core/input";
 import { lockLandscape } from "./core/orientation";
 import { EnvState } from "./render/env";
 import { AudioEngine } from "./audio/engine";
-import type { RunConfig } from "./core/modes";
 import { questsForDay, type QuestCounters, type QuestDef } from "./core/quests";
 import {
   ghostEligible,
   recordingConfig,
   type RunRecording,
 } from "./core/replay";
-import { dailyKey, dailySeed, randomSeed, weeklyKey, weeklySeed } from "./core/rng";
-import { trialSeed } from "./track/trials";
+import { createRunSession, retryRunSession, type RunSession } from "./core/session";
 import { useGame, type GameMode } from "./state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "./state/meta";
 import { useReplays } from "./state/replays";
@@ -38,12 +36,14 @@ export interface GameBundle {
   haptics: GamepadHaptics;
   /** Imported rival currently being raced; mutable run-session state. */
   rival: { recording: RunRecording | null };
+  /** Current launch identity, including its original daily/weekly period. */
+  session: RunSession;
   /** Ambient scroll distance used on the title screen. */
   ambient: { value: number };
   startRun(mode: GameMode, trialId?: string): void;
   /** Launch the exact course carried by an imported flight and race its ghost. */
   raceRecording(recording: RunRecording): void;
-  /** Re-run the last config (defaults to endless before any run). */
+  /** Relaunch the mode with a fresh endless seed, or retry an imported rival. */
   restart(): void;
   togglePause(): void;
   backToTitle(): void;
@@ -68,26 +68,19 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const ambient = { value: 0 };
     const rival: { recording: RunRecording | null } = { recording: null };
 
-    // The active run's identity, captured at launch: restart replays the
-    // exact config; the period key keeps a run that crosses UTC midnight (or
-    // an ISO week boundary) attached to the seed it was launched with.
-    const active: { config: RunConfig; periodKey: string | null } = {
+    // Keep this object stable: results, ghosts, quests, and HUD all read the
+    // same launch period even if the run crosses UTC midnight or a new week.
+    const session: RunSession = {
       config: { mode: "endless", seed: "" },
       periodKey: null,
     };
 
-    const startRun = (mode: GameMode, trialId?: string) => {
+    const launchRun = (launched: RunSession) => {
       // Called from a tap/click, so the fullscreen + orientation-lock
       // gesture requirement is satisfied here (Android; no-op elsewhere).
       lockLandscape();
-      const config: RunConfig =
-        mode === "daily"
-          ? { mode, seed: dailySeed() }
-          : mode === "sprint"
-            ? { mode, seed: weeklySeed() }
-            : mode === "trial"
-              ? { mode, seed: trialSeed(trialId ?? ""), trialId }
-              : { mode, seed: randomSeed() };
+      const { config } = launched;
+      const { mode } = config;
       // Heat and lab prototypes ride only on endless launches (roadmap 4.3 /
       // Phase 5), from the pre-run selections. The sim canonicalizes both.
       const meta = useMeta.getState();
@@ -108,8 +101,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         const skipTo = Math.max(0, Number(new URLSearchParams(location.search).get("start")) || 0);
         if (skipTo > 0) config.skipTo = skipTo;
       }
-      active.config = config;
-      active.periodKey = mode === "daily" ? dailyKey() : mode === "sprint" ? weeklyKey() : null;
+      Object.assign(session, launched);
       rival.recording = null;
 
       useGame.getState().setMode(mode, config.trialId ?? null);
@@ -123,12 +115,15 @@ export function GameProvider({ children }: { children: ReactNode }) {
       // pacing a plain-run ghost against them would be a lie).
       ghost.arm(
         useSettings.getState().showGhost && !config.skipTo && !config.lab
-          ? useReplays.getState().ghostFor(mode, active.periodKey, config.trialId ?? null)
+          ? useReplays.getState().ghostFor(mode, session.periodKey, config.trialId ?? null)
           : null,
       );
       useGame.getState().setPhase("running");
       audio.startMusic();
     };
+
+    const startRun = (mode: GameMode, trialId?: string) =>
+      launchRun(createRunSession(mode, trialId));
 
     const raceRecording = (recording: RunRecording) => {
       if (!ghostEligible(recording)) {
@@ -136,8 +131,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }
       lockLandscape();
       const config = recordingConfig(recording);
-      active.config = config;
-      active.periodKey = null;
+      session.config = config;
+      session.periodKey = null;
       rival.recording = recording;
       useGame.getState().setMode(config.mode, config.trialId ?? null);
       useGame.getState().setOutcome(null);
@@ -149,10 +144,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
     };
 
     const restart = () => {
-      const { config } = active;
       if (rival.recording) raceRecording(rival.recording);
-      else if (!config.seed) startRun("endless");
-      else startRun(config.mode, config.trialId);
+      else launchRun(retryRunSession(session));
     };
 
     const togglePause = () => {
@@ -185,6 +178,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       haptics,
       ambient,
       rival,
+      session,
       startRun,
       raceRecording,
       restart,
@@ -252,8 +246,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const meta = useMeta.getState();
       const before = metaSnapshot(meta);
       const stats = world.stats;
-      const periodKey =
-        stats.mode === "daily" ? dailyKey() : stats.mode === "sprint" ? weeklyKey() : null;
+      const { periodKey } = bundle.session;
       // Lab prototype runs are unranked sandboxes (roadmap Phase 5): no PBs,
       // no rating, no streaks, no lifetime tallies, no ghost — nothing
       // persists. The run still records in-memory so replays stay testable.
@@ -321,8 +314,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const offs: (() => void)[] = [
       world.events.on("runStart", ({ config }) => {
         quest.counters = { riskShards: 0, fastPerfects: 0 };
-        if (config.mode === "daily" && !bundle.rival.recording) {
-          quest.day = dailyKey();
+        if (config.mode === "daily" && bundle.session.periodKey && !bundle.rival.recording) {
+          quest.day = bundle.session.periodKey;
           quest.defs = questsForDay(quest.day);
         } else {
           quest.day = null;
@@ -565,19 +558,23 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const { input, audio } = bundle;
     input.attach(document.body);
     const offUnlock = audio.attachUnlock(document);
-    // Auto-pause when the tab is hidden — dying while throttled is unfair.
+    // Losing the window also pauses: releasing controls on blur should not
+    // leave the craft flying unattended behind another window.
+    const onBlur = () => {
+      if (useGame.getState().phase === "running") bundle.togglePause();
+    };
     const onVisibility = () => {
-      if (document.visibilityState === "hidden" && useGame.getState().phase === "running") {
-        bundle.togglePause();
-      }
+      if (document.visibilityState === "hidden") onBlur();
     };
     const onUiClick = (event: MouseEvent) => {
       if (event.target instanceof Element && event.target.closest("button")) audio.uiClick();
     };
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
     document.addEventListener("click", onUiClick);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
       document.removeEventListener("click", onUiClick);
       offUnlock();
       input.dispose();

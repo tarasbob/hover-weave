@@ -1,7 +1,7 @@
 "use client";
 
 import { useFrame, useThree } from "@react-three/fiber";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import {
   Fn,
@@ -9,7 +9,6 @@ import {
   float,
   mix,
   mx_fractal_noise_float,
-  normalLocal,
   positionLocal,
   pow,
   sin,
@@ -20,7 +19,6 @@ import {
   fract,
   dot,
   saturate,
-  vec2,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { SKYDOME_RADIUS, SUN_DIRECTION } from "./visualConstants";
@@ -48,9 +46,10 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
 
       // Base vertical gradient with a hot horizon band.
       const grad = smoothstep(-0.08, 0.55, up);
-      const col = mix(env.uSkyBottom, env.uSkyTop, grad).toVar();
-      const horizon = pow(saturate(float(1).sub(abs(up.add(0.03)))), 7);
-      col.addAssign(env.uHorizon.mul(horizon).mul(1.35));
+      const skyFloor = mix(env.uSkyBottom.mul(0.5), vec3(0.008, 0.015, 0.032), env.uBiomeMix.x.mul(0.7));
+      const col = mix(skyFloor, env.uSkyTop, grad).toVar();
+      const horizon = pow(saturate(float(1).sub(abs(up.add(0.03)))), 18);
+      col.addAssign(env.uHorizon.mul(horizon).mul(0.28));
 
       // A coherent key-light source shared with the scene's directional light.
       const sunDot = saturate(dot(dir, vec3(...SUN_DIRECTION).normalize()));
@@ -73,7 +72,8 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
       const nebMask = saturate(neb1.mul(neb2).sub(0.12).mul(1.7))
         .mul(smoothstep(-0.02, 0.3, up))
         .mul(env.uNebulaAmt);
-      col.addAssign(env.uNebula.mul(nebMask).mul(0.85));
+      const quietSky = float(1).sub(env.uBiomeMix.x.mul(0.62));
+      col.addAssign(env.uNebula.mul(nebMask).mul(quietSky).mul(0.24));
 
       // Stars: hashed cells, twinkling, fading toward horizon.
       const sCoord = dir.mul(90).toVar();
@@ -101,7 +101,7 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
           0.55,
         ).mul(0.5).add(0.5);
         col.addAssign(
-          vec3(0.72, 0.78, 1).mul(bandGlow).mul(bandNoise).mul(env.uStars).mul(0.32),
+          vec3(0.72, 0.78, 1).mul(bandGlow).mul(bandNoise).mul(env.uStars).mul(0.12),
         );
       }
 
@@ -114,14 +114,16 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
         .mul(smoothstep(0.75, 0.3, up))
         .mul(env.uAuroraAmt.add(env.uTransition.mul(0.35)).add(env.uFlowPulse.mul(0.2)));
       const auroraCol = mix(env.uAuroraA, env.uAuroraB, saturate(warp.mul(0.5).add(0.5)));
-      col.addAssign(auroraCol.mul(auroraMask).mul(0.9));
+      // The opening sector is a quiet star field; a distant ribbon hints at
+      // the more active skies ahead without competing with incoming hazards.
+      col.addAssign(auroraCol.mul(auroraMask).mul(float(1).sub(env.uBiomeMix.x.mul(0.86))).mul(0.3));
 
       // Each biome has a recognisable procedural sky silhouette.
       const crystalArc = pow(
         float(1).sub(abs(sin(dir.x.mul(8).add(dir.y.mul(5.5)).add(env.uTime.mul(0.06))))),
         8,
       ).mul(smoothstep(0.04, 0.48, up));
-      col.addAssign(env.uPrimary.mul(crystalArc).mul(env.uBiomeMix.x).mul(0.42));
+      col.addAssign(env.uPrimary.mul(crystalArc).mul(env.uBiomeMix.x).mul(0.018));
 
       const dataColumns = pow(
         float(1).sub(abs(sin(dir.x.mul(88).add(env.uTime.mul(0.12))))),
@@ -129,7 +131,7 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
       )
         .mul(pow(sin(dir.y.mul(72).sub(env.uTime.mul(3.2))).mul(0.5).add(0.5), 6))
         .mul(smoothstep(0.06, 0.5, up));
-      col.addAssign(env.uAccent.mul(dataColumns).mul(env.uBiomeMix.y).mul(0.46));
+      col.addAssign(env.uAccent.mul(dataColumns).mul(env.uBiomeMix.y).mul(0.24));
 
       const stormCloud = saturate(
         mx_fractal_noise_float(dir.mul(4.2).add(vec3(env.uTime.mul(0.025), 0, 0)), 3, 2, 0.54)
@@ -148,21 +150,18 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
         mix(env.uPrimary, env.uAccent, saturate(dir.y.mul(1.4)))
           .mul(voidRift)
           .mul(env.uBiomeMix.w)
-          .mul(detail === 2 ? 1.4 : 0.9),
+          .mul(detail === 2 ? 0.7 : 0.5),
       );
 
       // Lightning wash + subtle flow tint.
       col.addAssign(vec3(0.9, 0.92, 1).mul(env.uFlash).mul(0.75));
-      col.addAssign(env.uAccent.mul(env.uFlow).mul(horizon).mul(0.25));
-      col.addAssign(env.uAccent.mul(env.uTransition).mul(horizon).mul(0.42));
+      col.addAssign(env.uAccent.mul(env.uFlow).mul(horizon).mul(0.1));
+      col.addAssign(env.uAccent.mul(env.uTransition).mul(horizon).mul(0.2));
 
       // Boost warps a faint radial shimmer near the horizon ahead.
       const ahead = saturate(dir.z.negate());
       const shimmer = sin(dir.y.mul(90).add(env.uTime.mul(9))).mul(0.5).add(0.5);
-      col.addAssign(env.uAccent.mul(env.uBoost).mul(ahead).mul(horizon).mul(shimmer).mul(0.35));
-
-      void normalLocal;
-      void vec2;
+      col.addAssign(env.uAccent.mul(env.uBoost).mul(ahead).mul(horizon).mul(shimmer).mul(0.1));
       return col;
     })();
 
@@ -175,6 +174,11 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
   useFrame(() => {
     mesh.position.set(camera.position.x, 0, camera.position.z);
   });
+
+  useEffect(() => () => {
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+  }, [mesh]);
 
   return <primitive object={mesh} />;
 }

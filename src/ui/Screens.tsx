@@ -7,13 +7,13 @@ import { useGame, type RunOutcome } from "@/game/state/game";
 import { CRAFTS, TRAILS, metaSnapshot, useMeta } from "@/game/state/meta";
 import { useReplays } from "@/game/state/replays";
 import { resolveTier, useSettings, type QualityPreset } from "@/game/state/settings";
-import { dailyKey, weeklyKey } from "@/game/core/rng";
+import { dailyKey } from "@/game/core/rng";
 import { FLOW, SPRINT_MODE } from "@/game/core/constants";
 import { HEATS, HEAT_BY_ID, heatScoreMult } from "@/game/core/heat";
 import { LABS, LAB_BY_ID } from "@/game/core/lab";
 import { questsForDay } from "@/game/core/quests";
 import { ratingTier } from "@/game/core/rating";
-import { flightFilename, parseFlight, serializeFlight } from "@/game/core/replay";
+import { flightFilename, serializeFlight } from "@/game/core/replay";
 import {
   GRADE_MIN_INTENSITY,
   type RunStats,
@@ -30,13 +30,14 @@ import {
 } from "@/game/track/trials";
 import { DeathForensicsPanel } from "@/ui/DeathForensics";
 import { GRADE_COLORS } from "@/ui/Hud";
+import { TitleScreen } from "@/ui/TitleScreen";
 
 const panel =
-  "rounded-2xl border border-white/10 bg-[#0b0a1a]/70 backdrop-blur-xl shadow-[0_0_60px_rgba(80,40,180,0.25)]";
+  "rounded-2xl border border-slate-200/15 bg-[#08151f]/95 backdrop-blur-xl shadow-[0_20px_100px_rgba(0,0,0,0.4)]";
 
 const btn =
   "pointer-events-auto rounded-xl px-6 py-3 font-display font-bold tracking-[0.2em] transition-all duration-150 active:scale-[0.97]";
-const btnPrimary = `${btn} bg-gradient-to-r from-cyan-400/90 to-fuchsia-500/90 text-[#07060f] hover:brightness-110 shadow-[0_0_24px_rgba(80,220,255,0.35)]`;
+const btnPrimary = `${btn} bg-[#e3efdc] text-[#15262b] hover:bg-[#f0ffe9] shadow-[0_0_24px_rgba(195,245,236,0.08)]`;
 const btnGhost = `${btn} border border-white/15 bg-white/5 text-white/85 hover:bg-white/10`;
 
 export function Screens() {
@@ -77,7 +78,7 @@ export function Screens() {
       </div>
       <AnimatePresence mode="sync">
         {phase === "boot" && <BootScreen key="boot" />}
-        {phase === "title" && overlay === "none" && <TitleScreen key="title" />}
+        {phase === "title" && <TitleScreen key="title" inactive={overlay !== "none"} />}
         {phase === "paused" && overlay === "none" && <PauseScreen key="pause" />}
         {phase === "dead" && overlay === "none" && <GameOverScreen key="dead" />}
       </AnimatePresence>
@@ -161,187 +162,17 @@ function Logo() {
   );
 }
 
-function TitleScreen() {
-  const bundle = useGameBundle();
-  const setOverlay = useGame((s) => s.setOverlay);
-  const webgpu = useGame((s) => s.webgpu);
-  const meta = useMeta();
-  const today = dailyKey();
-  const dailyRecord = meta.dailyBest[today];
-  const week = weeklyKey();
-  const sprintRecord = meta.sprintBest[week];
-  const heatMult = heatScoreMult(meta.selectedHeat);
-  const tier = ratingTier(meta.rating);
-  const firstFlight = !meta.onboardingComplete;
-  const [importError, setImportError] = useState("");
-  const flightInput = useRef<HTMLInputElement>(null);
-
-  const importFlight = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = "";
-    if (!file) return;
-    try {
-      const recording = parseFlight(await file.text());
-      setImportError("");
-      bundle.raceRecording(recording);
-    } catch (error) {
-      setImportError(error instanceof Error ? error.message : "Could not read that flight");
-    }
-  };
-
-  return (
-    <Screen dim={false}>
-      <div className="pointer-events-auto flex flex-col items-center gap-5 px-4 text-center sm:gap-8">
-        <motion.div
-          initial={{ y: -26, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ duration: 0.6, ease: "easeOut" }}
-        >
-          <Logo />
-        </motion.div>
-
-        <motion.div
-          initial={{ y: 22, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ duration: 0.5, delay: 0.15 }}
-          className="flex flex-col items-center gap-3"
-        >
-          <div className="flex items-stretch justify-center gap-2">
-            <button className={`${btnPrimary} text-lg`} onClick={() => bundle.startRun("endless")}>
-              {firstFlight ? "BEGIN FIRST FLIGHT" : "LAUNCH"}
-              {!firstFlight && heatMult > 1 && (
-                <span className="ml-2 text-xs tracking-widest text-orange-900/90">
-                  HEAT ×{heatMult.toFixed(2)}
-                </span>
-              )}
-              {!firstFlight && meta.selectedLab.length > 0 && (
-                <span className="ml-2 text-xs tracking-widest text-violet-900/90">LAB</span>
-              )}
-            </button>
-            {!firstFlight && (
-              <>
-                <button
-                  className={`${btnGhost} !px-3 ${meta.selectedHeat.length > 0 ? "!border-orange-300/50 !text-orange-200" : ""}`}
-                  onClick={() => setOverlay("heat")}
-                  title="Opt-in burdens for a multiplied score"
-                  aria-label="Configure heat modifiers"
-                >
-                  HEAT
-                </button>
-                <button
-                  className={`${btnGhost} !px-3 ${meta.selectedLab.length > 0 ? "!border-violet-300/50 !text-violet-200" : ""}`}
-                  onClick={() => setOverlay("lab")}
-                  title="Experimental prototypes — lab runs are unranked"
-                  aria-label="Configure lab prototypes"
-                >
-                  LAB
-                </button>
-              </>
-            )}
-          </div>
-          {firstFlight ? (
-            <div className="max-w-sm text-xs leading-relaxed tracking-[0.12em] text-white/55">
-              STEER · GRAZE · BOOST
-              <div className="mt-1 tracking-normal text-white/40">
-                The opening teaches each system while you fly. No setup required.
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-wrap justify-center gap-2">
-                <button className={btnGhost} onClick={() => bundle.startRun("daily")}>
-                  DAILY COURSE
-                  <span className="ml-2 text-[10px] text-cyan-200/70 tracking-widest">
-                    {dailyRecord ? `BEST ${dailyRecord.score.toLocaleString()}` : today}
-                  </span>
-                </button>
-                <button className={btnGhost} onClick={() => bundle.startRun("sprint")}>
-                  SPRINT
-                  <span className="ml-2 text-[10px] text-fuchsia-200/70 tracking-widest">
-                    {sprintRecord
-                      ? `BEST ${sprintRecord.score.toLocaleString()}`
-                      : `${SPRINT_MODE.DURATION}s · ${week}`}
-                  </span>
-                </button>
-              </div>
-              <DailyQuestCard />
-            </>
-          )}
-          <div className="mt-1 flex flex-wrap justify-center gap-2">
-            {!firstFlight && (
-              <>
-                <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("trials")}>
-                  TRIALS
-                </button>
-                <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("hangar")}>
-                  HANGAR
-                </button>
-                <button
-                  className={`${btnGhost} !px-4 !py-2 text-sm`}
-                  onClick={() => flightInput.current?.click()}
-                >
-                  RACE FLIGHT
-                </button>
-                <input
-                  ref={flightInput}
-                  type="file"
-                  accept=".flight,application/json"
-                  className="hidden"
-                  tabIndex={-1}
-                  aria-hidden="true"
-                  onChange={importFlight}
-                />
-              </>
-            )}
-            <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("settings")}>
-              SETTINGS
-            </button>
-            <button className={`${btnGhost} !px-4 !py-2 text-sm`} onClick={() => setOverlay("help")}>
-              HOW TO FLY
-            </button>
-          </div>
-          {importError && (
-            <div role="alert" className="max-w-md text-xs text-rose-300/85">
-              {importError}
-            </div>
-          )}
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.4 }}
-          className="text-xs text-white/45"
-        >
-          {meta.bestScore > 0 && (
-            <div className="mb-1 tabular-nums">
-              PERSONAL BEST {meta.bestScore.toLocaleString()} · {Math.floor(meta.bestDistance).toLocaleString()} m
-            </div>
-          )}
-          {meta.ratedRuns > 0 && (
-            <div className="mb-1 tabular-nums tracking-[0.14em] text-cyan-200/70">
-              PILOT RATING {meta.rating.toLocaleString()} · {tier.name}
-            </div>
-          )}
-          <div className="tracking-[0.2em]">
-            {webgpu === null ? "" : webgpu ? "WEBGPU ENGAGED" : "WEBGL2 COMPATIBILITY MODE"}
-          </div>
-        </motion.div>
-      </div>
-    </Screen>
-  );
-}
-
 function PauseScreen() {
   const bundle = useGameBundle();
   const setOverlay = useGame((s) => s.setOverlay);
   return (
     <Screen>
       <div
-        className={`${panel} pointer-events-auto flex flex-col items-center gap-5 px-7 py-8 sm:px-12 sm:py-10`}
+        className={`${panel} pointer-events-auto max-h-[90dvh] overflow-y-auto flex flex-col items-center gap-5 px-7 py-8 sm:px-12 sm:py-10`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="pause-title"
+        onKeyDown={trapDialogFocus}
       >
         <div id="pause-title" className="font-display text-3xl font-black tracking-[0.3em] text-white">
           PAUSED
@@ -390,11 +221,14 @@ function GameOverScreen() {
       worst === null || section.composite < worst.composite ? section : worst,
     null,
   );
-  const trial = mode === "trial" && s.trialId ? trialById(s.trialId) : undefined;
+  const trial =
+    mode === "trial" && s.trialId ? trialById(s.trialId) : undefined;
   // Practice-room shortcut: the pattern that just killed an open-track run
   // may exist as a trial — offer to drill it (roadmap 4.1).
   const drillTrial =
-    mode !== "trial" && s.deathCause ? trialById(s.deathCause.patternId) : undefined;
+    mode !== "trial" && s.deathCause
+      ? trialById(s.deathCause.patternId)
+      : undefined;
   const bestBadge =
     mode === "daily" && outcome.newDailyBest
       ? "NEW DAILY BEST"
@@ -409,7 +243,9 @@ function GameOverScreen() {
   const coaching = deathCoach(outcome);
   const exportRun = () => {
     if (!lastRun) return;
-    const blob = new Blob([serializeFlight(lastRun)], { type: "application/json" });
+    const blob = new Blob([serializeFlight(lastRun)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -424,195 +260,220 @@ function GameOverScreen() {
   return (
     <Screen>
       <motion.div
-        initial={{ y: 26, opacity: 0, scale: 0.97 }}
-        animate={{ y: 0, opacity: 1, scale: 1 }}
-        transition={{ duration: 0.4, ease: "easeOut" }}
-        className={`${panel} pointer-events-auto max-h-[92vh] w-[min(94vw,540px)] overflow-y-auto px-5 py-6 sm:px-8 sm:py-8`}
+        initial={{ y: 18, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        className={`${panel} pointer-events-auto max-h-[90dvh] w-[min(94vw,560px)] overflow-y-auto px-5 py-6 sm:px-8 sm:py-7`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="game-over-title"
+        onKeyDown={trapDialogFocus}
       >
-        <div className="text-center">
-          <div
-            id="game-over-title"
-            className={`font-display text-2xl font-black tracking-[0.3em] ${
-              outcome.finished ? "text-emerald-300" : "text-rose-300"
-            }`}
-          >
-            {outcome.finished ? "TRANSMISSION COMPLETE" : "SIGNAL LOST"}
-          </div>
-          {mode === "trial" && trial && (
-            <div className="mt-1 text-[11px] tracking-[0.3em] text-white/50">
-              TRIAL · {trial.name.toUpperCase()}
-            </div>
-          )}
-          {bestBadge && (
-            <motion.div
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ delay: 0.3, type: "spring", stiffness: 240 }}
-              className="mt-2 inline-block rounded-full bg-gradient-to-r from-amber-300/25 to-fuchsia-400/25 px-4 py-1 font-display text-sm font-bold tracking-[0.2em] text-amber-200"
-            >
-              {bestBadge}
-            </motion.div>
-          )}
+        <div className="flex items-center justify-between gap-3 text-[9px] tracking-[0.2em] text-slate-400">
+          <span>
+            FLIGHT REPORT /{" "}
+            {trial ? trial.name.toUpperCase() : mode.toUpperCase()}
+          </span>
+          <span>{s.duration.toFixed(1)} SECONDS</span>
         </div>
-
-        {trial && (
-          <TrialResult trial={trial} distance={s.distance} medal={outcome.medal} />
+        <h2
+          id="game-over-title"
+          className={`mt-3 font-display text-2xl font-bold tracking-[0.1em] ${outcome.finished ? "text-emerald-200" : "text-slate-100"}`}
+        >
+          {outcome.finished ? "HORIZON REACHED" : "SIGNAL LOST"}
+        </h2>
+        {bestBadge && (
+          <div className="mt-2 text-[10px] font-semibold tracking-[0.16em] text-amber-200">
+            {bestBadge}
+          </div>
         )}
 
-        <div className="mt-6 grid grid-cols-2 gap-3 text-center">
+        <div className="mt-5 grid grid-cols-2 gap-3">
           <Stat label="SCORE" value={s.score.toLocaleString()} big />
-          <Stat label="DISTANCE" value={`${Math.floor(s.distance).toLocaleString()} m`} big />
-          <Stat label="NEAR MISSES" value={String(s.nearMisses)} />
-          <Stat label="SHARDS" value={String(s.shards)} />
-          <Stat label="PEAK FLOW" value={`×${(1 + s.maxFlowPoints * FLOW.MULT_PER_POINT).toFixed(2)}`} />
-          <Stat label="TIME" value={`${s.duration.toFixed(1)}s`} />
-          <Stat label="PERFECT PASSES" value={String(s.perfectPasses)} />
-          <Stat label="THREADS" value={String(s.threads)} />
-          <Stat label="BEST CHAIN" value={String(s.bestFlowChain)} />
-          <Stat label="BOOST TIME" value={`${s.boostTime.toFixed(1)}s`} />
-          {s.dashes > 0 && <Stat label="DASHES" value={String(s.dashes)} />}
-          {s.pumps > 0 && <Stat label="PUMPS" value={String(s.pumps)} />}
-          {s.resonantPasses > 0 && <Stat label="RESONANT" value={String(s.resonantPasses)} />}
-          {s.glassSmashed > 0 && <Stat label="GLASS" value={String(s.glassSmashed)} />}
-          {s.bounces > 0 && <Stat label="BOUNCES" value={String(s.bounces)} />}
+          <Stat
+            label="DISTANCE"
+            value={`${Math.floor(s.distance).toLocaleString()} m`}
+            big
+          />
+        </div>
+        <div className="mt-3 flex justify-between gap-3 text-[10px] text-slate-400">
+          <span>{s.perfectPasses} PERFECT PASSES</span>
+          <span>
+            PEAK FLOW ×{(1 + s.maxFlowPoints * FLOW.MULT_PER_POINT).toFixed(2)}
+          </span>
         </div>
 
-        <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
-          <div className="text-[10px] tracking-[0.24em] text-white/40">RUN READOUT</div>
-          <div className="mt-1 text-sm text-white/75">
-            {outcome.finished
-              ? "FULL TRANSMISSION · CROSSED THE HORIZON INTACT"
-              : s.deathCause
-                ? `${formatPattern(s.deathCause.patternId)} · ${s.deathCause.obstacleKind.toUpperCase()} IMPACT`
-                : "SIGNAL TERMINATED"}
+        <div className="mt-5 flex gap-2">
+          <button
+            autoFocus
+            className={`${btnPrimary} flex-1 !px-3 text-xs`}
+            onClick={() => bundle.restart()}
+          >
+            {mode === "endless" && !outcome.rival
+              ? "NEW FLIGHT"
+              : "RETRY COURSE"}
+          </button>
+          <button
+            className={`${btnGhost} !px-4 text-xs`}
+            onClick={() => bundle.backToTitle()}
+          >
+            MENU
+          </button>
+        </div>
+        <p className="mt-2 text-center text-[10px] text-slate-400">
+          {mode === "endless" && !outcome.rival
+            ? "A fresh course awaits."
+            : "Same course. A better line."}{" "}
+          R / Enter to fly again.
+        </p>
+
+        {coaching && (
+          <div className="mt-5 border-l-2 border-emerald-200/60 bg-emerald-200/[0.04] px-3 py-3">
+            <div className="text-[9px] tracking-[0.2em] text-emerald-200/70">
+              ONE THING TO TRY
+            </div>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-200">
+              {coaching}
+            </p>
           </div>
-          {coaching && (
-            <div className="mt-2 rounded-lg border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2">
-              <div className="text-[9px] tracking-[0.24em] text-cyan-200/55">
-                NEXT ATTEMPT
+        )}
+        {!unranked && (
+          <div className="mt-3 text-center text-xs text-slate-400">
+            {mode !== "trial" && (
+              <div>
+                {outcome.scoreDelta > 0
+                  ? `${scoreDeltaLabel} +${outcome.scoreDelta.toLocaleString()}`
+                  : outcome.scoreDelta === 0
+                    ? `Matched ${scoreDeltaLabel}`
+                    : `${Math.abs(outcome.scoreDelta).toLocaleString()} points from ${scoreDeltaLabel}`}
               </div>
-              <div className="mt-0.5 text-xs font-semibold text-cyan-100/85">
-                {coaching}
-              </div>
-            </div>
-          )}
-          {s.heat.length > 0 && (
-            <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-orange-300/90">
-              HEAT ×{heatScoreMult(s.heat).toFixed(2)} ·{" "}
-              {s.heat.map((id) => HEAT_BY_ID[id].name.toUpperCase()).join(" · ")}
-            </div>
-          )}
-          {labRun && (
-            <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-violet-300/90">
-              LAB · {s.lab.map((id) => LAB_BY_ID[id].name.toUpperCase()).join(" · ")} — UNRANKED,
-              NOTHING SAVED
-            </div>
-          )}
-          {outcome.rival && (
-            <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-sky-300/90">
-              IMPORTED RIVAL FLIGHT — UNRANKED, NOTHING SAVED
-            </div>
-          )}
-          {outcome.deathStreak >= 2 && s.deathCause && (
-            <div className="mt-1 text-[11px] font-semibold tracking-[0.14em] text-rose-300/90">
-              {ordinal(outcome.deathStreak).toUpperCase()} RUN IN A ROW ENDED BY{" "}
-              {formatPattern(s.deathCause.patternId).toUpperCase()}
-            </div>
-          )}
-          {s.lineRating && (
-            <div className="mt-2 flex items-center justify-center gap-2 text-xs text-white/70">
-              <span className="tracking-[0.18em] text-white/45">LINE RATING</span>
-              <span
-                className={`inline-flex h-6 w-6 items-center justify-center rounded-md border font-display text-sm font-black ${
-                  GRADE_COLORS[s.lineRating]
-                }`}
-              >
-                {s.lineRating}
-              </span>
-              {weakest && weakest.grade !== "S" && (
-                <span className="text-[11px] text-white/55">
-                  weakest: {formatPattern(weakest.patternId)} ({weakest.grade})
-                </span>
-              )}
-            </div>
-          )}
-          {mode !== "trial" && !unranked && (
-            <div className={`mt-1 text-xs font-semibold ${outcome.scoreDelta > 0 ? "text-amber-200" : "text-white/50"}`}>
-              {outcome.scoreDelta > 0
-                ? `${scoreDeltaLabel} +${outcome.scoreDelta.toLocaleString()}`
-                : outcome.scoreDelta === 0
-                  ? `MATCHED ${scoreDeltaLabel === "PB" ? "PERSONAL BEST" : scoreDeltaLabel}`
-                : `${Math.abs(outcome.scoreDelta).toLocaleString()} short of ${scoreDeltaLabel}`}
-            </div>
-          )}
-          {unranked ? null : mode === "trial" ? (
-            outcome.newTrialBest ? (
-              <div className="mt-0.5 text-xs font-semibold text-amber-200">
-                DEEPEST RUN ON THIS TRIAL
+            )}
+            {outcome.newBestDistance || outcome.newTrialBest ? (
+              <div className="mt-1 text-amber-200">
+                Your farthest flight
+                {mode === "trial" ? " on this trial" : " yet"}.
               </div>
             ) : outcome.distanceDelta > 0 ? (
-              <div className="mt-0.5 text-xs text-white/50">
-                {Math.ceil(outcome.distanceDelta).toLocaleString()} m short of your trial best
+              <div className="mt-1">
+                {Math.ceil(outcome.distanceDelta).toLocaleString()} m from your
+                best distance
               </div>
-            ) : null
-          ) : outcome.newBestDistance ? (
-            <div className="mt-0.5 text-xs font-semibold text-amber-200">
-              FARTHEST FLIGHT YET
-            </div>
-          ) : outcome.distanceDelta > 0 ? (
-            <div className="mt-0.5 text-xs text-white/50">
-              {Math.ceil(outcome.distanceDelta).toLocaleString()} m short of your farthest flight
-            </div>
-          ) : null}
-          {outcome.ratingDelta !== null && <RatingLine delta={outcome.ratingDelta} />}
-        </div>
-
-        <TechniqueDebrief stats={s} />
-
-        {mode === "daily" && (
-          <div className="mt-4 flex justify-center">
-            <DailyQuestCard />
+            ) : null}
+            {outcome.ratingDelta !== null && (
+              <RatingLine delta={outcome.ratingDelta} />
+            )}
           </div>
         )}
-
-        {outcome.forensics && <DeathForensicsPanel forensics={outcome.forensics} />}
+        {unranked && (
+          <p className="mt-3 text-center text-[10px] text-violet-200">
+            {outcome.rival ? "RIVAL PRACTICE" : "EXPERIMENTAL FLIGHT"} ·
+            UNRANKED · NO PROGRESS SAVED
+          </p>
+        )}
+        {trial && (
+          <TrialResult
+            trial={trial}
+            distance={s.distance}
+            medal={outcome.medal}
+          />
+        )}
 
         {outcome.unlocked.length > 0 && (
-          <div className="mt-5 rounded-xl border border-cyan-300/25 bg-cyan-300/10 px-4 py-3">
+          <div className="mt-4 rounded-lg border border-emerald-200/20 bg-emerald-200/5 px-3 py-3">
             {outcome.unlocked.map((u) => (
-              <div key={u.id} className="font-display text-sm font-bold tracking-[0.15em] text-cyan-200">
-                UNLOCKED · {u.name} {u.kind === "craft" ? "CRAFT" : "TRAIL"}
+              <div key={u.id} className="text-xs text-emerald-200">
+                UNLOCKED · {u.name} {u.kind === "craft" ? "craft" : "trail"}
               </div>
             ))}
           </div>
         )}
-
-        <div className="mt-7 flex flex-wrap justify-center gap-3">
-          <button autoFocus className={btnPrimary} onClick={() => bundle.restart()}>
-            RETRY
-          </button>
-          {drillTrial && (
-            <button
-              className={btnGhost}
-              onClick={() => bundle.startRun("trial", drillTrial.id)}
-              title={`Practice ${drillTrial.name} as a trial`}
-            >
-              DRILL · {drillTrial.name.toUpperCase()}
-            </button>
+        <details className="run-details mt-4 border-t border-white/10">
+          <summary>FLIGHT ANALYSIS & REPLAY</summary>
+          <div className="grid grid-cols-2 gap-2">
+            <Stat label="NEAR MISSES" value={String(s.nearMisses)} />
+            <Stat label="SHARDS" value={String(s.shards)} />
+            <Stat label="THREADS" value={String(s.threads)} />
+            <Stat label="BEST CHAIN" value={String(s.bestFlowChain)} />
+            <Stat label="BOOST TIME" value={`${s.boostTime.toFixed(1)}s`} />
+            <Stat label="RESONANT PASSES" value={String(s.resonantPasses)} />
+            {s.dashes > 0 && <Stat label="DASHES" value={String(s.dashes)} />}
+            {s.pumps > 0 && <Stat label="PUMPS" value={String(s.pumps)} />}
+            {s.glassSmashed > 0 && (
+              <Stat label="GLASS" value={String(s.glassSmashed)} />
+            )}
+            {s.bounces > 0 && (
+              <Stat label="BOUNCES" value={String(s.bounces)} />
+            )}
+          </div>
+          <div className="mt-4 text-xs leading-relaxed text-slate-400">
+            {s.deathCause && (
+              <div>
+                {formatPattern(s.deathCause.patternId)} ·{" "}
+                {s.deathCause.obstacleKind} impact
+              </div>
+            )}
+            {s.heat.length > 0 && (
+              <div className="mt-1 text-orange-200">
+                HEAT ×{heatScoreMult(s.heat).toFixed(2)} ·{" "}
+                {s.heat.map((id) => HEAT_BY_ID[id].name).join(" · ")}
+              </div>
+            )}
+            {labRun && (
+              <div className="mt-1 text-violet-200">
+                {s.lab.map((id) => LAB_BY_ID[id].name).join(" · ")}
+              </div>
+            )}
+            {outcome.deathStreak >= 2 && s.deathCause && (
+              <div className="mt-1">
+                {ordinal(outcome.deathStreak)} run ended by{" "}
+                {formatPattern(s.deathCause.patternId)}. Try the replay to study
+                your entry.
+              </div>
+            )}
+            {s.lineRating && (
+              <div className="mt-3 flex items-center gap-2">
+                <span>LINE GRADE</span>
+                <span
+                  className={`rounded border px-2 py-1 font-display font-bold ${GRADE_COLORS[s.lineRating]}`}
+                >
+                  {s.lineRating}
+                </span>
+                {weakest && weakest.grade !== "S" && (
+                  <span>
+                    Focus: {formatPattern(weakest.patternId)} ({weakest.grade})
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <TechniqueDebrief stats={s} />
+          {outcome.forensics && (
+            <DeathForensicsPanel forensics={outcome.forensics} />
           )}
-          {lastRun && !unranked && (
-            <button className={btnGhost} onClick={exportRun}>
-              EXPORT .FLIGHT
-            </button>
+          {mode === "daily" && (
+            <div className="mt-4 flex justify-center">
+              <DailyQuestCard day={bundle.session.periodKey ?? dailyKey()} />
+            </div>
           )}
-          <button className={btnGhost} onClick={() => bundle.backToTitle()}>
-            MENU
-          </button>
-        </div>
-        <div className="mt-3 text-center text-xs text-white/40">R / ENTER for instant restart</div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {drillTrial && (
+              <button
+                className={`${btnGhost} !px-3 !py-2 text-[10px]`}
+                onClick={() => bundle.startRun("trial", drillTrial.id)}
+              >
+                PRACTICE {drillTrial.name.toUpperCase()}
+              </button>
+            )}
+            {lastRun && !unranked && (
+              <button
+                className={`${btnGhost} !px-3 !py-2 text-[10px]`}
+                onClick={exportRun}
+              >
+                SAVE FLIGHT
+              </button>
+            )}
+          </div>
+        </details>
       </motion.div>
     </Screen>
   );
@@ -637,9 +498,8 @@ export function deathCoach(outcome: RunOutcome): string | null {
     if (nearest) {
       const offset = forensics.deathX - nearest[1];
       if (Math.abs(offset) >= 2) {
-        const side = offset > 0 ? "RIGHT" : "LEFT";
         const correction = offset > 0 ? "LEFT" : "RIGHT";
-        return `ENTERED ${Math.abs(offset).toFixed(1)} m TOO FAR ${side} · COMMIT ${correction} EARLIER`;
+        return `One reachable line was ${Math.abs(offset).toFixed(1)} m to your ${correction.toLowerCase()} at impact. Set up your entry earlier.`;
       }
     }
   }
@@ -917,12 +777,11 @@ function TrialResult({
 }
 
 /** Today's three skill quests, shared by every pilot (roadmap 4.5). */
-function DailyQuestCard() {
+function DailyQuestCard({ day = dailyKey() }: { day?: string }) {
   const questDay = useMeta((s) => s.questDay);
   const questDone = useMeta((s) => s.questDone);
-  const today = dailyKey();
-  const quests = useMemo(() => questsForDay(today), [today]);
-  const done = questDay === today ? questDone : [];
+  const quests = useMemo(() => questsForDay(day), [day]);
+  const done = questDay === day ? questDone : [];
   const doneCount = done.filter(Boolean).length;
 
   return (
@@ -1110,6 +969,7 @@ function TrialsOverlay() {
         One pattern, looped, at ever-escalating speed — fly until it breaks you. Fixed course per
         trial: your best run returns as a ghost. Bronze is a warm-up; Author is a statement.
       </div>
+      <TrialMastery />
       <div className="flex flex-col gap-2.5">
         {TRIALS.map((trial) => {
           const best = trialBest[trial.id];
@@ -1170,6 +1030,54 @@ function TrialsOverlay() {
   );
 }
 
+/** Breadth of earned medals complements the local practice rating. */
+function TrialMastery() {
+  const trialBest = useMeta((s) => s.trialBest);
+  const rating = useMeta((s) => s.rating);
+  const ratedRuns = useMeta((s) => s.ratedRuns);
+  const medalled = TRIALS.filter((trial) =>
+    medalFor(trial, trialBest[trial.id]?.distance ?? 0),
+  ).length;
+  return (
+    <div className="mb-5 rounded-xl border border-emerald-200/20 bg-emerald-200/[0.04] p-4">
+      <div className="flex items-baseline justify-between gap-4">
+        <span className="text-[10px] tracking-[0.2em] text-emerald-100">
+          TRIAL MASTERY
+        </span>
+        <span className="text-xs tabular-nums text-slate-200">
+          {medalled} / {TRIALS.length} courses medalled
+        </span>
+      </div>
+      <div
+        className="mt-3 flex gap-1.5"
+        aria-label={`${medalled} of ${TRIALS.length} trials have a medal`}
+      >
+        {TRIALS.map((trial) => {
+          const medal = medalFor(trial, trialBest[trial.id]?.distance ?? 0);
+          return (
+            <div
+              key={trial.id}
+              title={`${trial.name}: ${medal ?? "no medal yet"}`}
+              className={`h-2 min-w-0 flex-1 rounded-sm ${medal ? (medal === "author" ? "bg-violet-300" : medal === "gold" ? "bg-amber-200" : medal === "silver" ? "bg-slate-200" : "bg-orange-300") : "bg-white/10"}`}
+            />
+          );
+        })}
+      </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
+        Build range across precision, rhythm, and reaction. Each trial has its
+        own medal targets.
+      </p>
+      <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+        {ratedRuns > 0
+          ? `PILOT RATING ${rating.toLocaleString()} · ${ratingTier(rating).name}. `
+          : "Pilot Rating unlocks as you fly trials. "}
+        A local practice estimate from your recent trial performances. It is not
+        an online rank or a player percentile.
+      </p>
+    </div>
+  );
+}
+
 function Stat({ label, value, big = false }: { label: string; value: string; big?: boolean }) {
   return (
     <div className="rounded-xl bg-white/5 px-3 py-2.5">
@@ -1196,6 +1104,32 @@ function ordinal(n: number): string {
   return `${n}th`;
 }
 
+/** Keep modal keyboard navigation inside its currently visible controls. */
+function trapDialogFocus(event: React.KeyboardEvent<HTMLElement>) {
+  if (event.key !== "Tab") return;
+  const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => {
+    if (element.getClientRects().length === 0) return false;
+    // Browsers can retain layout boxes for the skipped content of a closed
+    // details element. Those descendants still cannot receive focus.
+    for (let parent = element.parentElement; parent && parent !== event.currentTarget; parent = parent.parentElement) {
+      if (parent instanceof HTMLDetailsElement && !parent.open && parent.querySelector("summary") !== element) return false;
+    }
+    return true;
+  });
+  if (controls.length === 0) return;
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function OverlayShell({ title, children }: { title: string; children: React.ReactNode }) {
   const setOverlay = useGame((s) => s.setOverlay);
   const titleId = `overlay-${title.toLowerCase().replaceAll(" ", "-")}`;
@@ -1209,24 +1143,6 @@ function OverlayShell({ title, children }: { title: string; children: React.Reac
     return () => target?.focus();
   }, []);
 
-  const trapFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Tab") return;
-    const controls = Array.from(
-      event.currentTarget.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
-      ),
-    );
-    if (controls.length === 0) return;
-    const first = controls[0];
-    const last = controls[controls.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -1236,7 +1152,7 @@ function OverlayShell({ title, children }: { title: string; children: React.Reac
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
-      onKeyDown={trapFocus}
+      onKeyDown={trapDialogFocus}
       onClick={(e) => {
         if (e.target === e.currentTarget) setOverlay("none");
       }}

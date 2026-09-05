@@ -1,11 +1,20 @@
 "use client";
 
 import { Canvas } from "@react-three/fiber";
-import { Suspense } from "react";
+import { Suspense, useSyncExternalStore } from "react";
 import * as THREE from "three/webgpu";
 import { useGame } from "../state/game";
+import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
 import { GameScene } from "./GameScene";
 import { CAMERA_FAR } from "./visualConstants";
+
+function subscribePixelRatio(onChange: () => void): () => void {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+
+const readPixelRatio = () => window.devicePixelRatio || 1;
+const serverPixelRatio = () => 1;
 
 /**
  * R3F canvas backed by three's WebGPURenderer.
@@ -13,6 +22,13 @@ import { CAMERA_FAR } from "./visualConstants";
  * unavailable — all TSL materials compile to WGSL or GLSL accordingly.
  */
 export function GameCanvas() {
+  const tier = useSettings((s) => resolveTier(s));
+  const scale = useGame((s) => s.graphics.drsScale);
+  const pixelRatio = useSyncExternalStore(subscribePixelRatio, readPixelRatio, serverPixelRatio);
+  // One owner for DPR. R3F reapplies this prop on canvas reconfiguration;
+  // a separate imperative value inside the scene would be overwritten.
+  const dpr = Math.min(pixelRatio, QUALITY_CONFIGS[tier].maxDpr) * scale;
+
   return (
     <Canvas
       className="!fixed inset-0"
@@ -39,7 +55,7 @@ export function GameCanvas() {
         return renderer;
       }}
       frameloop="always"
-      dpr={[1, 2]}
+      dpr={dpr}
       shadows
       flat={false}
       onCreated={({ scene }) => {

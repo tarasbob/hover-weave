@@ -102,6 +102,9 @@ export class InputManager {
   private pointers = new Map<number, number>();
   private pointerTarget: HTMLElement | null = null;
   private detach: (() => void) | null = null;
+  private focused = false;
+  /** After focus returns, held pad buttons must not generate fresh shortcuts. */
+  private baselineGamepad = false;
   private gamepadRestartHeld = false;
   private gamepadPauseHeld = false;
   /** Sub-tick integrators (keyboard and touch are separate sources). */
@@ -110,6 +113,7 @@ export class InputManager {
 
   attach(target: HTMLElement): void {
     this.dispose();
+    this.focused = true;
     this.keySteer.reset(nowMs());
     this.touchSteer.reset(nowMs());
     const stamp = (e: Event): number => (e.timeStamp > 0 ? e.timeStamp : nowMs());
@@ -135,10 +139,12 @@ export class InputManager {
       syncKeySteer(stamp(e));
     };
     const onBlur = () => {
-      this.keys.clear();
-      this.pointers.clear();
-      this.keySteer.clear(nowMs());
-      this.touchSteer.clear(nowMs());
+      this.focused = false;
+      this.reset();
+    };
+    const onFocus = () => {
+      this.focused = true;
+      this.baselineGamepad = true;
     };
 
     this.pointerTarget = target;
@@ -162,6 +168,7 @@ export class InputManager {
     window.addEventListener("keydown", onKeyDown, { passive: false });
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
     target.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
@@ -171,6 +178,7 @@ export class InputManager {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
       target.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
@@ -181,8 +189,26 @@ export class InputManager {
   dispose(): void {
     this.detach?.();
     this.detach = null;
-    this.pointers.clear();
+    this.focused = false;
+    this.reset();
     this.pointerTarget = null;
+  }
+
+  /** Drop held controls and pending actions when focus or listeners are lost. */
+  private reset(): void {
+    this.keys.clear();
+    this.pointers.clear();
+    const t = nowMs();
+    this.keySteer.reset(t);
+    this.touchSteer.reset(t);
+    this.gamepadRestartHeld = false;
+    this.gamepadPauseHeld = false;
+    this.baselineGamepad = false;
+    this.state.axis = 0;
+    this.state.boost = false;
+    this.state.dash = false;
+    this.state.restart = false;
+    this.state.pause = false;
   }
 
   /**
@@ -206,6 +232,7 @@ export class InputManager {
 
   /** Poll gamepad + merge sources. Call once per rendered frame. */
   poll(sensitivity = 1): void {
+    if (!this.focused) return;
     const t = nowMs();
     const keyAxis = this.keySteer.drain(t);
     const touchAxis = this.touchSteer.drain(t);
@@ -246,10 +273,13 @@ export class InputManager {
         pausePressed = Boolean(pad.buttons[9]?.pressed);
         break;
       }
-      if (restartPressed && !this.gamepadRestartHeld) this.state.restart = true;
-      if (pausePressed && !this.gamepadPauseHeld) this.state.pause = true;
+      if (!this.baselineGamepad) {
+        if (restartPressed && !this.gamepadRestartHeld) this.state.restart = true;
+        if (pausePressed && !this.gamepadPauseHeld) this.state.pause = true;
+      }
       this.gamepadRestartHeld = restartPressed;
       this.gamepadPauseHeld = pausePressed;
+      this.baselineGamepad = false;
     }
 
     this.state.axis = clamp(axis * sensitivity, -1, 1);

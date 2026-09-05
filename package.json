@@ -10,7 +10,8 @@
     "test:game": "tsx scripts/gentest.ts && tsx scripts/simtest.ts && npm run test:frontier",
     "test:frontier": "tsx scripts/frontiertest.ts",
     "test:graphics": "tsx scripts/graphicstest.ts",
-    "test": "npm run test:game && npm run test:graphics"
+    "test:session": "tsx scripts/sessiontest.ts",
+    "test": "npm run test:game && npm run test:graphics && npm run test:session"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",

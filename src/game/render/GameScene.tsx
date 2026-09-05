@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three/webgpu";
 import { densityFogFactor, fog, positionWorld, smoothstep } from "three/tsl";
 import { useGameBundle } from "../GameController";
-import { weeklyKey } from "../core/rng";
 import { MEDAL_RANK, medalFor, nextMedalFor, trialById } from "../track/trials";
 import { useGame } from "../state/game";
 import { useMeta } from "../state/meta";
@@ -48,7 +47,6 @@ export function GameScene() {
   const bundle = useGameBundle();
   const { world, ghost, input, env, audio, haptics, ambient } = bundle;
   const scene = useThree((s) => s.scene);
-  const setDpr = useThree((s) => s.setDpr);
   const renderer = useThree((s) => s.gl) as unknown as THREE.WebGPURenderer;
 
   const tier = useSettings((s) => resolveTier(s));
@@ -59,7 +57,6 @@ export function GameScene() {
   const hudClock = useRef(0);
   const fpsEma = useRef(16.7);
   const drs = useRef({ scale: 1, cooldown: 0 });
-  const perfSample = useRef({ calls: 0, triangles: 0, frames: 0, sampledFrames: 0 });
   /** Highest medal rank celebrated this run (trial medal callouts). */
   const medalRank = useRef(0);
   /** Time-kiss countdown (seconds left of dip + release). */
@@ -88,8 +85,8 @@ export function GameScene() {
   useEffect(() => {
     drs.current = { scale: 1, cooldown: 2 };
     env.uDrsScale.value = 1;
-    setDpr(Math.min(quality.maxDpr, window.devicePixelRatio));
-  }, [env, quality.maxDpr, setDpr, tier]);
+    useGame.getState().setGraphics({ drsScale: 1 });
+  }, [env, tier]);
 
   // Height-aware exponential fog from env uniforms (denser near the ground,
   // thinning overhead so the sky stays crisp — but never so thin that tall
@@ -139,8 +136,7 @@ export function GameScene() {
 
   useFrame((state, rawDt) => {
     const dt = Math.min(rawDt, 0.25);
-    const g = useGame.getState();
-    perfSample.current.frames++;
+    let g = useGame.getState();
 
     // --- Input edges ---------------------------------------------------
     input.poll(sensitivity);
@@ -154,12 +150,20 @@ export function GameScene() {
       if (g.overlay !== "none") g.setOverlay("none");
       else if (g.phase === "running" || g.phase === "paused") bundle.togglePause();
     }
+    // Restart/pause edges can change the phase synchronously. Simulate the
+    // resulting state so a pause never leaks a final movement frame.
+    g = useGame.getState();
 
     // --- Simulation ------------------------------------------------------
-    // A long stall auto-pauses a live run. Shorter low-FPS frames are fully
-    // simulated, so dropping frames cannot create a slow-motion score exploit.
+    // A long stall auto-pauses an underway run. Before its first simulation
+    // tick, discard shader/startup work without presenting a paused launch.
+    // Shorter low-FPS frames are fully simulated, so dropping frames cannot
+    // create a slow-motion score exploit.
     const throttled = rawDt > 0.25;
-    if (throttled && g.phase === "running") bundle.togglePause();
+    if (throttled && g.phase === "running" && world.time > 0) {
+      bundle.togglePause();
+      g = useGame.getState();
+    }
     if ((g.phase === "running" || g.phase === "dead") && !throttled) {
       // Time kiss: dip the wall-clock rate briefly after a perfect/thread.
       let kissScale = 1;
@@ -234,7 +238,7 @@ export function GameScene() {
         let objective: string | null = null;
         let objectiveHit: string | null = null;
         if (world.mode === "sprint") {
-          const best = meta.sprintBest[weeklyKey()]?.score ?? 0;
+          const best = meta.sprintBest[bundle.session.periodKey ?? ""]?.score ?? 0;
           if (score > best) objectiveHit = "NEW WEEKLY BEST";
           else if (best > 0) objective = `WEEK BEST IN ${(best - score).toLocaleString()}`;
         } else if (world.mode === "trial" && world.trialId) {
@@ -288,37 +292,23 @@ export function GameScene() {
       g.setFps(Math.round(1000 / fpsEma.current));
       const d = drs.current;
       const info = renderer.info;
-      const perf = perfSample.current;
-      const frames = Math.max(1, perf.frames - perf.sampledFrames);
-      const callDelta =
-        info.render.calls >= perf.calls ? info.render.calls - perf.calls : info.render.calls;
-      const triangleDelta =
-        info.render.triangles >= perf.triangles
-          ? info.render.triangles - perf.triangles
-          : info.render.triangles;
       g.setGraphics({
         dpr: renderer.getPixelRatio(),
         drsScale: d.scale,
-        drawCalls: Math.round(callDelta / frames),
-        triangles: Math.round(triangleDelta / frames),
         textures: info.memory.textures,
       });
-      perf.calls = info.render.calls;
-      perf.triangles = info.render.triangles;
-      perf.sampledFrames = perf.frames;
       d.cooldown -= HUD_INTERVAL;
       if (d.cooldown <= 0) {
-        const baseDpr = Math.min(quality.maxDpr, window.devicePixelRatio);
         if (fpsEma.current > 20 && d.scale > quality.minDprScale) {
           d.scale = Math.max(quality.minDprScale, d.scale - 0.1);
           d.cooldown = 1.5;
           env.uDrsScale.value = d.scale;
-          setDpr(baseDpr * d.scale);
+          g.setGraphics({ drsScale: d.scale });
         } else if (fpsEma.current < 18 && d.scale < 1) {
           d.scale = Math.min(1, d.scale + 0.1);
           d.cooldown = 2.5;
           env.uDrsScale.value = d.scale;
-          setDpr(baseDpr * d.scale);
+          g.setGraphics({ drsScale: d.scale });
         }
       }
     }

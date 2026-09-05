@@ -446,6 +446,12 @@ export class SimWorld {
 
   private generator: TrackGenerator | null = null;
   private accumulator = 0;
+  /** Steering hold-time carried by the unfinished fixed tick (axis × seconds). */
+  private pendingAxisTime = 0;
+  /** Reused only when a tick combines samples from multiple render frames. */
+  private readonly bufferedInput: InputState = {
+    axis: 0, boost: false, dash: false, restart: false, pause: false,
+  };
   private lastBiomeIndex = 0;
   private nextMythicIndex = 0;
   /** Interpolation snapshot for buttery rendering. */
@@ -600,6 +606,7 @@ export class SimWorld {
     this.deathTimer = 0;
     this.deathSpeed = 0;
     this.accumulator = 0;
+    this.pendingAxisTime = 0;
     this.prevX = 0;
     this.prevDistance = 0;
     this.prevBank = 0;
@@ -670,7 +677,9 @@ export class SimWorld {
       if (this.deathTimer > freezeAfter) return; // Freeze world.
     }
 
-    this.accumulator += Math.min(dt, 0.25) * scale;
+    const bufferedTime = this.accumulator;
+    const elapsed = Math.min(dt, 0.25) * scale;
+    this.accumulator += elapsed;
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
       this.prevX = this.x;
@@ -678,7 +687,20 @@ export class SimWorld {
       this.prevBank = this.bank;
       this.prevY = this.y;
       const wasRunning = this.status === "running";
-      this.step(FIXED_DT, input);
+      // Polling can happen faster than the 120 Hz sim. Preserve the steering
+      // contributed by frames that took no step, then fill this tick with the
+      // current frame's sample. Samples on zero-step frames reach the next tick.
+      // Later ticks in this frame use the current sample directly; fixed-step
+      // callers (including replay and calibration pilots) remain unchanged.
+      let stepInput = input;
+      if (steps === 0 && bufferedTime > 0) {
+        this.bufferedInput.axis =
+          (this.pendingAxisTime + input.axis * (FIXED_DT - bufferedTime)) / FIXED_DT;
+        this.bufferedInput.boost = input.boost;
+        this.bufferedInput.dash = input.dash;
+        stepInput = this.bufferedInput;
+      }
+      this.step(FIXED_DT, stepInput);
       this.accumulator -= FIXED_DT;
       steps++;
       if (wasRunning && this.status === "dead") {
@@ -691,6 +713,12 @@ export class SimWorld {
       }
     }
     if (steps === MAX_STEPS_PER_FRAME) this.accumulator = 0;
+    // This is a single partial tick, not an input history: bounded memory
+    // regardless of display rate. Once a tick ran, all remaining time belongs
+    // to this frame (including the post-impact slow-motion conversion above).
+    this.pendingAxisTime = steps === 0
+      ? this.pendingAxisTime + input.axis * elapsed
+      : input.axis * this.accumulator;
   }
 
   /** Interpolation alpha for rendering. */

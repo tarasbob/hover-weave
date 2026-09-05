@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import {
   Fn,
@@ -89,28 +89,28 @@ export function Terrain({ segments }: { segments: [number, number] }) {
 
     mat.emissiveNode = Fn(() => {
       // Neon grid, strongest near the track.
-      const gridScale = float(4);
+      const gridScale = float(8);
       const gridCoord = vec2(worldX, sCoord).div(gridScale);
       const edgeDistance = vec2(0.5).sub(abs(fract(gridCoord).sub(0.5)));
       const pixelWidth = max(fwidth(gridCoord), vec2(0.001)).mul(0.75);
-      const lineWidth = vec2(0.035);
+      const lineWidth = vec2(0.012);
       const coverage = vec2(1).sub(
         smoothstep(lineWidth.sub(pixelWidth), lineWidth.add(pixelWidth), edgeDistance),
       );
       const squareGrid = max(coverage.x, coverage.y);
 
-      // Crystal Desert: a layered diamond lattice.
-      const diamondCoord = vec2(worldX.add(sCoord), worldX.sub(sCoord)).div(5.7);
+      // Crystal Desert: sparse diamond inlays, leaving the driving plane calm.
+      const diamondCoord = vec2(worldX.add(sCoord), worldX.sub(sCoord)).div(16);
       const diamondDistance = vec2(0.5).sub(abs(fract(diamondCoord).sub(0.5)));
       const diamondAA = max(fwidth(diamondCoord), vec2(0.001)).mul(0.8);
       const diamondCoverage = vec2(1).sub(
         smoothstep(
-          vec2(0.028).sub(diamondAA),
-          vec2(0.028).add(diamondAA),
+          vec2(0.01).sub(diamondAA),
+          vec2(0.01).add(diamondAA),
           diamondDistance,
         ),
       );
-      const crystalGrid = max(squareGrid, max(diamondCoverage.x, diamondCoverage.y).mul(0.52));
+      const crystalGrid = max(diamondCoverage.x, diamondCoverage.y).mul(0.42);
 
       // Digital Ocean: long luminous wave fronts instead of a rigid lattice.
       const waveSignal = abs(
@@ -137,8 +137,10 @@ export function Terrain({ segments }: { segments: [number, number] }) {
         .add(oceanGrid.mul(env.uBiomeMix.y))
         .add(stormGrid.mul(env.uBiomeMix.z))
         .add(voidGrid.mul(env.uBiomeMix.w));
-      const trackFade = smoothstep(150, 20, abs(worldX));
-      const grid = line.mul(trackFade).mul(env.uGridIntensity);
+      const trackFade = smoothstep(110, 20, abs(worldX));
+      // Subpixel patterns otherwise average into a luminous sheet at the horizon.
+      const resolved = float(1).sub(smoothstep(0.08, 0.65, max(fwidth(gridCoord.x), fwidth(gridCoord.y))));
+      const grid = line.mul(trackFade).mul(resolved).mul(env.uGridIntensity);
 
       // Track edge rails with a traveling pulse.
       const edge = smoothstep(1.6, 0.25, abs(abs(worldX).sub(31)));
@@ -154,14 +156,14 @@ export function Terrain({ segments }: { segments: [number, number] }) {
       const twinkle = sin(env.uTime.mul(3).add(hcell.mul(60))).mul(0.5).add(0.5);
       const sparkle = step(0.82, hcell).mul(dot2).mul(twinkle).mul(env.uSparkle).mul(trackFade);
 
-      const e = env.uGridColor.mul(grid).mul(0.55)
-        .add(env.uPrimary.mul(edge).mul(railPulse).mul(1.4))
-        .add(env.uAccent.mul(sparkle).mul(2.2))
+      const e = env.uGridColor.mul(grid).mul(0.24)
+        .add(env.uPrimary.mul(edge).mul(railPulse).mul(0.42))
+        .add(env.uAccent.mul(sparkle).mul(0.65))
         .add(env.uGridColor.mul(env.uFlash).mul(0.12))
         .add(env.uAccent.mul(env.uTransition).mul(edge).mul(0.48))
         .add(env.uPrimary.mul(env.uFlowPulse).mul(grid).mul(0.22));
 
-      return e.mul(env.uFlow.mul(0.5).add(1));
+      return e.mul(env.uFlow.mul(0.2).add(1));
     })();
 
     const m = new THREE.Mesh(geo, mat);
@@ -171,6 +173,11 @@ export function Terrain({ segments }: { segments: [number, number] }) {
     return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, segments[0], segments[1]]);
+
+  useEffect(() => () => {
+    mesh.geometry.dispose();
+    (mesh.material as THREE.Material).dispose();
+  }, [mesh]);
 
   return <primitive object={mesh} />;
 }

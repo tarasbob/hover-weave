@@ -17,72 +17,12 @@ import {
   uniform,
 } from "three/tsl";
 import { useGameBundle } from "../GameController";
-import { CRAFT } from "../core/constants";
+import { CRAFT, FIXED_DT } from "../core/constants";
 import { clamp } from "../core/mathUtils";
 import { CRAFTS, TRAILS, useMeta } from "../state/meta";
 import { useSettings } from "../state/settings";
-
-const TRAIL_POINTS = 44;
-
-class TrailRibbon {
-  geometry = new THREE.BufferGeometry();
-  positions: Float32Array;
-  history: { x: number; y: number; s: number }[] = [];
-  private tArr: Float32Array;
-
-  constructor() {
-    // Two crossed quad strips (horizontal + vertical) per segment.
-    const vertCount = TRAIL_POINTS * 4;
-    this.positions = new Float32Array(vertCount * 3);
-    this.tArr = new Float32Array(vertCount);
-    const indices: number[] = [];
-    for (let i = 0; i < TRAIL_POINTS - 1; i++) {
-      for (const off of [0, TRAIL_POINTS * 2]) {
-        const a = off + i * 2, b = off + i * 2 + 1, c = off + i * 2 + 2, d = off + i * 2 + 3;
-        indices.push(a, b, c, b, d, c);
-      }
-    }
-    for (let i = 0; i < TRAIL_POINTS; i++) {
-      const t = i / (TRAIL_POINTS - 1);
-      this.tArr[i * 2] = t;
-      this.tArr[i * 2 + 1] = t;
-      this.tArr[TRAIL_POINTS * 2 + i * 2] = t;
-      this.tArr[TRAIL_POINTS * 2 + i * 2 + 1] = t;
-    }
-    this.geometry.setIndex(indices);
-    this.geometry.setAttribute("position", new THREE.BufferAttribute(this.positions, 3).setUsage(THREE.DynamicDrawUsage));
-    this.geometry.setAttribute("aT", new THREE.BufferAttribute(this.tArr, 1));
-  }
-
-  push(x: number, y: number, s: number): void {
-    this.history.unshift({ x, y, s });
-    if (this.history.length > TRAIL_POINTS) this.history.pop();
-  }
-
-  reset(): void {
-    this.history.length = 0;
-  }
-
-  write(dist: number, width: number): void {
-    const n = this.history.length;
-    const pos = this.positions;
-    for (let i = 0; i < TRAIL_POINTS; i++) {
-      const h = this.history[Math.min(i, n - 1)] ?? { x: 0, y: -10, s: dist };
-      const t = i / (TRAIL_POINTS - 1);
-      const w = width * (1 - t) * (0.4 + 0.6 * (1 - t));
-      const z = dist - h.s;
-      // Horizontal blade.
-      let o = i * 6;
-      pos[o] = h.x - w; pos[o + 1] = h.y; pos[o + 2] = z;
-      pos[o + 3] = h.x + w; pos[o + 4] = h.y; pos[o + 5] = z;
-      // Vertical blade.
-      o = TRAIL_POINTS * 6 + i * 6;
-      pos[o] = h.x; pos[o + 1] = h.y - w; pos[o + 2] = z;
-      pos[o + 3] = h.x; pos[o + 4] = h.y + w; pos[o + 5] = z;
-    }
-    (this.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
-  }
-}
+import { createHullGeometry, createWingGeometry } from "./craftGeometry";
+import { TrailRibbon } from "./TrailRibbon";
 
 export function Craft() {
   const { world, env } = useGameBundle();
@@ -96,11 +36,15 @@ export function Craft() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- uniform identity must be stable; color is synced below
   const uTrailColor = useMemo(() => uniform(new THREE.Color(trail.color)), []);
   const uTrailBoost = useMemo(() => uniform(0), []);
+  const uFlashScale = useMemo(() => uniform(1), []);
   useEffect(() => {
     uTrailColor.value.set(trail.color);
   }, [trail.color, uTrailColor]);
+  useEffect(() => {
+    uFlashScale.value = reduceFlash ? 0.2 : 1;
+  }, [reduceFlash, uFlashScale]);
 
-  const { group, engineLight, shieldMesh } = useMemo(() => {
+  const { group, engineLight, shieldMesh, exhausts } = useMemo(() => {
     const g = new THREE.Group();
     const bodyColor = new THREE.Color(design.body);
     const trimColor = new THREE.Color(design.trim);
@@ -108,45 +52,64 @@ export function Craft() {
     const [sx, sy, sz] = design.hullScale;
 
     const hullMat = new THREE.MeshStandardNodeMaterial();
-    hullMat.metalness = 0.85;
-    hullMat.roughness = 0.28;
-    hullMat.colorNode = tslColor(bodyColor.getHex());
+    hullMat.metalness = 0.72;
+    hullMat.roughness = 0.31;
+    // Readable alloy panels carry the silhouette; energy belongs to the seams.
+    hullMat.colorNode = tslColor(bodyColor.lerp(new THREE.Color("#566477"), 0.4).getHex());
     hullMat.emissiveNode = Fn(() => {
       const fresnel = pow(saturate(float(1).sub(saturate(dot(normalView, positionViewDirection)))), 2.6);
-      const pulse = sin(env.uTime.mul(5)).mul(0.1).add(0.95);
       return tslColor(trimColor.getHex())
         .mul(fresnel)
-        .mul(pulse)
-        .mul(env.uBoost.mul(1.4).add(1))
-        .add(env.uAccent.mul(env.uFlowPulse).mul(0.38));
+        .mul(env.uBoost.mul(0.26).add(0.2))
+        .add(env.uAccent.mul(env.uFlowPulse).mul(0.12));
     })();
 
-    // Hull: stretched octahedron dart.
-    const hull = new THREE.Mesh(new THREE.OctahedronGeometry(1, 0), hullMat);
-    hull.scale.set(0.6 * sx, 0.3 * sy, 1.5 * sz);
+    const hull = new THREE.Mesh(createHullGeometry(), hullMat);
+    hull.scale.set(sx, sy, sz);
     hull.castShadow = true;
     g.add(hull);
 
     // Canopy.
     const canopyMat = new THREE.MeshStandardNodeMaterial();
-    canopyMat.metalness = 0.4;
-    canopyMat.roughness = 0.12;
-    canopyMat.colorNode = tslColor(0x0a0d18);
-    canopyMat.emissiveNode = tslColor(trimColor.getHex()).mul(0.75);
-    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), canopyMat);
-    canopy.position.set(0, 0.22 * sy, -0.25);
-    canopy.scale.set(0.8, 0.62, 1.5);
+    canopyMat.metalness = 0.78;
+    canopyMat.roughness = 0.1;
+    canopyMat.colorNode = tslColor(0x0b2234);
+    canopyMat.emissiveNode = Fn(() => {
+      const rim = pow(saturate(float(1).sub(saturate(dot(normalView, positionViewDirection)))), 2.2);
+      return tslColor(trimColor.getHex()).mul(rim.mul(0.32).add(0.035));
+    })();
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), canopyMat);
+    canopy.position.set(0, 0.2 * sy, -0.29 * sz);
+    canopy.scale.set(0.19 * sx, 0.13 * sy, 0.48 * sz);
     g.add(canopy);
 
-    // Fins.
-    const finGeo = new THREE.BoxGeometry(0.72, 0.05, 0.5);
+    // Swept wing plates, with inset light strips and mechanical trailing vents.
+    const finGeo = createWingGeometry(design.finSweep);
+    const seamMat = new THREE.MeshBasicNodeMaterial();
+    seamMat.colorNode = tslColor(trimColor.getHex())
+      .mul(env.uBoost.mul(0.65).add(env.uFlow.mul(0.2)).add(0.9));
+    const seamGeo = new THREE.BoxGeometry(0.019, 0.012, 0.48);
+    const ventGeo = new THREE.BoxGeometry(0.14, 0.012, 0.028);
+    const ventMat = new THREE.MeshStandardNodeMaterial();
+    ventMat.colorNode = tslColor(0x050910);
+    ventMat.metalness = 0.55;
+    ventMat.roughness = 0.5;
     for (const side of [-1, 1]) {
       const fin = new THREE.Mesh(finGeo, hullMat);
-      fin.position.set(side * 0.52 * sx, 0.02, 0.42 * sz);
-      fin.rotation.y = -side * design.finSweep;
-      fin.rotation.z = side * 0.16;
+      fin.scale.set(side * sx, sy, sz);
       fin.castShadow = true;
       g.add(fin);
+      const seam = new THREE.Mesh(seamGeo, seamMat);
+      seam.position.set(side * 0.28 * sx, 0.17 * sy, 0.17 * sz);
+      seam.rotation.z = -side * 0.22;
+      seam.scale.z = sz;
+      g.add(seam);
+      for (let vent = 0; vent < 3; vent++) {
+        const slot = new THREE.Mesh(ventGeo, ventMat);
+        slot.position.set(side * 0.64 * sx, 0.065 * sy, (0.49 + vent * 0.07) * sz);
+        slot.rotation.y = -side * 0.18;
+        g.add(slot);
+      }
     }
 
     // Engine pods + glow.
@@ -154,13 +117,13 @@ export function Craft() {
     podMat.metalness = 0.9;
     podMat.roughness = 0.35;
     podMat.colorNode = tslColor(0x11131f);
-    podMat.emissiveNode = tslColor(engineColor.getHex()).mul(0.22);
+    podMat.emissiveNode = tslColor(engineColor.getHex()).mul(0.045);
     const glowMat = new THREE.MeshBasicNodeMaterial();
     glowMat.blending = THREE.AdditiveBlending;
     glowMat.transparent = true;
     glowMat.depthWrite = false;
     glowMat.colorNode = Fn(() => {
-      const flick = sin(env.uTime.mul(30)).mul(0.08).add(0.92);
+      const flick = sin(env.uTime.mul(30)).mul(uFlashScale.mul(0.045)).add(0.955);
       return tslColor(engineColor.getHex())
         .mul(flick)
         .mul(
@@ -171,15 +134,22 @@ export function Craft() {
         );
     })();
 
+    const exhausts: THREE.Mesh[] = [];
+    const podGeo = new THREE.CylinderGeometry(0.145, 0.19, 0.6, 12);
+    const nozzleGeo = new THREE.TorusGeometry(0.14, 0.026, 6, 16);
+    const plumeGeo = new THREE.SphereGeometry(0.1, 10, 8);
     for (const side of [-1, 1]) {
-      const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 0.5, 10), podMat);
+      const pod = new THREE.Mesh(podGeo, podMat);
       pod.rotation.x = Math.PI / 2;
       pod.position.set(side * 0.42 * sx, -0.02, 0.55 * sz);
       g.add(pod);
-      const glow = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), glowMat);
-      glow.position.set(side * 0.42 * sx, -0.02, 0.82 * sz);
-      glow.scale.set(1, 1, 1.9);
+      const nozzle = new THREE.Mesh(nozzleGeo, seamMat);
+      nozzle.position.set(side * 0.42 * sx, -0.02, 0.55 * sz + 0.31);
+      g.add(nozzle);
+      const glow = new THREE.Mesh(plumeGeo, glowMat);
+      glow.position.set(side * 0.42 * sx, -0.02, 0.55 * sz + 0.34);
       g.add(glow);
+      exhausts.push(glow);
     }
 
     // Shield bubble.
@@ -194,9 +164,9 @@ export function Craft() {
       return env.uAccent
         .mul(fresnel)
         .mul(scan)
-        .mul(env.uShieldPulse.mul(reduceFlash ? 0.16 : 0.48).add(1.1));
+        .mul(env.uShieldPulse.mul(uFlashScale).mul(0.48).add(1.1));
     })();
-    shieldMat.opacityNode = float(0.42).add(env.uShieldPulse.mul(reduceFlash ? 0.04 : 0.16));
+    shieldMat.opacityNode = float(0.42).add(env.uShieldPulse.mul(uFlashScale).mul(0.16));
     const shield = new THREE.Mesh(new THREE.IcosahedronGeometry(1.35, 2), shieldMat);
     shield.scale.setScalar(0.001);
     g.add(shield);
@@ -205,9 +175,9 @@ export function Craft() {
     light.position.set(0, 0.4, 1.2);
     g.add(light);
 
-    return { group: g, engineLight: light, shieldMesh: shield };
+    return { group: g, engineLight: light, shieldMesh: shield, exhausts };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [design.id, env, reduceFlash]);
+  }, [design.id, env, uFlashScale]);
 
   const trails = useMemo(() => {
     const mat = new THREE.MeshBasicNodeMaterial();
@@ -229,7 +199,7 @@ export function Craft() {
     const rMesh = new THREE.Mesh(right.geometry, mat);
     lMesh.frustumCulled = false;
     rMesh.frustumCulled = false;
-    return { left, right, lMesh, rMesh };
+    return { left, right, lMesh, rMesh, material: mat };
   }, [env, uTrailColor, uTrailBoost]);
 
   const shieldAnim = useRef(0);
@@ -239,6 +209,7 @@ export function Craft() {
   const smoothness = useRef(1);
   const prevBank = useRef(0);
   const deathSpin = useRef(new THREE.Vector3(2.3, 3.1, Math.PI * 2.4));
+  const engineAnchors = useMemo(() => [new THREE.Vector3(), new THREE.Vector3()], []);
 
   useEffect(() => {
     const offs = [
@@ -246,6 +217,9 @@ export function Craft() {
         trails.left.reset();
         trails.right.reset();
         trailFlash.current = 0;
+        shieldKick.current = 0;
+        smoothness.current = 1;
+        prevBank.current = 0;
       }),
       world.events.on("nearMiss", (event) => {
         if (event.grade === "perfect") trailFlash.current = 1;
@@ -279,14 +253,26 @@ export function Craft() {
   // Free GPU resources when a different craft design is selected.
   useEffect(() => {
     return () => {
+      const geometries = new Set<THREE.BufferGeometry>();
+      const materials = new Set<THREE.Material>();
       group.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
-          obj.geometry.dispose();
-          (obj.material as THREE.Material).dispose();
+          geometries.add(obj.geometry);
+          for (const material of Array.isArray(obj.material) ? obj.material : [obj.material]) {
+            materials.add(material);
+          }
         }
       });
+      geometries.forEach((geometry) => geometry.dispose());
+      materials.forEach((material) => material.dispose());
     };
   }, [group]);
+
+  useEffect(() => () => {
+    trails.left.geometry.dispose();
+    trails.right.geometry.dispose();
+    trails.material.dispose();
+  }, [trails]);
 
   useFrame((_, dt) => {
     const frameDt = Math.min(dt, 0.08);
@@ -294,12 +280,12 @@ export function Craft() {
     const dead = world.status === "dead";
     const dist = idle ? 0 : world.renderDistance;
     const x = idle ? 0 : world.renderX;
-    const bank = idle ? Math.sin(performance.now() * 0.0011) * 0.08 : world.renderBank;
+    const bank = idle ? (reduceMotion ? 0 : Math.sin(env.uTime.value * 1.5) * 0.06) : world.renderBank;
     // Airborne the craft is a projectile, not a hovercraft: the bob fades out.
     const airLift = idle ? 0 : world.renderY - CRAFT.HOVER_HEIGHT;
     const bob =
-      Math.sin(idle ? performance.now() * 0.002 : world.time * 6.4) * 0.06 *
-      (world.airborne ? 0.25 : 1);
+      Math.sin(idle ? env.uTime.value * 2.5 : world.time * 6.4) * 0.06 *
+      (world.airborne ? 0.25 : 1) * (reduceMotion ? 0.15 : 1);
     const y = CRAFT.HOVER_HEIGHT + airLift + bob;
     // Flight pitch: nose rides the velocity vector — up off the lip, down
     // through a dive — layered over the usual speed/boost trim.
@@ -340,7 +326,10 @@ export function Craft() {
     const steady = Math.max(0, 1 - bankRate * 0.55);
     smoothness.current += (steady - smoothness.current) * Math.min(1, frameDt * 3);
     engineLight.intensity =
-      10 + world.speedNorm * 14 + world.boostCharge * 26 + env.uBoostPulse.value * 12;
+      7 + world.speedNorm * 8 + world.boostCharge * 14 + env.uBoostPulse.value * 5;
+    for (const plume of exhausts) {
+      plume.scale.set(1, 0.8, 1.7 + world.speedNorm * 1.3 + world.boostCharge * 3.8);
+    }
     uTrailBoost.value =
       world.boostCharge + env.uFlow.value * 0.25 + world.glide * 0.5 +
       (world.airborne ? 0.3 : 0) +
@@ -353,21 +342,26 @@ export function Craft() {
     shieldMesh.scale.setScalar(Math.max(0.001, shieldScale));
 
     // Trails follow the engine pods.
+    const trailTime = idle
+      ? env.uTime.value
+      : Math.max(0, world.time - FIXED_DT * (1 - world.alpha)) + (dead ? world.deathTimer : 0);
     if (!dead) {
       const sx = design.hullScale[0];
       const sz = design.hullScale[2];
-      const c = Math.cos(bank), s = Math.sin(bank);
-      const podY = y - 0.02;
       const off = 0.42 * sx;
-      trails.left.push(x + -off * c, podY + -off * s, dist - 0.55 * sz);
-      trails.right.push(x + off * c, podY + off * s, dist - 0.55 * sz);
+      const nozzleZ = 0.55 * sz + 0.34;
+      group.updateMatrixWorld();
+      const left = engineAnchors[0].set(-off, -0.02, nozzleZ).applyMatrix4(group.matrixWorld);
+      const right = engineAnchors[1].set(off, -0.02, nozzleZ).applyMatrix4(group.matrixWorld);
+      trails.left.update(left.x, left.y, dist - left.z, trailTime);
+      trails.right.update(right.x, right.y, dist - right.z, trailTime);
     }
     const trailWidth =
       (0.09 + world.boostCharge * 0.1 + env.uFlow.value * 0.025 + trailFlash.current * 0.035 +
         world.glide * 0.12 + (world.airborne ? 0.07 : 0)) *
       (0.7 + smoothness.current * 0.3);
-    trails.left.write(dist, trailWidth);
-    trails.right.write(dist, trailWidth);
+    trails.left.write(dist, trailWidth, trailTime);
+    trails.right.write(dist, trailWidth, trailTime);
   });
 
   return (

@@ -16,6 +16,10 @@ import type { GameMode, RunConfig } from "./modes";
 import type { SimWorld } from "./world";
 
 /**
+ * v7: first-flight weave encounters replace the repeated empty opening.
+ * Endless/daily/sprint course streams change; v6 ghosts must be discarded.
+ * Fixed trial geometry and calibration remain unchanged.
+ *
  * v6: the double jump (fun-frontier 6.2) — a mid-air boost tap now fires an
  * impulse, the sky cadence guarantee and kicker patterns reshaped every
  * endless course, and SOFT_VY moved — so v5 streams no longer re-simulate.
@@ -34,7 +38,7 @@ import type { SimWorld } from "./world";
  * v2 streams no longer re-simulate. (v2: the winding course, glass/bumper/
  * beam obstacles, the Leviathan, and run events.)
  */
-export const REPLAY_VERSION = 6;
+export const REPLAY_VERSION = 7;
 
 /** Axis quantization levels per side (index -127..127). */
 export const AXIS_LEVELS = 127;

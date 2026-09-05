@@ -8,6 +8,8 @@ import {
   TERRAIN_DEPTH,
 } from "../src/game/render/visualConstants";
 import { QUALITY_CONFIGS, type QualityTier } from "../src/game/state/settings";
+import { createHullGeometry, createWingGeometry } from "../src/game/render/craftGeometry";
+import { TrailRibbon } from "../src/game/render/TrailRibbon";
 
 /**
  * Static render-budget guard. Runtime GPU timings are exposed through the
@@ -111,4 +113,70 @@ console.log("Graphics quality budgets valid.");
     "sky dome must wrap the view distance and stay inside the far plane",
   );
   console.log("far-field depth budget consistent with LOOKAHEAD.");
+}
+
+// The wake must describe the same flight at 30, 60 and 144 Hz, and freezing
+// simulation time must preserve it rather than draining its history.
+{
+  const snapshots = [30, 60, 144].map((fps) => {
+    const trail = new TrailRibbon();
+    for (let frame = 0; frame <= fps * 2; frame++) {
+      const time = frame / fps;
+      trail.update(time * 4, 1 + time * 0.2, time * 100, time);
+    }
+    trail.write(200, 0.1, 2);
+    const snapshot = trail.positions.slice();
+    for (let frame = 0; frame < 120; frame++) {
+      trail.update(8, 1.4, 200, 2);
+      trail.write(200, 0.1, 2);
+    }
+    assert.deepEqual(trail.positions, snapshot, "paused trails must retain their shape");
+
+    // Seeking/restarting cannot connect unrelated points across the level.
+    trail.update(-5, 1, 5000, 10);
+    trail.write(5000, 0.1, 10);
+    for (let i = 2; i < trail.positions.length; i += 3) {
+      assert.equal(trail.positions[i], 0, "a discontinuity must clear the old wake");
+    }
+    trail.reset();
+    trail.write(0, 0.1, 0);
+    assert.ok(trail.positions.every(Number.isFinite), "empty trails must have finite geometry");
+    trail.geometry.dispose();
+    return snapshot;
+  });
+  for (const snapshot of snapshots.slice(1)) {
+    assert.equal(snapshot.length, snapshots[0].length);
+    for (let index = 0; index < snapshot.length; index++) {
+      assert.ok(
+        Math.abs(snapshot[index] - snapshots[0][index]) < 0.0002,
+        `trail vertex ${index} changed with refresh rate`,
+      );
+    }
+  }
+  console.log("Wake is refresh-rate independent; pause and restart preserve valid geometry.");
+}
+
+// Authored panels must remain watertight, correctly wound and small enough
+// to keep the same hero craft available on every graphics tier.
+{
+  const hull = createHullGeometry();
+  const positions = hull.getAttribute("position");
+  let volume = 0;
+  for (let index = 0; index < positions.count; index += 3) {
+    const ax = positions.getX(index), ay = positions.getY(index), az = positions.getZ(index);
+    const bx = positions.getX(index + 1), by = positions.getY(index + 1), bz = positions.getZ(index + 1);
+    const cx = positions.getX(index + 2), cy = positions.getY(index + 2), cz = positions.getZ(index + 2);
+    volume += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+  }
+  assert.ok(volume > 0.1, "hull faces must point outward around a closed volume");
+  assert.ok(positions.count / 3 <= 80, "hull must stay within its geometry budget");
+  assert.ok(Array.from(hull.getAttribute("normal").array).every(Number.isFinite));
+  hull.dispose();
+  for (const sweep of [0.3, 0.5, 0.95]) {
+    const wing = createWingGeometry(sweep);
+    assert.ok(wing.getAttribute("position").count / 3 <= 80, "wing exceeded geometry budget");
+    assert.ok(Array.from(wing.getAttribute("normal").array).every(Number.isFinite));
+    wing.dispose();
+  }
+  console.log("Sculpted craft geometry is correctly wound and within its triangle budget.");
 }

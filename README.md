@@ -30,6 +30,9 @@ one collision.
 A fresh profile launches into a progressive first flight: steering, grazing,
 boost, and beat reading are taught one at a time inside the real endless game.
 The advanced mode grid appears only after that opening has been flown.
+Pilots can also choose **Explore all flight modes** from the flight deck. The
+opening now introduces seeded bumper-and-reward choices after the clear launch:
+learn to read a route, with forgiving contact before the lethal fields begin.
 
 **The world runs on the beat.** Every mover — crushers, pendulums, rotors,
 beams — is phase-locked to the soundtrack's fixed 116 BPM grid, so gaps can
@@ -93,7 +96,16 @@ Useful dev tools:
 - `npx tsx scripts/gentest.ts` — pattern validation rates and generation mix
 - `npm run test:frontier` — constrained synthetic cohorts + anti-macro/Carve verdict
 - `npm run test:graphics` — quality-tier render budget invariants
+- `npm run test:session` — UTC course identity, exact fixed-course retries,
+  focus/input cleanup and short-tap playback at 60/144/240 Hz
 - `?gl=webgl` URL param — force the WebGL2 backend
+
+See [the design and engineering review](docs/game-design-review.md) for the
+current assessment, implemented polish, rating recommendations, and the proposed
+three-sector expedition mode. The current Pilot Rating is a local practice
+estimate, not an online competitive rank. Replay format v7 rejects older
+recordings because opening encounters changed; earned cosmetics and progression
+remain available.
 
 ## Architecture
 

@@ -3,6 +3,7 @@
  * pressure across deterministic seeds.
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   COURSE,
   CRAFT,
@@ -29,12 +30,13 @@ import {
   CIRCUIT_PATTERNS,
   FIELD_PATTERNS,
   NORMAL_PATTERNS,
+  OPENING_PATTERN,
 } from "../src/game/track/patterns";
 import { SETPIECES } from "../src/game/track/setpieces";
 import { SKY_NORMAL, SKY_PATTERNS } from "../src/game/track/skyhooks";
 import { mutatePattern, resonatePattern } from "../src/game/track/mutators";
 import { TRIALS, trialSeed } from "../src/game/track/trials";
-import { validatePattern, corridorLanes } from "../src/game/track/validator";
+import { blockedRanges, validatePattern, corridorLanes } from "../src/game/track/validator";
 import type { BuildCtx, PatternResult } from "../src/game/core/types";
 
 const patterns = [
@@ -44,6 +46,7 @@ const patterns = [
   ...CIRCUIT_PATTERNS,
   ...SETPIECES,
   BREATHER,
+  OPENING_PATTERN,
 ];
 
 // Per-pattern validation rate with a consistent entry corridor.
@@ -93,6 +96,87 @@ for (const id of ["precisionLadder", "pulseWeave", "rotorRhythm", "splitDecision
     built.pickups.some((pickup) => pickup.type === "shard" && pickup.magnet === false),
     `${id} needs an explicit non-magnetic risk reward line`,
   );
+}
+
+// Opening variety must be real playable geometry, and identical seeds must
+// still give identical tracks regardless of how far ahead the renderer asks.
+console.log("\n== first weave: readable, seeded opening choices ==");
+{
+  const openingSignatures = new Set<string>();
+  const followSides = new Set<number>();
+  const collect = (seed: string, incremental: boolean): GeneratedChunk[] => {
+    const gen = new TrackGenerator(createRng(seed));
+    const chunks: GeneratedChunk[] = [];
+    while (gen.generatedUpTo < 1800) {
+      gen.fill(incremental ? Math.min(1800, gen.generatedUpTo + 60) : 1800, {
+        chunk: (chunk) => chunks.push(chunk),
+      });
+    }
+    return chunks;
+  };
+  for (let i = 0; i < 24; i++) {
+    const seed = `first-weave-${i}`;
+    const chunks = collect(seed, false);
+    assert.deepEqual(chunks, collect(seed, true), `${seed}: generation depends on fill horizon`);
+    assert.equal(chunks[0].patternId, "openField", "the first launch must remain clear");
+    const openings = chunks.filter((chunk) => chunk.patternId === OPENING_PATTERN.id);
+    assert.ok(openings.length >= 2, `${seed}: opening steering choices never arrived`);
+    const first = openings[0].obstacles.find((obstacle) => obstacle.kind === "bumper")!;
+    assert.ok(first.s - first.hs >= 175, `${seed}: obstacle arrives before the steer lesson has breathing room`);
+    assert.ok(first.s < 350, `${seed}: the opening leaves the center lane empty too long`);
+    assert.ok(
+      blockedRanges(first).some(([left, right]) => left < 0 && right > 0),
+      `${seed}: first encounter does not require reading a central obstacle`,
+    );
+    followSides.add(Math.sign(openings[0].obstacles.filter((obstacle) => obstacle.kind === "bumper")[1].x));
+    openingSignatures.add(JSON.stringify(openings.map((chunk) => chunk.obstacles)));
+    for (const chunk of openings) {
+      assert.ok(chunk.s0 < 500, "opening-only pattern leaked into the main rotation");
+      assert.equal(chunk.intensity, 1, "opening intensity must remain gentle");
+      assert.ok(
+        chunk.obstacles.filter((obstacle) => Math.abs(obstacle.x) < 12).every((obstacle) => obstacle.kind === "bumper"),
+        "early steering mistakes must teach through elastic contact, never a death",
+      );
+      for (const pickup of chunk.pickups) {
+        const buried = chunk.obstacles.some((obstacle) =>
+          Math.abs(pickup.s - obstacle.s) <= obstacle.hs + CRAFT.RADIUS &&
+          blockedRanges(obstacle).some(([left, right]) => pickup.x >= left && pickup.x <= right),
+        );
+        assert.ok(!buried, `${seed}: opening reward is buried in an obstacle`);
+      }
+    }
+  }
+  assert.equal(openingSignatures.size, 24, "different seeds must produce distinct opening layouts");
+  assert.equal(followSides.size, 2, "the opening must make use of both steering directions");
+  console.log("first weave gate: PASS (24 varied seeds, safe rewards, stable incremental generation)");
+}
+
+// Opening decoration owns a separate random stream and must preserve every
+// later chunk, including corridor chaining and generated pickup placement.
+// Captured before the opening change; these protect the calibrated director.
+{
+  const downstreamHashes = [
+    "671032247e7d2a6cd176316ec0c30dc81da86edd4bcaa9e2885b9bbb63638dee",
+    "71b30d3ceb1a78f195878d66d83b321874ce6367c7a466f7b0f8d5d02ba1829e",
+    "96361b449e940cb978a80c0ee79b19464895b8b9a846bfcbda7132d102595c73",
+    "9a92d96aa617d7858391f7c64ccb41b066a0170dc85e02ed9d65c3f2fe8ff61e",
+    "b0577526d1dfc3e6fd25a9bb995c33fee07eca93da174db23981165d3aa59dbb",
+    "c9c808a40327d44094f3488065ec0e1c5f82791cacb5df06ffbd5d45a47448d3",
+    "54f967c1ece0a80a83be7a1b2de638bb1c3873c29fd0c54a56ebbc55f07912d6",
+    "2bafdc82b5a706d79d46e1961b11d5518156a4de17e36dc3f78b38881193b4ab",
+  ];
+  for (const [i, expected] of downstreamHashes.entries()) {
+    const chunks: GeneratedChunk[] = [];
+    const gen = new TrackGenerator(createRng(`downstream-${i}`));
+    while (gen.generatedUpTo < 12000) {
+      gen.fill(12000, { chunk: (chunk) => { if (chunk.s0 >= 500) chunks.push(chunk); } });
+    }
+    assert.equal(
+      createHash("sha256").update(JSON.stringify(chunks)).digest("hex"), expected,
+      `downstream-${i}: opening decoration changed the later course`,
+    );
+  }
+  console.log("downstream stability gate: PASS (8 original courses preserved through 12km)");
 }
 
 // --- Skyhook envelopes (fun-frontier 6.1) -----------------------------------
@@ -558,8 +642,25 @@ console.log("\n== rhythm resonance: mainline beat grid, 2 × 10km ==");
 // healthy — no stalls, only the forced pattern (plus the rare validated
 // breather fallback), and seams must tighten under the trial pressure ramp.
 console.log("\n== trial-mode chained generation, 8km each ==");
+// These are the complete pre-opening-change course streams used by the
+// existing medal calibration. New endless content must not consume trial
+// randomness or silently invalidate those fixed competitive references.
+const calibratedTrialHashes: Record<string, string> = {
+  slalomGates: "7612b3e8d5b86e9a493b987642186840c1861fec48eddb8276b5b2d74c954da1",
+  sCurveCanyon: "46966999c5c4b1c808bd9743c13ec58bcdfb5b91a607b8c029406ef79d02f4c7",
+  narrowGates: "033b4f0b9de8e592a576ef68e700a1bdbd0550dab2c87aad8db7b14a82d37403",
+  combTeeth: "8feeb43158cf431af4b0c772710625b44302564c862be9804a8a5e3dc8af5ff7",
+  pendulumAlley: "084837e97ea2413bc7be72764fa18e3d997dfb5d30b125e54d58d19c65e3a326",
+  pistonCorridor: "64ed0a16282655e7bcaee37c3b4c5ec2a5b6572070a4e8049cb654889484bba4",
+  bladeRotors: "6397d8e4c878eb3dd622f1be75f5d906c0b57dfb6ab42127978fca8c26c2d4d6",
+  precisionLadder: "73719d22e3468a8b318a2fee2908c344ccc809a299b4410bc2c7d18a4c4c5486",
+  chaosField: "b95842666c93531ae0d00f47d8d27ad9e623b2389b53a231585355b04351540c",
+  splitDecision: "6c13f273945bfbf52319da8282cf005d3003768bf2fde3fb346833d6ed9acf30",
+  weaverCircuit: "05b5740dac878f38feb4fad5ce8640f5eae800df5424c78d33241161d9e1bb1b",
+};
 for (const trial of TRIALS) {
   const gen = new TrackGenerator(createRng(trialSeed(trial.id)), false, trial);
+  const courseChunks: GeneratedChunk[] = [];
   let chunks = 0;
   let fallbackChunks = 0;
   let prevS1 = 0;
@@ -571,6 +672,7 @@ for (const trial of TRIALS) {
     const before = gen.generatedUpTo;
     gen.fill(8000, {
       chunk: (c) => {
+        courseChunks.push(c);
         chunks++;
         assert.ok(
           c.patternId === trial.id || c.patternId === "openField",
@@ -596,6 +698,11 @@ for (const trial of TRIALS) {
     assert.ok(gen.generatedUpTo > before, `trial ${trial.id} generator stalled`);
   }
   const fallbackRate = fallbackChunks / chunks;
+  assert.equal(
+    createHash("sha256").update(JSON.stringify(courseChunks)).digest("hex"),
+    calibratedTrialHashes[trial.id],
+    `trial ${trial.id}: fixed course changed; review medal calibration and replay compatibility`,
+  );
   const earlyGap = earlyGapSum / Math.max(1, earlyGapN);
   const lateGap = lateGapSum / Math.max(1, lateGapN);
   console.log(

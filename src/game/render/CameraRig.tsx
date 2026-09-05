@@ -36,6 +36,20 @@ export function CameraRig() {
 
   useEffect(() => {
     const offs = [
+      world.events.on("runStart", () => {
+        Object.assign(state.current, {
+          x: world.x * 0.92,
+          lookX: world.x * 0.55,
+          trauma: 0,
+          roll: 0,
+          nearWhip: 0,
+          boostKick: 0,
+          flowKick: 0,
+          deathSpeed: 0,
+          lift: 0,
+          launchKick: 0,
+        });
+      }),
       world.events.on("death", (event) => {
         state.current.trauma = 1;
         state.current.deathSpeed = event.speed;
@@ -122,15 +136,15 @@ export function CameraRig() {
       const t = Math.min(world.deathTimer / 1.6, 1);
       const e = 1 - Math.pow(1 - t, 3);
       const impactScale = Math.min(1.35, 0.7 + s.deathSpeed / 140);
-      py += e * 4.2 * impactScale;
-      pz += e * 7 * impactScale;
+      py += e * 4.2 * impactScale * motionScale;
+      pz += e * 7 * impactScale * motionScale;
       px = damp(s.x, world.deathX, 4, dt);
     }
     if (idle) {
       // Gentle cinematic drift on the title screen.
       const t = performance.now() * 0.0002;
-      px += Math.sin(t) * 2.2;
-      py = 4.9 + Math.sin(t * 1.7) * 0.5;
+      px += reduceMotion ? 0 : Math.sin(t) * 1.3;
+      py = 4.9 + (reduceMotion ? 0 : Math.sin(t * 1.7) * 0.25);
       pz = 9.4;
     }
 
@@ -151,7 +165,7 @@ export function CameraRig() {
 
     // Bank roll on top of lookAt (plus a light lean into upcoming bends).
     const bank = idle ? 0 : world.renderBank;
-    s.roll = damp(s.roll, bank * 0.34 - bend * 0.0045, 8, dt);
+    s.roll = damp(s.roll, (bank * 0.28 - bend * 0.0045) * motionScale, 8, dt);
     camera.rotation.z += s.roll + shRoll;
 
     // FOV: speed + boost kick, a breath of air on launch, slight tunnel on death.

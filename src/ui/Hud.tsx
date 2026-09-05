@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { useGameBundle } from "@/game/GameController";
 import { LAB_BY_ID } from "@/game/core/lab";
 import { MODE_LABELS } from "@/game/core/modes";
 import { trialById } from "@/game/track/trials";
@@ -17,6 +18,7 @@ import { useSettings } from "@/game/state/settings";
 
 /** In-run heads-up display. Pure DOM over the canvas, throttled by the loop. */
 export function Hud() {
+  const bundle = useGameBundle();
   const phase = useGame((s) => s.phase);
   const hud = useGame((s) => s.hud);
   const mode = useGame((s) => s.mode);
@@ -41,6 +43,26 @@ export function Hud() {
         className="safe-frame pointer-events-none fixed z-10 font-display"
         data-reduce-motion={reduceMotion}
       >
+        {phase === "running" && (
+          <button
+            className="pointer-events-auto absolute bottom-3 left-3 grid h-11 w-11 place-items-center rounded-lg border border-white/20 bg-[#08151f]/80 text-slate-200 hover:bg-white/15 sm:bottom-5 sm:left-5"
+            aria-label="Pause flight"
+            title="Pause flight (Esc / P)"
+            data-ui
+            onClick={() => bundle.togglePause()}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <rect x="3" y="2" width="3" height="12" rx="0.5" />
+              <rect x="10" y="2" width="3" height="12" rx="0.5" />
+            </svg>
+          </button>
+        )}
       {/* Score block */}
       <div className="absolute left-3 top-3 sm:left-5 sm:top-5">
         <div className="text-[11px] tracking-[0.3em] text-white/50">SCORE</div>
@@ -316,7 +338,7 @@ function formatTimer(seconds: number): string {
 
 function boostHint(): string {
   const touch = typeof window !== "undefined" && matchMedia("(pointer: coarse)").matches;
-  return touch ? "SECOND FINGER TO BOOST" : "HOLD SHIFT / SPACE TO BOOST";
+  return touch ? "2ND FINGER" : "SHIFT / SPACE";
 }
 
 /** Quiet visual twin of the audio leitmotif at the lookahead horizon. */
@@ -389,12 +411,12 @@ function FlightLesson({ step }: { step: FlightLessonStep }) {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
-      className="absolute bottom-[22%] left-1/2 w-[min(88vw,32rem)] -translate-x-1/2 rounded-xl border border-cyan-200/20 bg-[#080817]/72 px-4 py-3 text-center backdrop-blur-md"
+      className="flight-lesson absolute rounded-xl border border-emerald-200/20 bg-[#08151f]/90 px-4 py-3 backdrop-blur-md"
     >
-      <div className="text-sm font-black tracking-[0.2em] text-cyan-100">
+      <div className="font-body text-xs font-semibold tracking-[0.06em] text-emerald-100">
         {message.title}
       </div>
-      <div className="mt-1 text-[9px] tracking-[0.24em] text-white/55">
+      <div className="mt-1 font-body text-[10px] leading-relaxed tracking-[0.04em] text-slate-400">
         {message.detail}
       </div>
     </motion.div>

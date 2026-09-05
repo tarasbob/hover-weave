@@ -162,6 +162,54 @@ const openField: PatternDef = {
   },
 };
 
+/**
+ * The launch corridor teaches reading the field before the speed ramp.
+ * Each phrase has one broad choice around a central bumper, then an offset
+ * follow-up. Seeded sides, spacing, sizes and reward lines change the
+ * opening without demanding a narrow gate or a timed move from a novice.
+ * Elastic obstacles let a late first steering input teach through a bounce,
+ * before the lethal field begins. The validator still proves a clean line.
+ * This is selected only by the endless opening director, never by trials.
+ */
+const firstWeave: PatternDef = {
+  id: "firstWeave",
+  category: "breather",
+  intensity: 1,
+  skills: ["navigation", "reaction"],
+  weight: 1,
+  minDifficulty: 0,
+  maxDifficulty: 1,
+  build(ctx): PatternResult {
+    return buildOpeningChoices(ctx, ctx.rng.range(70, 110));
+  },
+};
+
+/** Fits seeded choices inside an existing breather without stretching its cadence. */
+export function buildOpeningChoices(ctx: BuildCtx, length: number): PatternResult {
+  const { rng, s0 } = ctx;
+  const firstS = s0 + length * rng.range(0.28, 0.34);
+  const secondS = s0 + length * rng.range(0.57, 0.63);
+  const side = rng.sign();
+  const centerX = rng.range(-1.1, 1.1);
+  const followX = side * rng.range(6, 9);
+  const obstacles: ObstacleSpec[] = [
+    box(centerX, firstS, rng.range(1.9, 2.3), rng.range(1.8, 2.3), 1.6, {
+      kind: "bumper", role: "accent", glow: 1.35,
+    }),
+    box(followX, secondS, rng.range(1.3, 1.8), rng.range(1.5, 1.9), 1.3, {
+      kind: "bumper", role: "accent", glow: 1.2,
+    }),
+  ];
+  // Short reward ribbons on both sides make the steering choice legible.
+  // They stop before the offset follow-up, so following a ribbon never
+  // leads the player directly into the next bumper.
+  const pickups = [
+    ...shardLine(firstS - 8, centerX - 5.5, 3, 4),
+    ...shardLine(firstS - 8, centerX + 5.5, 3, 4),
+  ];
+  return { length, exitX: ctx.entryX, exitHalf: XP - 4, obstacles, pickups };
+}
+
 // ---------------------------------------------------------------------------
 // Normal patterns
 // ---------------------------------------------------------------------------
@@ -1590,3 +1638,5 @@ export const FIELD_PATTERNS: PatternDef[] = [
 export const CIRCUIT_PATTERNS: PatternDef[] = [weaverCircuit];
 
 export const BREATHER = openField;
+/** Endless opening only: excluded from trial and main rotation pools. */
+export const OPENING_PATTERN = firstWeave;

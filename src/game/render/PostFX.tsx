@@ -31,6 +31,7 @@ import { damp } from "../core/mathUtils";
 import { useGame } from "../state/game";
 import { useSettings } from "../state/settings";
 import type { NodeAny } from "./tsl-utils";
+import { SUN_DIRECTION } from "./visualConstants";
 
 /**
  * WebGPU-native post chain: bloom, speed-driven chromatic aberration,
@@ -58,10 +59,12 @@ export function PostFX({
   const reduceFlash = useSettings((s) => s.reduceFlash);
   const highContrast = useSettings((s) => s.highContrast);
 
-  const uCA = useMemo(() => uniform(0.6), []);
+  const uCA = useMemo(() => uniform(0), []);
   const uVignette = useMemo(() => uniform(0.62), []);
   const uMotionBlur = useMemo(() => uniform(0), []);
   const uShafts = useMemo(() => uniform(0), []);
+  const uSunScreen = useMemo(() => uniform(new THREE.Vector2()), []);
+  const projectedSun = useMemo(() => new THREE.Vector3(), []);
 
   const setup = useMemo(() => {
     // r18x renamed PostProcessing to RenderPipeline; support both.
@@ -82,9 +85,11 @@ export function PostFX({
     if (premiumPost) {
       // Subtle radial accumulation sells boost speed while retaining a sharp base.
       const radial = screenUV.sub(vec2(0.5));
-      const sampleA = color.sample(screenUV.sub(radial.mul(uMotionBlur.mul(0.012))));
-      const sampleB = color.sample(screenUV.sub(radial.mul(uMotionBlur.mul(0.024))));
-      sceneColor = color.mul(0.64).add(sampleA.mul(0.24)).add(sampleB.mul(0.12));
+      const peripheral = smoothstep(0.16, 0.52, radial.length());
+      const blur = uMotionBlur.mul(peripheral);
+      const sampleA = color.sample(screenUV.sub(radial.mul(blur.mul(0.008))));
+      const sampleB = color.sample(screenUV.sub(radial.mul(blur.mul(0.016))));
+      sceneColor = color.mul(0.76).add(sampleA.mul(0.16)).add(sampleB.mul(0.08));
     }
 
     // Extract only the luminous HDR regions so neon blooms without washing fog.
@@ -112,7 +117,7 @@ export function PostFX({
     const d = distance(screenUV, vec2(0.5));
     const vig = float(1).sub(smoothstep(0.34, 1, d.mul(uVignette.add(0.4))));
     const luma = luminance(ca.rgb);
-    const saturated = mix(vec3(luma), ca.rgb, env.uPostSaturation);
+    const saturated = mix(vec3(luma), ca.rgb, env.uPostSaturation.mul(0.9));
     const contrasted = saturated
       .sub(vec3(0.18))
       .mul(env.uPostContrast.add(env.uContrast.mul(0.08)))
@@ -131,7 +136,7 @@ export function PostFX({
 
     if (premiumPost) {
       // A cheap, stable light-shaft impression around the coherent sky source.
-      const shaftDistance = distance(screenUV, vec2(0.72, 0.22));
+      const shaftDistance = distance(screenUV, uSunScreen);
       const shaft = pow(saturate(float(1).sub(shaftDistance.mul(1.7))), 3.4)
         .mul(uShafts);
       graded = vec4(graded.rgb.add(env.uHorizon.mul(shaft).mul(0.32)), graded.a);
@@ -148,13 +153,13 @@ export function PostFX({
       // SMAA expects tone-mapped linear input, before conversion to sRGB.
       const toneMapped = renderOutput(graded, renderer.toneMapping, THREE.NoColorSpace);
       const antialiased = smaa(toneMapped);
-      const withGrain = nodeObject(film(antialiased, float(0.07)));
+      const withGrain = nodeObject(film(antialiased, float(0.028)));
       post.outputNode = renderOutput(withGrain, THREE.NoToneMapping, renderer.outputColorSpace);
     } else {
       // FXAA expects display-space (sRGB) input.
       const output = renderOutput(graded, renderer.toneMapping, renderer.outputColorSpace);
       const antialiased = aa === "fxaa" ? fxaa(output) : output;
-      post.outputNode = nodeObject(film(antialiased, float(0.07)));
+      post.outputNode = nodeObject(film(antialiased, float(0.028)));
     }
 
     return { post, bloomNode };
@@ -171,14 +176,22 @@ export function PostFX({
     uCA,
     uMotionBlur,
     uShafts,
+    uSunScreen,
     uVignette,
   ]);
 
   useEffect(() => {
-    return () => setup.post.dispose();
-  }, [setup]);
+    // Count the entire frame, including the scene and its offscreen passes.
+    // Automatic reset otherwise leaves only the final fullscreen triangle.
+    const autoReset = renderer.info.autoReset;
+    renderer.info.autoReset = false;
+    return () => {
+      setup.post.dispose();
+      renderer.info.autoReset = autoReset;
+    };
+  }, [renderer, setup]);
 
-  const caSmooth = useRef(0.5);
+  const caSmooth = useRef(0);
   const motionSmooth = useRef(0);
   const postMs = useRef(0);
   const telemetryFrame = useRef(0);
@@ -187,7 +200,7 @@ export function PostFX({
     const dt = Math.min(rawDt, 0.08);
     // Bloom breathes with flow, spikes on boost and lightning.
     setup.bloomNode.strength.value =
-      (0.72 + env.uFlow.value * 0.45 + world.boostCharge * 0.55 +
+      (0.58 + env.uFlow.value * 0.3 + world.boostCharge * 0.42 +
         env.uFlash.value * (reduceFlash ? 0.1 : 0.4) +
         env.uFlowPulse.value * 0.24 +
         env.uShieldPulse.value * 0.12) * bloomQuality;
@@ -196,29 +209,38 @@ export function PostFX({
       Math.max(0.22, bloomResolutionScale * env.uDrsScale.value),
     );
 
-    const caScale = reduceMotion ? 0.28 : highContrast ? 0.35 : 1;
+    const caScale = reduceMotion || highContrast ? 0 : 1;
     const targetCA =
-      (0.16 + world.speedNorm * 0.6 + world.boostCharge * 2.2 + env.uDeath.value * 1.4) * caScale;
+      (0.025 + world.speedNorm * 0.12 + world.boostCharge * 0.38 + env.uDeath.value * 0.5) * caScale;
     caSmooth.current = damp(caSmooth.current, targetCA, 6, dt);
     uCA.value = caSmooth.current;
     uVignette.value = 0.6 + world.boostCharge * 0.3 + env.uDeath.value * 0.5;
-    const motionTarget = reduceMotion
+    const motionTarget = reduceMotion || highContrast
       ? 0
       : Math.max(0, world.speedNorm - 0.45) * 0.45 + world.boostCharge * 0.8;
     motionSmooth.current = damp(motionSmooth.current, motionTarget, 5, dt);
     uMotionBlur.value = motionSmooth.current;
+    // Screen-space atmosphere must follow the actual sky source through banks
+    // and jumps, instead of painting an unrelated fixed light over the course.
+    projectedSun.set(...SUN_DIRECTION).multiplyScalar(1000).add(camera.position).project(camera);
+    uSunScreen.value.set(projectedSun.x * 0.5 + 0.5, 0.5 - projectedSun.y * 0.5);
     uShafts.value =
       (0.28 + env.uTransition.value * 0.55 + env.uFlash.value * 0.75) *
       env.uSkyEnergy.value *
-      (reduceFlash ? 0.35 : 1);
+      (reduceFlash ? 0.35 : 1) * (projectedSun.z < 1 && projectedSun.z > -1 ? 1 : 0);
 
     const started = performance.now();
+    renderer.info.reset();
     setup.post.render();
     postMs.current = postMs.current * 0.9 + (performance.now() - started) * 0.1;
     telemetryFrame.current++;
     if (telemetryFrame.current >= 12) {
       telemetryFrame.current = 0;
-      useGame.getState().setGraphics({ postCpuMs: postMs.current });
+      useGame.getState().setGraphics({
+        postCpuMs: postMs.current,
+        drawCalls: renderer.info.render.drawCalls,
+        triangles: Math.round(renderer.info.render.triangles),
+      });
     }
   }, 1);
 

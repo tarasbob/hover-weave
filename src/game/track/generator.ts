@@ -1,7 +1,7 @@
 import { OVERDRIVE, overdriveAt, RESONANCE, SPEED, TRACK } from "../core/constants";
 import { NO_HEAT, type HeatEffects } from "../core/heat";
 import { clamp, clamp01, lerp } from "../core/mathUtils";
-import type { Rng } from "../core/rng";
+import { createRng, type Rng } from "../core/rng";
 import type {
   BuildCtx,
   ObstacleSpec,
@@ -12,7 +12,7 @@ import type {
   RouteChoiceSpec,
 } from "../core/types";
 import { biomeIndexAt } from "./biomes";
-import { BREATHER, FIELD_PATTERNS, NORMAL_PATTERNS } from "./patterns";
+import { BREATHER, buildOpeningChoices, FIELD_PATTERNS, NORMAL_PATTERNS, OPENING_PATTERN } from "./patterns";
 import { SETPIECES } from "./setpieces";
 import { SKY_PATTERNS } from "./skyhooks";
 import { mutatePattern, resonatePattern } from "./mutators";
@@ -166,6 +166,7 @@ export class TrackGenerator {
   }
 
   private nextChunk(): GeneratedChunk {
+    const entryLanes = this.exitLanes;
     // Randomized obstacle-free seam between patterns: repositioning slack for
     // the craft and dilation room for the validator. Overdrive (and the Dense
     // Field heat) squeezes the seams toward a ~10–14 m floor so late track
@@ -326,6 +327,43 @@ export class TrackGenerator {
       path: validation.path,
     };
     if (this.debug) chunk.debug = validation;
+    // Remix the opening after the base generator has consumed its draws.
+    // The seeded span supplies independent variation: new opening content
+    // cannot resequence later fields, cadence, shield drops or trial courses.
+    // 160m leaves the entire steer lesson (which ends by 100m) clear.
+    if (!this.trial && usedPattern === BREATHER && s0 >= 160 && s0 < 500) {
+      const opening = buildOpeningChoices({
+        ...baseCtx,
+        rng: createRng(`first-weave|${s0}|${result.length}`),
+      }, result.length);
+      const obstacles = [...result.obstacles, ...opening.obstacles];
+      const proof = validatePattern(
+        obstacles, s0, result.length, entryLanes, runway, this.debug,
+        difficulty, this.heat.slackBias,
+      );
+      // The next authored section must retain exactly the same entry set.
+      // If an extra choice alters that contract, keep the original breather.
+      if (proof.ok && proof.exitLanes.every((lane, i) => lane === validation.exitLanes[i])) {
+        chunk.patternId = OPENING_PATTERN.id;
+        chunk.requestedPatternId = OPENING_PATTERN.id;
+        chunk.skills = OPENING_PATTERN.skills ?? [];
+        chunk.obstacles = obstacles;
+        chunk.path = proof.path;
+        chunk.pickups = pickups.map((pickup) => {
+          const buried = opening.obstacles.some((obstacle) =>
+            Math.abs(pickup.s - obstacle.s) < obstacle.hs + 3 &&
+            blockedRanges(obstacle).some(([left, right]) => pickup.x >= left && pickup.x <= right),
+          );
+          if (!buried) return pickup;
+          const closest = proof.path.reduce((best, point) =>
+            Math.abs(point[0] - pickup.s) < Math.abs(best[0] - pickup.s) ? point : best,
+          );
+          return { ...pickup, x: closest[1] };
+        });
+        chunk.pickups.push(...opening.pickups);
+        if (this.debug) chunk.debug = proof;
+      }
+    }
     return chunk;
   }
 
