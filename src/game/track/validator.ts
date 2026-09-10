@@ -222,6 +222,12 @@ export function validatePattern(
   const slack = Math.max(MIN_MARGIN_SLACK, marginSlackAt(s0) - slackBias);
 
   // Rasterize blocked masks.
+  // A slice's centerline is shared by every obstacle covering it. Sampling
+  // once avoids repeating the seeded curve (including its difficulty math)
+  // for each obstacle/slice pair, while preserving the exact coordinates.
+  const sliceOffsets = courseOffset
+    ? Array.from({ length: steps + 1 }, (_, k) => courseOffset(s0 + k * DS))
+    : null;
   const blocked: Uint8Array[] = [];
   for (let k = 0; k <= steps; k++) {
     const row = new Uint8Array(LANE_COUNT);
@@ -235,10 +241,11 @@ export function validatePattern(
     const hs = sHalfExtent(o);
     const k0 = clamp(Math.floor((o.s - hs - s0) / DS), 0, steps);
     const k1 = clamp(Math.ceil((o.s + hs - s0) / DS), 0, steps);
+    const obstacleOffset = courseOffset ? courseOffset(o.s) : 0;
     for (let k = k0; k <= k1; k++) {
       // A long box remains rigid in world space; its ends do not move with
       // the road. Account for that shift over its whole blocked footprint.
-      const bend = courseOffset ? courseOffset(o.s) - courseOffset(s0 + k * DS) : 0;
+      const bend = sliceOffsets ? obstacleOffset - sliceOffsets[k] : 0;
       const row = blocked[k];
       for (const [left, right] of ranges) {
         const x0 = left + bend;

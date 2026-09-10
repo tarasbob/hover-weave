@@ -341,7 +341,9 @@ export function Craft() {
       engineLight.position.copy(wreck.group.position);
       engineLight.position.y += 0.4;
     } else {
-      group.updateMatrixWorld();
+      // Only the hull transform is needed for light/trail anchors here;
+      // the renderer updates all child meshes once when drawing the scene.
+      group.updateWorldMatrix(true, false);
       engineLight.position.set(0, 0.4, 1.2).applyMatrix4(group.matrixWorld);
     }
     for (const plume of exhausts) {
@@ -367,7 +369,6 @@ export function Craft() {
       const sz = design.hullScale[2];
       const off = 0.42 * sx;
       const nozzleZ = 0.55 * sz + 0.34;
-      group.updateMatrixWorld();
       const left = engineAnchors[0].set(-off, -0.02, nozzleZ).applyMatrix4(group.matrixWorld);
       const right = engineAnchors[1].set(off, -0.02, nozzleZ).applyMatrix4(group.matrixWorld);
       trails.left.update(left.x, left.y, dist - left.z, trailTime);

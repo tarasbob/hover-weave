@@ -19,6 +19,7 @@ import {
 import { useGameBundle } from "../GameController";
 import { LOOKAHEAD, POOL_SIZES } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
+import { updateInstanceRange } from "./instanceUpdates";
 
 const SHARD_CAP = POOL_SIZES.shard;
 const SHIELD_CAP = POOL_SIZES.shield;
@@ -103,7 +104,7 @@ export function Pickups() {
     const matEnd = view * LOOKAHEAD.MATERIALIZE_END_FRAC;
     let si = 0;
     let hi = 0;
-    let nearestShield: { x: number; y: number; z: number; ahead: number } | null = null;
+    let nearestShieldAhead = Infinity;
 
     for (const p of world.pickups) {
       if (!p.active) continue;
@@ -138,22 +139,22 @@ export function Pickups() {
         _s.set(sc, sc, sc);
         _m.compose(_p, _q, _s);
         shieldMesh.setMatrixAt(hi++, _m);
-        if (!nearestShield || ahead < nearestShield.ahead) {
-          nearestShield = { x: p.x, y: p.y + 0.4 + bob, z, ahead };
+        if (ahead < nearestShieldAhead) {
+          nearestShieldAhead = ahead;
+          beaconLight.position.copy(_p);
         }
       }
     }
 
     shardMesh.count = si;
     shieldMesh.count = hi;
-    shardMesh.instanceMatrix.needsUpdate = true;
-    shardData.needsUpdate = true;
-    shieldMesh.instanceMatrix.needsUpdate = true;
-    if (nearestShield && nearestShield.ahead < 120) {
-      beaconLight.position.set(nearestShield.x, nearestShield.y, nearestShield.z);
+    updateInstanceRange(shardMesh.instanceMatrix, si);
+    updateInstanceRange(shardData, si);
+    updateInstanceRange(shieldMesh.instanceMatrix, hi);
+    if (nearestShieldAhead < 120) {
       beaconLight.color.copy(env.uWarn.value);
       beaconLight.intensity =
-        (1 - nearestShield.ahead / 120) * (8 + Math.sin(t * 3.4) * 2);
+        (1 - nearestShieldAhead / 120) * (8 + Math.sin(t * 3.4) * 2);
     } else {
       beaconLight.intensity = 0;
     }

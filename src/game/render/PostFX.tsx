@@ -20,7 +20,7 @@ import {
   vec3,
   vec4,
 } from "three/tsl";
-import { bloom } from "three/addons/tsl/display/BloomNode.js";
+import { efficientBloom } from "./efficientBloom";
 import { chromaticAberration } from "three/addons/tsl/display/ChromaticAberrationNode.js";
 import { film } from "three/addons/tsl/display/FilmNode.js";
 import { fxaa } from "three/addons/tsl/display/FXAANode.js";
@@ -98,7 +98,7 @@ export function PostFX({
       0.82,
     );
     const bloomInput = nodeObject(sceneColor.mul(brightMask));
-    const bloomNode = bloom(
+    const bloomNode = efficientBloom(
       bloomInput,
       0.85,
       0.42,

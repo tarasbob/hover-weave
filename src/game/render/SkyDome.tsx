@@ -5,6 +5,7 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three/webgpu";
 import {
   Fn,
+  If,
   abs,
   float,
   mix,
@@ -133,15 +134,19 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
         .mul(smoothstep(0.06, 0.5, up));
       col.addAssign(env.uAccent.mul(dataColumns).mul(env.uBiomeMix.y).mul(0.24));
 
-      const stormCloud = saturate(
-        mx_fractal_noise_float(dir.mul(4.2).add(vec3(env.uTime.mul(0.025), 0, 0)), 3, 2, 0.54)
-          .mul(0.5)
-          .add(0.5)
-          .sub(0.28)
-          .mul(1.35),
-      ).mul(smoothstep(-0.04, 0.5, up));
-      col.mulAssign(float(1).sub(stormCloud.mul(env.uBiomeMix.z).mul(0.42)));
-      col.addAssign(env.uWarn.mul(stormCloud).mul(env.uFlash).mul(env.uBiomeMix.z).mul(1.4));
+      // This weight is uniform across the frame: skip three noise octaves
+      // outside storm sectors while retaining the exact transition blend.
+      If(env.uBiomeMix.z.greaterThan(0), () => {
+        const stormCloud = saturate(
+          mx_fractal_noise_float(dir.mul(4.2).add(vec3(env.uTime.mul(0.025), 0, 0)), 3, 2, 0.54)
+            .mul(0.5)
+            .add(0.5)
+            .sub(0.28)
+            .mul(1.35),
+        ).mul(smoothstep(-0.04, 0.5, up));
+        col.mulAssign(float(1).sub(stormCloud.mul(env.uBiomeMix.z).mul(0.42)));
+        col.addAssign(env.uWarn.mul(stormCloud).mul(env.uFlash).mul(env.uBiomeMix.z).mul(1.4));
+      });
 
       const riftDistance = abs(dot(dir, vec3(0.76, 0.18, 0.62).normalize()));
       const voidRift = pow(float(1).sub(riftDistance), detail === 2 ? 26 : 18)
@@ -167,7 +172,9 @@ export function SkyDome({ detail }: { detail: 0 | 1 | 2 }) {
 
     const m = new THREE.Mesh(geo, mat);
     m.frustumCulled = false;
-    m.renderOrder = -100;
+    // Render after opaque scenery so its depth rejects expensive sky shading
+    // behind terrain and obstacles. Transparent water/effects still follow.
+    m.renderOrder = 100;
     return m;
   }, [detail, env]);
 

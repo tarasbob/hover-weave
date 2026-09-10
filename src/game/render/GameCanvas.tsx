@@ -7,6 +7,7 @@ import { useGame } from "../state/game";
 import { QUALITY_CONFIGS, resolveTier, useSettings } from "../state/settings";
 import { GameScene } from "./GameScene";
 import { CAMERA_FAR } from "./visualConstants";
+import { FrameScheduler, subscribeVisibility, readVisibility, serverVisibility } from "./FrameScheduler";
 
 function subscribePixelRatio(onChange: () => void): () => void {
   window.addEventListener("resize", onChange);
@@ -24,6 +25,8 @@ const serverPixelRatio = () => 1;
 export function GameCanvas() {
   const tier = useSettings((s) => resolveTier(s));
   const scale = useGame((s) => s.graphics.drsScale);
+  const phase = useGame((s) => s.phase);
+  const visible = useSyncExternalStore(subscribeVisibility, readVisibility, serverVisibility);
   const pixelRatio = useSyncExternalStore(subscribePixelRatio, readPixelRatio, serverPixelRatio);
   // One owner for DPR. R3F reapplies this prop on canvas reconfiguration;
   // a separate imperative value inside the scene would be overwritten.
@@ -67,7 +70,7 @@ export function GameCanvas() {
       className="!fixed inset-0"
       camera={{ fov: 68, near: 0.1, far: CAMERA_FAR, position: [0, 4.6, 9] }}
       gl={createRenderer}
-      frameloop="always"
+      frameloop={!visible ? "never" : phase === "running" || phase === "crashing" ? "always" : "demand"}
       dpr={dpr}
       shadows
       flat={false}
@@ -79,6 +82,7 @@ export function GameCanvas() {
       }}
     >
       <Suspense fallback={null}>
+        <FrameScheduler />
         <GameScene />
       </Suspense>
     </Canvas>

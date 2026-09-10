@@ -8,6 +8,8 @@ import { LOOKAHEAD } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import { BIOMES, biomeIndexAt } from "../track/biomes";
 import { createObstacleMaterial } from "./obstacleMaterial";
+import { SlotCache } from "./SlotCache";
+import { updateInstanceRange } from "./instanceUpdates";
 
 type LandmarkKind = "ring" | "pillar" | "crystal";
 
@@ -139,6 +141,10 @@ function landmarkParts(slot: number, biome: number): LandmarkPart[] {
 /** Huge, non-collidable silhouettes that give each sector a memorable horizon. */
 export function HorizonLandmarks() {
   const { world, env, ambient } = useGameBundle();
+  const slots = useMemo(() => new SlotCache(
+    Math.ceil((LOOKAHEAD.MAX + 480) / SLOT_SPACING) + 2,
+    (slot) => landmarkParts(slot, biomeIndexAt(slot * SLOT_SPACING + 520)),
+  ), []);
 
   const pools = useMemo(() => {
     const make = (
@@ -197,7 +203,7 @@ export function HorizonLandmarks() {
       const grow = smoothstep(view + 220, view * LOOKAHEAD.MATERIALIZE_END_FRAC, ahead);
       if (grow <= 0.002) continue;
 
-      for (const part of landmarkParts(slot, biomeIndexAt(s))) {
+      for (const part of slots.get(slot)) {
         const pool = poolByKind.get(part.kind);
         if (!pool || pool.count >= pool.capacity) continue;
         _position.set(part.x + world.courseOffsetAt(s), part.y, -ahead);
@@ -213,8 +219,8 @@ export function HorizonLandmarks() {
 
     for (const pool of pools) {
       pool.mesh.count = pool.count;
-      pool.mesh.instanceMatrix.needsUpdate = true;
-      pool.attr.needsUpdate = true;
+      updateInstanceRange(pool.mesh.instanceMatrix, pool.count);
+      updateInstanceRange(pool.attr, pool.count);
     }
   });
 

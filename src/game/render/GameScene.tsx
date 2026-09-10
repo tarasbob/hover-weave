@@ -138,8 +138,8 @@ export function GameScene() {
   }, [hemisphereLight, rimLight]);
 
   useFrame((state, rawDt) => {
-    const dt = Math.min(rawDt, 0.25);
     let g = useGame.getState();
+    const initialPhase = g.phase;
 
     // --- Input edges ---------------------------------------------------
     input.poll(sensitivity);
@@ -156,13 +156,17 @@ export function GameScene() {
     // Restart/pause edges can change the phase synchronously. Simulate the
     // resulting state so a pause never leaks a final movement frame.
     g = useGame.getState();
+    // A shortcut can resume from an on-demand frame after minutes of idling.
+    // That idle wall time is neither a simulation tick nor a gameplay stall.
+    const resumed = initialPhase !== "running" && g.phase === "running";
+    const dt = resumed ? 0 : Math.min(rawDt, 0.25);
 
     // --- Simulation ------------------------------------------------------
     // A long stall auto-pauses an underway run. Before its first simulation
     // tick, discard shader/startup work without presenting a paused launch.
     // Shorter low-FPS frames are fully simulated, so dropping frames cannot
     // create a slow-motion score exploit.
-    const throttled = rawDt > 0.25;
+    const throttled = !resumed && rawDt > 0.25;
     if (throttled && g.phase === "running" && world.time > 0) {
       bundle.togglePause();
       g = useGame.getState();
@@ -179,10 +183,10 @@ export function GameScene() {
         const release = Math.min(1, kiss.current / KISS.RELEASE);
         kissScale = 1 - (1 - KISS.FLOOR) * release;
       }
-      kiss.current = Math.max(0, kiss.current - rawDt);
+      kiss.current = Math.max(0, kiss.current - dt);
       if (!advanceProfile(world, dt * kissScale)) world.update(dt * kissScale, input.state);
       recordProfileSimulation(world);
-      ghost.sync(world.time);
+      if (showGhost) ghost.sync(world.time);
       if (g.phase === "crashing" && world.deathTimer >= CRASH.PRESENTATION_SECONDS) {
         g.setPhase("dead");
         g = useGame.getState();
@@ -298,7 +302,7 @@ export function GameScene() {
           lab: world.stats.lab,
           surge: world.surgeTimer > 0,
           dash: world.labFx.dash ? world.dashCooldown : null,
-          ghostDelta: showGhost ? ghost.deltaTo(world.distance) : null,
+          ghostDelta: showGhost ? ghost.deltaTo(world.distance, world.time) : null,
         });
       }
 

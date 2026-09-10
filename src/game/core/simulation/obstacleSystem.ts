@@ -50,6 +50,7 @@ export class ObstacleSystem {
     const t = this.state.time;
     const craftS = this.state.distance;
     const behind = craftS - TRACK.DESPAWN_BEHIND;
+    const stepLen = this.state.speed * dt;
     let engageDensity = 0;
     let availDensity = 0;
     // Craft vertical band follows the (usually grounded) craft. `y` is set
@@ -67,7 +68,9 @@ export class ObstacleSystem {
     for (const o of this.state.obstacles) {
       if (!o.active) continue;
 
-      if (obstacleTrailingEdge(o) < behind) {
+      // Every motion envelope reaches at least as far forward as its center.
+      // Most live slots are still ahead: avoid their yaw trigonometry here.
+      if (o.cs < behind && obstacleTrailingEdge(o) < behind) {
         this.analysis.rememberObstacle(o);
         this.pools.releaseObstacle(o);
         continue;
@@ -148,11 +151,8 @@ export class ObstacleSystem {
       const beamOff = o.kind === "beam" && o.motion === Motion.Blink && o.state >= o.m2;
 
       // Broad phase along track.
-      const stepLen = this.state.speed * dt;
-      const sExtent = o.motion === Motion.RotateYaw
-        ? Math.hypot(o.hx, o.hs)
-        : Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
       const dS = craftS - o.cs;
+      const absDS = Math.abs(dS);
 
       // Danger sample. Availability: is there anything to dodge in this
       // stretch at all? Engagement: is the craft's line actually near it?
@@ -161,7 +161,7 @@ export class ObstacleSystem {
       // 6.2): an AIRBORNE craft samples the ground band instead, so vaulting
       // dense geometry keeps the engaged score stream alive — choosing to
       // fly over the thickest line pays like threading it.
-      if (Math.abs(dS) < DANGER.S_WINDOW) {
+      if (absDS < DANGER.S_WINDOW) {
         // Rings gauge danger by their tube band (hy): a grounded ring rim
         // fills the craft band exactly as before, while a skyhook air ring
         // far overhead never inflates ground availability.
@@ -169,7 +169,7 @@ export class ObstacleSystem {
         const dLo = this.state.airborne ? CRAFT.Y_MIN : yLo;
         const dHi = this.state.airborne ? CRAFT.Y_MAX : yHi;
         if (o.cy - vHalf < dHi && o.cy + vHalf > dLo) {
-          const ws = 1 - Math.abs(dS) / DANGER.S_WINDOW;
+          const ws = 1 - absDS / DANGER.S_WINDOW;
           availDensity += ws;
           const effHx = o.kind === "ring"
             ? o.hx
@@ -181,7 +181,15 @@ export class ObstacleSystem {
         }
       }
 
-      const withinS = Math.abs(dS) < sExtent + stepLen + CRAFT.RADIUS + 1.5;
+      // hx + hs bounds every yaw, including rotating boxes. Only the few
+      // nearby colliders need their exact projected footprint this tick.
+      let withinS = false;
+      if (absDS < o.hx + o.hs + stepLen + CRAFT.RADIUS + 1.5) {
+        const sExtent = o.motion === Motion.RotateYaw
+          ? Math.hypot(o.hx, o.hs)
+          : Math.abs(Math.cos(o.cyaw)) * o.hs + Math.abs(Math.sin(o.cyaw)) * o.hx;
+        withinS = absDS < sExtent + stepLen + CRAFT.RADIUS + 1.5;
+      }
 
       if (withinS && !beamOff) {
         // Vertical overlap (movers use current cy, band follows the craft).

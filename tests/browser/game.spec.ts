@@ -212,6 +212,48 @@ test("pause freezes the run, settings keep it paused, and changing tabs pauses a
   await expect(game(page)).toHaveAttribute("data-game-phase", "running");
 });
 
+test("idle screens stop continuous rendering and shortcuts resume after a long pause", async ({ page }) => {
+  // First let initial shader/setup and diagnostic publication settle.
+  await expect.poll(async () => (await readPerformance(page))?.renderedFrames ?? 0).toBeGreaterThan(30);
+  const titleBefore = (await readPerformance(page))!.renderedFrames;
+  await page.waitForTimeout(1_500);
+  const titleFrames = (await readPerformance(page))!.renderedFrames - titleBefore;
+  expect(titleFrames, "The animated title is capped near 30 frames per second").toBeLessThanOrEqual(55);
+  expect(titleFrames).toBeGreaterThan(10);
+
+  await page.getByRole("button", { name: "Begin first flight", exact: true }).click();
+  await expect(game(page)).toHaveAttribute("data-game-phase", "running");
+  await expect(page.getByRole("button", { name: "Begin first flight", exact: true })).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(game(page)).toHaveAttribute("data-game-phase", "paused");
+  await page.waitForTimeout(750);
+  const pausedFrames = (await readPerformance(page))!.renderedFrames;
+  await page.waitForTimeout(1_500);
+  expect((await readPerformance(page))!.renderedFrames, "Paused scenes submit no continuous GPU frames")
+    .toBe(pausedFrames);
+
+  // The pause lasts beyond the stall guard. A shortcut must wake the demand
+  // loop, discard idle wall time and continue normal gameplay.
+  await page.keyboard.press("Escape");
+  await expect(game(page)).toHaveAttribute("data-game-phase", "running");
+  await page.waitForTimeout(400);
+  await expect(game(page)).toHaveAttribute("data-game-phase", "running");
+  await expect.poll(async () => (await readPerformance(page))!.renderedFrames).toBeGreaterThan(pausedFrames + 10);
+  await page.keyboard.press("Escape");
+  await expect(game(page)).toHaveAttribute("data-game-phase", "paused");
+  await page.waitForTimeout(500);
+  // A virtual browser gamepad checks the polling-only shortcut path without
+  // requiring physical controller hardware in the production smoke suite.
+  await page.evaluate(() => {
+    const pad = { axes: [0], buttons: Array.from({ length: 16 }, (_, i) => ({ pressed: i === 9 })) };
+    Object.defineProperty(navigator, "getGamepads", { configurable: true, value: () => [pad] });
+    window.dispatchEvent(new Event("gamepadconnected"));
+  });
+  await expect(game(page)).toHaveAttribute("data-game-phase", "running");
+  await page.waitForTimeout(300);
+  await expect(game(page)).toHaveAttribute("data-game-phase", "running");
+});
+
 test("a real collision produces a flight report and retry starts the daily course", async ({ page }, testInfo) => {
   await flightDeck(page).getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "SETTINGS", exact: true });
@@ -252,6 +294,11 @@ test("a real collision produces a flight report and retry starts the daily cours
     });
   }
   await testInfo.attach("flight-report", { body: await page.screenshot(), contentType: "image/png" });
+  await page.waitForTimeout(750);
+  const finishedFrames = (await readPerformance(page))!.renderedFrames;
+  await page.waitForTimeout(1_000);
+  expect((await readPerformance(page))!.renderedFrames, "Results retain the last crash frame without continuous rendering")
+    .toBe(finishedFrames);
   await report.getByRole("button", { name: "RETRY COURSE", exact: true }).click();
   await expect(report).toBeHidden();
   await expect(game(page)).toHaveAttribute("data-game-phase", "running");

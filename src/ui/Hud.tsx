@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useGameBundle } from "@/game/GameController";
 import { LAB_BY_ID } from "@/game/core/lab";
@@ -9,6 +9,7 @@ import { trialById } from "@/game/track/trials";
 import {
   useGame,
   type AheadCue,
+  type GamePhase,
   type FlightLessonStep,
   type SectionGradeToast,
   type SkillMoment,
@@ -19,24 +20,25 @@ import { MobileBoost } from "@/ui/MobileSetup";
 
 /** In-run heads-up display. Pure DOM over the canvas, throttled by the loop. */
 export function Hud() {
-  const bundle = useGameBundle();
   const phase = useGame((s) => s.phase);
+  const showFps = useSettings((s) => s.showFps);
+  const inRun = phase === "running" || phase === "paused" || phase === "crashing" || phase === "dead";
+  if (inRun) return <InRunHud phase={phase} />;
+  return phase === "title" && showFps ? (
+    <div className="pointer-events-none fixed bottom-3 left-3 z-50 rounded-lg bg-[#08151f]/90 px-3 py-2 sm:bottom-5 sm:left-5">
+      <PerformanceReadout />
+    </div>
+  ) : null;
+}
+
+function InRunHud({ phase }: { phase: GamePhase }) {
+  const bundle = useGameBundle();
   const hud = useGame((s) => s.hud);
   const mode = useGame((s) => s.mode);
   const trialId = useGame((s) => s.trialId);
-  const callout = useGame((s) => s.callout);
-  const skillMoment = useGame((s) => s.skillMoment);
-  const sectionGrade = useGame((s) => s.sectionGrade);
-  const aheadCue = useGame((s) => s.aheadCue);
-  const lesson = useGame((s) => s.lesson);
-  const fps = useGame((s) => s.fps);
-  const graphics = useGame((s) => s.graphics);
   const showFps = useSettings((s) => s.showFps);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const bestScore = useMeta((s) => s.bestScore);
-
-  const inRun = phase === "running" || phase === "paused" || phase === "crashing" || phase === "dead";
-  if (!inRun) return null;
 
   return (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
@@ -154,26 +156,7 @@ export function Hud() {
             BEST {bestScore.toLocaleString()}
           </div>
         )}
-        {showFps && (
-          <div
-            className="mt-1 font-mono text-[10px] tabular-nums text-emerald-300/80"
-            data-performance={JSON.stringify(graphics)}
-          >
-            <div>{fps} FPS · DPR {graphics.dpr.toFixed(2)} · DRS {graphics.drsScale.toFixed(2)}</div>
-            <div>
-              Frame {graphics.frameMs.toFixed(1)}ms · p95 {graphics.frameP95Ms.toFixed(1)} · p99 {graphics.frameP99Ms.toFixed(1)}
-            </div>
-            <div>
-              CPU {graphics.cpuMs.toFixed(2)}ms · GPU {graphics.gpuMs === null
-                ? graphics.gpuStatus
-                : `${graphics.gpuMs.toFixed(2)}ms · p95 ${graphics.gpuP95Ms?.toFixed(2)}`}
-            </div>
-            <div>
-              {graphics.drawCalls} calls · {(graphics.triangles / 1000).toFixed(0)}k tris ·{" "}
-              {graphics.textures} tex
-            </div>
-          </div>
-        )}
+        {showFps && <PerformanceReadout />}
       </div>
 
       {/* Distance + speed + ghost race */}
@@ -268,6 +251,46 @@ export function Hud() {
         </div>
       </div>
 
+      <HudFeedback phase={phase} />
+      </div>
+    </MotionConfig>
+  );
+}
+
+// Diagnostics and transient messages update independently of the 12Hz readout.
+const PerformanceReadout = memo(function PerformanceReadout() {
+  const fps = useGame((s) => s.fps);
+  const graphics = useGame((s) => s.graphics);
+  return (
+          <div
+            className="mt-1 font-mono text-[10px] tabular-nums text-emerald-300/80"
+            data-performance={JSON.stringify(graphics)}
+          >
+            <div>{fps} FPS · DPR {graphics.dpr.toFixed(2)} · DRS {graphics.drsScale.toFixed(2)}</div>
+            <div>
+              Frame {graphics.frameMs.toFixed(1)}ms · p95 {graphics.frameP95Ms.toFixed(1)} · p99 {graphics.frameP99Ms.toFixed(1)}
+            </div>
+            <div>
+              CPU {graphics.cpuMs.toFixed(2)}ms · GPU {graphics.gpuMs === null
+                ? graphics.gpuStatus
+                : `${graphics.gpuMs.toFixed(2)}ms · p95 ${graphics.gpuP95Ms?.toFixed(2)}`}
+            </div>
+            <div>
+              {graphics.drawCalls} calls · {(graphics.triangles / 1000).toFixed(0)}k tris ·{" "}
+              {graphics.textures} tex
+            </div>
+          </div>
+  );
+});
+
+const HudFeedback = memo(function HudFeedback({ phase }: { phase: GamePhase }) {
+  const callout = useGame((s) => s.callout);
+  const skillMoment = useGame((s) => s.skillMoment);
+  const sectionGrade = useGame((s) => s.sectionGrade);
+  const aheadCue = useGame((s) => s.aheadCue);
+  const lesson = useGame((s) => s.lesson);
+  return (
+    <>
       {/* Center callouts */}
       <AheadCueToast key={`ahead-${aheadCue?.at ?? "none"}`} cue={aheadCue} />
       {phase === "running" && lesson && <FlightLesson step={lesson} />}
@@ -286,10 +309,9 @@ export function Hud() {
         toast={sectionGrade}
       />
       {phase === "dead" && <UnlockToasts />}
-      </div>
-    </MotionConfig>
+    </>
   );
-}
+});
 
 export const GRADE_COLORS: Record<string, string> = {
   S: "text-amber-200 border-amber-300/50 bg-amber-300/10",

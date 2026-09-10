@@ -8,6 +8,7 @@ import { BEAM, BUMPER, LOOKAHEAD, POOL_SIZES } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import type { Obstacle, ObstacleKind } from "../core/types";
 import { createObstacleMaterial } from "./obstacleMaterial";
+import { updateInstanceRange } from "./instanceUpdates";
 
 const ROLE_INDEX: Record<string, number> = { primary: 0, accent: 1, warn: 2, dim: 3 };
 const SETPIECE_IDS = new Set([
@@ -165,8 +166,8 @@ export function ObstacleField({ shadows }: { shadows: boolean }) {
 
     for (const p of pools) {
       p.mesh.count = p.count;
-      p.mesh.instanceMatrix.needsUpdate = true;
-      p.attr.needsUpdate = true;
+      updateInstanceRange(p.mesh.instanceMatrix, p.count);
+      updateInstanceRange(p.attr, p.count);
     }
   });
 

@@ -76,7 +76,13 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
     renderer.info.reset();
     const phase = useGame.getState().phase;
     if (phase !== m.phase) {
-      m.gpu.resetSamples();
+      // Frozen screens retain their final diagnostic frame (including crash
+      // passes). Fresh gameplay/title phases always get their own samples.
+      if (phase === "running" || phase === "title" || phase === "crashing") {
+        m.gpu.resetSamples();
+        m.frames.clear();
+        m.cpu.clear();
+      }
       m.phase = phase;
     }
     // The optional diagnostic overlay can inspect the crash effect too. Never
@@ -119,7 +125,9 @@ export function PerformanceMonitor({ tier }: { tier: QualityTier }) {
         gpuPassCoverage: m.gpu.coverage(now), gpuSubmittedPasses: m.gpu.submittedPasses(now),
       };
     }
-    const scale = m.resolution.update(frameMs, gpuMs, active);
+    // The title intentionally renders at 30 Hz. It is not GPU pressure and
+    // must not lower resolution before the player even launches a run.
+    const scale = m.resolution.update(frameMs, gpuMs, active && g.phase === "running");
     if (scale !== env.uDrsScale.value) {
       env.uDrsScale.value = scale;
       g.setGraphics({ drsScale: scale });

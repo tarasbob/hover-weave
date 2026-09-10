@@ -107,6 +107,10 @@ test("tilt permission, proportional wheel preview and recenter work on both land
   await expect(settings.getByText(/This hold position now steers straight/)).toBeVisible();
   await expect.poll(async () => meter.evaluate((node) => new DOMMatrix(getComputedStyle(node).transform).m41)).toBeLessThan(1);
   await page.evaluate(() => {
+    // Stop samples encoded for the previous screen angle before rotating.
+    // Otherwise an interval tick between these evaluate calls can establish
+    // the new neutral position from an old, now-inverted sensor reading.
+    window.clearInterval((window as Window & { __mobileSensorTimer?: number }).__mobileSensorTimer);
     Object.defineProperty(screen.orientation, "angle", { configurable: true, get: () => 270 });
     window.dispatchEvent(new Event("orientationchange"));
   });

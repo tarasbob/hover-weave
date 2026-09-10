@@ -5,6 +5,35 @@ import type GaussianBlurNode from "three/addons/tsl/display/GaussianBlurNode.js"
 import { EFFECT_PIXEL_DENSITY, effectResolutionScale } from "../src/game/render/effectPolicy";
 import { createDepthOfField, disposePostResources, gateDepthOfField } from "../src/game/render/disposePostResources";
 import { QUALITY_CONFIGS } from "../src/game/state/settings";
+import { bloomKernel } from "../src/game/render/bloomKernel";
+
+// Compare the optimized bloom convolution against the installed effect's
+// original coefficients, including odd target widths and clamped edge texels.
+// Pairing is used only on passes with matching input/output dimensions.
+for (const radius of [6, 10, 14, 18, 22]) {
+  const kernel = bloomKernel(radius);
+  assert.equal(1 + kernel.pairs.length * 2, radius + 1);
+  for (const width of [1, 3, 17, 32, 65]) {
+    const pixels = Array.from({ length: width }, (_, i) => Math.sin(i * 19.17) ** 2 * 12);
+    const sample = (x: number): number => {
+      const clamped = Math.max(0, Math.min(width - 1, x));
+      const low = Math.floor(clamped);
+      return pixels[low] + (pixels[Math.min(width - 1, low + 1)] - pixels[low]) * (clamped - low);
+    };
+    for (let x = 0; x < width; x++) {
+      let expected = pixels[x] * kernel.center;
+      for (let i = 1; i < radius; i++) {
+        const sigma = radius / 3;
+        const weight = 0.39894 * Math.exp(-0.5 * i * i / (sigma * sigma)) / sigma;
+        expected += (sample(x + i) + sample(x - i)) * weight;
+      }
+      const actual = kernel.pairs.reduce((sum, tap) => sum +
+        (sample(x + tap.offset) + sample(x - tap.offset)) * tap.weight, pixels[x] * kernel.center);
+      assert.ok(Math.abs(actual - expected) < 1e-12, `bloom radius ${radius}, width ${width}, pixel ${x}`);
+    }
+  }
+}
+console.log("Paired bloom taps preserve the original convolution and edge behavior with fewer texture fetches.");
 
 // The soft-effect density cap only removes surplus high-DPI pixels. Preserve
 // all preset values below the cap, DRS behavior, and the prior clarity floor.

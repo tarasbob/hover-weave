@@ -7,25 +7,12 @@ import { attribute, float, vec4 } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { createRng } from "../core/rng";
 import { CRAFT } from "../core/constants";
+import type { Pickup } from "../core/types";
+import { ParticlePool } from "./ParticlePool";
+import { updateInstanceRange } from "./instanceUpdates";
 import { TRAILS, useMeta } from "../state/meta";
 import { useSettings } from "../state/settings";
 import { crashCenter, type CrashOrigin } from "./crashMotion";
-
-interface Particle {
-  alive: boolean;
-  /** Track-space coordinates (s converts to z each frame). */
-  x: number; y: number; s: number;
-  vx: number; vy: number; vs: number;
-  drag: number; grav: number;
-  age: number; life: number;
-  size0: number; size1: number;
-  r: number; g: number; b: number; a: number;
-  /** 0 = billboard spark, 1 = z-stretched streak. */
-  kind: 0 | 1;
-  stretch: number;
-  /** Wreck sparks stay in the cinematic frame after the road stops gliding. */
-  crash: boolean;
-}
 
 const rng = createRng("particles-visual");
 
@@ -46,12 +33,7 @@ export function Particles({ max }: { max: number }) {
   );
 
   const sys = useMemo(() => {
-    const pool: Particle[] = Array.from({ length: max }, () => ({
-      alive: false, x: 0, y: 0, s: 0, vx: 0, vy: 0, vs: 0,
-      drag: 0, grav: 0, age: 0, life: 1, size0: 1, size1: 1,
-      r: 1, g: 1, b: 1, a: 1, kind: 0 as const, stretch: 1, crash: false,
-    }));
-    let cursor = 0;
+    const particles = new ParticlePool(max);
 
     const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(max * 4), 4);
     colorAttr.setUsage(THREE.DynamicDrawUsage);
@@ -72,16 +54,7 @@ export function Particles({ max }: { max: number }) {
     mesh.frustumCulled = false;
     mesh.renderOrder = 10;
 
-    const spawn = (p: Partial<Particle>): void => {
-      const it = pool[cursor];
-      cursor = (cursor + 1) % pool.length;
-      Object.assign(it, {
-        alive: true, age: 0, drag: 0, grav: 0, vx: 0, vy: 0, vs: 0,
-        kind: 0, stretch: 1, a: 1, size1: 0, crash: false,
-      }, p);
-    };
-
-    return { pool, mesh, colorAttr, spawn, deathClock: 0, crashOrigin: null as CrashOrigin | null };
+    return { particles, mesh, colorAttr, deathClock: 0, crashOrigin: null as CrashOrigin | null };
   }, [max]);
 
   useEffect(() => {
@@ -100,7 +73,7 @@ export function Particles({ max }: { max: number }) {
     const brightness = reduceFlash ? 0.62 : 1;
     const offs = [
       world.events.on("runStart", () => {
-        for (const particle of sys.pool) particle.alive = false;
+        sys.particles.clear();
         sys.deathClock = 0;
         sys.crashOrigin = null;
         emit.crash = 0;
@@ -112,7 +85,7 @@ export function Particles({ max }: { max: number }) {
         const count = Math.max(4, Math.round((gradeCount + chainBonus) * burstScale));
         const energy = reduceFlash ? 1.35 : 2 + e.precision * 0.7;
         for (let i = 0; i < count; i++) {
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + (world.x - e.x) * 0.5, y: CRAFT.HOVER_HEIGHT + rng.range(-0.4, 0.6), s: e.s,
             vx: rng.range(-6, 6), vy: rng.range(2, 9), vs: rng.range(-4, 4),
             grav: -14, drag: 1.4, life: rng.range(0.3, 0.65),
@@ -129,7 +102,7 @@ export function Particles({ max }: { max: number }) {
         );
         for (let i = 0; i < count; i++) {
           const ang = rng.range(0, Math.PI * 2);
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x, y: e.y, s: world.distance + 1,
             vx: Math.cos(ang) * rng.range(2, 7), vy: Math.sin(ang) * rng.range(2, 7) + 2,
             vs: rng.range(-2, 2),
@@ -146,7 +119,7 @@ export function Particles({ max }: { max: number }) {
         const count = Math.max(8, Math.round(26 * burstScale));
         for (let i = 0; i < count; i++) {
           const ang = rng.range(0, Math.PI * 2);
-          sys.spawn({
+          sys.particles.spawn({
             x: world.x, y: CRAFT.HOVER_HEIGHT, s: world.distance,
             vx: Math.cos(ang) * rng.range(4, 13), vy: rng.range(1, 10),
             vs: rng.range(-6, 6),
@@ -163,7 +136,7 @@ export function Particles({ max }: { max: number }) {
         const count = Math.max(6, Math.round(18 * burstScale));
         for (let i = 0; i < count; i++) {
           const ang = (i / count) * Math.PI * 2;
-          sys.spawn({
+          sys.particles.spawn({
             x: world.x + Math.cos(ang) * 0.7,
             y: CRAFT.HOVER_HEIGHT + Math.sin(ang) * 0.45,
             s: world.distance,
@@ -186,7 +159,7 @@ export function Particles({ max }: { max: number }) {
         const count = Math.max(6, Math.round(16 * burstScale));
         for (let i = 0; i < count; i++) {
           const ang = (i / count) * Math.PI * 2;
-          sys.spawn({
+          sys.particles.spawn({
             x: world.x + Math.cos(ang) * 0.55,
             y: CRAFT.HOVER_HEIGHT + Math.sin(ang) * 0.25,
             s: world.distance - 0.7,
@@ -211,7 +184,7 @@ export function Particles({ max }: { max: number }) {
         c.copy(env.uPrimary.value);
         const count = Math.max(8, Math.round((10 + Math.min(event.tier, 8) * 4) * burstScale));
         for (let i = 0; i < count; i++) {
-          sys.spawn({
+          sys.particles.spawn({
             x: world.x + rng.range(-1.2, 1.2),
             y: CRAFT.HOVER_HEIGHT + rng.range(-0.2, 0.5),
             s: world.distance + rng.range(-1, 1),
@@ -235,7 +208,7 @@ export function Particles({ max }: { max: number }) {
         const count = Math.max(10, Math.round(34 * burstScale));
         for (let i = 0; i < count; i++) {
           const white = rng.range(0.4, 1);
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + rng.range(-e.hx, e.hx) * 0.8,
             y: Math.max(0.3, e.y + rng.range(-e.hy, e.hy) * 0.8),
             s: e.s + rng.range(-0.5, 0.5),
@@ -255,7 +228,7 @@ export function Particles({ max }: { max: number }) {
         c.copy(env.uWarn.value);
         const count = Math.max(6, Math.round(14 * burstScale));
         for (let i = 0; i < count; i++) {
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + e.dir * rng.range(0.4, 1.4),
             y: CRAFT.HOVER_HEIGHT + rng.range(-0.3, 0.5),
             s: e.s + rng.range(-0.6, 0.6),
@@ -275,7 +248,7 @@ export function Particles({ max }: { max: number }) {
         c.copy(env.uAccent.value);
         const count = Math.max(6, Math.round((10 + e.vy * 1.2) * burstScale));
         for (let i = 0; i < count; i++) {
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + rng.range(-1.6, 1.6),
             y: world.y + rng.range(-0.4, 0.3),
             s: e.s + rng.range(-1.2, 0.4),
@@ -297,7 +270,7 @@ export function Particles({ max }: { max: number }) {
         const count = Math.max(6, Math.round((8 + e.quality * 8) * burstScale));
         for (let i = 0; i < count; i++) {
           const ang = (i / count) * Math.PI * 2;
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + Math.cos(ang) * 0.5,
             y: e.y - 0.35,
             s: e.s + Math.sin(ang) * 0.5,
@@ -328,7 +301,7 @@ export function Particles({ max }: { max: number }) {
         for (let i = 0; i < count; i++) {
           const ang = rng.range(0, Math.PI * 2);
           const sp = rng.range(2, 6 + e.impact * 0.5);
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + Math.cos(ang) * rng.range(0.3, 1),
             y: 0.25 + rng.range(0, 0.3),
             s: e.s + Math.sin(ang) * rng.range(0.3, 1),
@@ -347,7 +320,7 @@ export function Particles({ max }: { max: number }) {
         c.copy(env.uWarn.value);
         const count = Math.max(4, Math.round(14 * burstScale * intensity));
         for (let i = 0; i < count; i++) {
-          sys.spawn({
+          sys.particles.spawn({
             x: world.x + rng.range(-28, 28),
             y: rng.range(5, 16),
             s: world.distance + rng.range(35, 140),
@@ -374,7 +347,7 @@ export function Particles({ max }: { max: number }) {
           c.copy(hot ? env.uWarn.value : env.uPrimary.value);
           const ang = rng.range(0, Math.PI * 2);
           const sp = rng.range(2, 8) * (reduceMotion ? 0.4 : 1);
-          sys.spawn({
+          sys.particles.spawn({
             x: event.x, y: event.y + rng.range(-0.15, 0.3), s: 0, crash: true,
             vx: Math.cos(ang) * sp + event.latVel * 0.12, vy: rng.range(1.5, 6),
             vs: event.cause === "edge" ? rng.range(-2, 5) : rng.range(-6, -1),
@@ -390,7 +363,7 @@ export function Particles({ max }: { max: number }) {
         c.copy(env.uDim.value);
         const count = Math.max(3, Math.round(8 * burstScale));
         for (let i = 0; i < count; i++) {
-          sys.spawn({
+          sys.particles.spawn({
             x: e.x + rng.range(-2, 2), y: 0.3, s: e.s + rng.range(-1.5, 1.5),
             vx: rng.range(-5, 5), vy: rng.range(1, 5), vs: rng.range(-3, 3),
             grav: -4, drag: 2.4, life: rng.range(0.5, 1),
@@ -404,11 +377,14 @@ export function Particles({ max }: { max: number }) {
   }, [world, env, sys, emit, reduceMotion, reduceFlash]);
 
   // --- Per-frame: continuous emitters + simulation --------------------------
-  const _q = new THREE.Quaternion();
-  const _m = new THREE.Matrix4();
-  const _p = new THREE.Vector3();
-  const _s = new THREE.Vector3();
-  const _e = new THREE.Euler();
+  const { _q, _m, _p, _s, _e, seeking } = useMemo(() => ({
+    _q: new THREE.Quaternion(),
+    _m: new THREE.Matrix4(),
+    _p: new THREE.Vector3(),
+    _s: new THREE.Vector3(),
+    _e: new THREE.Euler(),
+    seeking: [] as Pickup[],
+  }), []);
 
   useFrame((_, rawDt) => {
     if (document.hidden) return;
@@ -428,7 +404,7 @@ export function Particles({ max }: { max: number }) {
       while (emit.crash >= 1) {
         emit.crash -= 1;
         const c = env.uWarn.value;
-        sys.spawn({
+        sys.particles.spawn({
           x: center.x + rng.range(-0.65, 0.65), y: center.y + rng.range(0, 0.5),
           s: -center.z, crash: true,
           vx: rng.range(-0.7, 0.7), vy: rng.range(0.5, 1.8), vs: rng.range(-0.6, 0.8),
@@ -445,7 +421,7 @@ export function Particles({ max }: { max: number }) {
       while (emit.ember >= 1) {
         emit.ember -= 1;
         const side = rng.sign();
-        sys.spawn({
+        sys.particles.spawn({
           x: world.x + side * 0.42, y: CRAFT.HOVER_HEIGHT - 0.05, s: dist - 0.8,
           vx: rng.range(-1.5, 1.5) - world.latVel * 0.15, vy: rng.range(-0.5, 1.2),
           vs: rng.range(-26, -14),
@@ -458,15 +434,16 @@ export function Particles({ max }: { max: number }) {
 
     // Magnetic collection wakes make shards visibly arc toward the craft.
     if (running && !reduceMotion) {
-      const seeking = world.pickups.filter(
-        (pickup) => pickup.active && pickup.type === "shard" && pickup.seeking,
-      );
+      seeking.length = 0;
+      for (const pickup of world.pickups) {
+        if (pickup.active && pickup.type === "shard" && pickup.seeking) seeking.push(pickup);
+      }
       emit.magnet += dt * Math.min(36, seeking.length * 14);
       while (emit.magnet >= 1 && seeking.length > 0) {
         emit.magnet -= 1;
         const pickup = seeking[Math.floor(rng.next() * seeking.length)];
         const c = env.uAccent.value;
-        sys.spawn({
+        sys.particles.spawn({
           x: pickup.x + rng.range(-0.1, 0.1),
           y: pickup.y + rng.range(-0.1, 0.1),
           s: pickup.s,
@@ -492,7 +469,7 @@ export function Particles({ max }: { max: number }) {
       while (emit.streak >= 1) {
         emit.streak -= 1;
         const side = rng.sign();
-        sys.spawn({
+        sys.particles.spawn({
           x: world.x + side * rng.range(4, 16), y: rng.range(0.6, 7), s: dist + rng.range(50, 110),
           vs: 0, kind: 1, stretch: rng.range(6, 16),
           life: rng.range(0.8, 1.6),
@@ -515,7 +492,7 @@ export function Particles({ max }: { max: number }) {
     while (emit.mote >= 1) {
       emit.mote -= 1;
       const c = env.uAccent.value;
-      sys.spawn({
+      sys.particles.spawn({
         x: rng.range(-30, 30), y: rng.range(0.4, 5), s: dist + rng.range(20, 90),
         vx: rng.range(-0.5, 0.5), vy: rng.range(0.1, 0.7), vs: 0,
         life: rng.range(1.5, 3), size0: rng.range(0.03, 0.09), size1: 0.01,
@@ -527,11 +504,11 @@ export function Particles({ max }: { max: number }) {
     _q.copy(camera.quaternion);
     let count = 0;
     const attrArr = sys.colorAttr.array as Float32Array;
-    for (const p of sys.pool) {
-      if (!p.alive) continue;
+    for (let i = 0; i < sys.particles.active.length;) {
+      const p = sys.particles.active[i];
       p.age += dt;
       if (p.age >= p.life) {
-        p.alive = false;
+        sys.particles.removeAt(i);
         continue;
       }
       p.vy += p.grav * dt;
@@ -543,7 +520,7 @@ export function Particles({ max }: { max: number }) {
 
       const z = p.crash ? -p.s : -(p.s - dist);
       if (z > 24 || z < -420) {
-        p.alive = false;
+        sys.particles.removeAt(i);
         continue;
       }
 
@@ -568,10 +545,11 @@ export function Particles({ max }: { max: number }) {
       attrArr[o + 2] = p.b;
       attrArr[o + 3] = fade;
       count++;
+      i++;
     }
     sys.mesh.count = count;
-    sys.mesh.instanceMatrix.needsUpdate = true;
-    sys.colorAttr.needsUpdate = true;
+    updateInstanceRange(sys.mesh.instanceMatrix, count);
+    updateInstanceRange(sys.colorAttr, count);
   });
 
   return <primitive object={sys.mesh} />;

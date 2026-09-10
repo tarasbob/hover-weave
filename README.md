@@ -131,6 +131,8 @@ Useful dev tools:
   focus/input cleanup and steering/boost/dash playback at 30/60/144/240 Hz
 - `npm run test:world` — versioned simulation, event, entity-pool,
   analysis and replay fingerprints
+- `npm run test:core-performance` — conservative collision work budgets,
+  course-sampling complexity, exact generation output and bounded ghost catch-up
 - `npm run test:competition` — strict season/course verification, hostile
   recording rejection and isolated worker limits
 - `npm run test:profiling` — real recorded route, exact playback across refresh
@@ -203,7 +205,13 @@ hysteresis to protect clarity. Only the canvas owns renderer DPR.
 See [the performance and browser verification guide](docs/engineering-verification.md)
 for interpreting those measurements and running the device matrix.
 
-## Engineering status — September 5, 2026
+## Engineering status — September 10, 2026
+
+The September 10 [performance audit](docs/performance-audit.md) adds demand
+rendering for paused/results screens, a 30 Hz title, suspended idle audio,
+bounded scenery caching, active particle/buffer updates, and cheaper sky/bloom
+shading. Gameplay still renders at the display cadence and simulates at 120 Hz.
+The audit records measured results, verification, and prioritized follow-up work.
 
 The simulation split, event-time boost/dash, bounded rendering telemetry and
 production browser suite are implemented. Browser checks also uncovered and

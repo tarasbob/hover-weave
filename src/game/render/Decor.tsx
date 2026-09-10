@@ -8,6 +8,8 @@ import { LOOKAHEAD } from "../core/constants";
 import { smoothstep } from "../core/mathUtils";
 import { BIOMES, biomeIndexAt } from "../track/biomes";
 import { createObstacleMaterial } from "./obstacleMaterial";
+import { SlotCache } from "./SlotCache";
+import { updateInstanceRange } from "./instanceUpdates";
 
 /**
  * Ambient, purely cosmetic scenery streamed alongside the track: crystal
@@ -175,6 +177,17 @@ function floatSlot(i: number, biome: number): SlotDesc | null {
 
 export function Decor() {
   const { world, env, ambient } = useGameBundle();
+  const slots = useMemo(() => ({
+    ground: new SlotCache(Math.ceil((LOOKAHEAD.MAX + 100) / SLOT_SPACING) + 2, (i) => {
+      const s = i * SLOT_SPACING + (hash01(i * 31 + 5) - 0.5) * SLOT_SPACING * 0.8;
+      const biome = biomeIndexAt(s);
+      return { s, left: groundSlot(i, -1, biome), right: groundSlot(i, 1, biome) };
+    }),
+    floating: new SlotCache(Math.ceil((LOOKAHEAD.MAX + 100) / FLOAT_SPACING) + 2, (i) => {
+      const s = i * FLOAT_SPACING + (hash01(i * 17 + 3) - 0.5) * FLOAT_SPACING * 0.7;
+      return { s, decoration: floatSlot(i, biomeIndexAt(s)) };
+    }),
+  }), []);
 
   const pools = useMemo(() => {
     const make = (kind: DecorKind, geo: THREE.BufferGeometry, capacity: number): DecorPool => {
@@ -246,27 +259,23 @@ export function Decor() {
     const g0 = Math.floor((dist - 40) / SLOT_SPACING);
     const g1 = Math.ceil((dist + view + 60) / SLOT_SPACING);
     for (let i = g0; i <= g1; i++) {
-      const s = i * SLOT_SPACING + (hash01(i * 31 + 5) - 0.5) * SLOT_SPACING * 0.8;
-      const biome = biomeIndexAt(s);
-      for (const side of [-1, 1]) {
-        const slot = groundSlot(i, side, biome);
-        if (slot) place(slot, s);
-      }
+      const slot = slots.ground.get(i);
+      if (slot.left) place(slot.left, slot.s);
+      if (slot.right) place(slot.right, slot.s);
     }
 
     // Floaters.
     const f0 = Math.floor((dist - 40) / FLOAT_SPACING);
     const f1 = Math.ceil((dist + view + 60) / FLOAT_SPACING);
     for (let i = f0; i <= f1; i++) {
-      const s = i * FLOAT_SPACING + (hash01(i * 17 + 3) - 0.5) * FLOAT_SPACING * 0.7;
-      const slot = floatSlot(i, biomeIndexAt(s));
-      if (slot) place(slot, s);
+      const slot = slots.floating.get(i);
+      if (slot.decoration) place(slot.decoration, slot.s);
     }
 
     for (const p of pools) {
       p.mesh.count = p.count;
-      p.mesh.instanceMatrix.needsUpdate = true;
-      p.attr.needsUpdate = true;
+      updateInstanceRange(p.mesh.instanceMatrix, p.count);
+      updateInstanceRange(p.attr, p.count);
     }
   });
 

@@ -50,6 +50,11 @@ export class GhostDriver {
     return this.recording !== null && this.world !== null && this.world.status !== "idle";
   }
 
+  /** A hidden ghost resumes within the normal tick budget; suppress stale poses. */
+  isReady(liveTime: number): boolean {
+    return this.active && (this.finished || this.world!.time >= liveTime - 1e-9);
+  }
+
   /** Step the ghost sim up to the live run's sim clock. */
   sync(liveTime: number): void {
     const world = this.world;
@@ -71,8 +76,9 @@ export class GhostDriver {
   }
 
   /** Live distance delta in meters (positive = you are ahead of the ghost). */
-  deltaTo(liveDistance: number): number | null {
+  deltaTo(liveDistance: number, liveTime?: number): number | null {
     if (!this.recording || !this.world || this.world.status === "idle") return null;
+    if (liveTime !== undefined && !this.isReady(liveTime)) return null;
     return liveDistance - this.world.distance;
   }
 
@@ -83,7 +89,7 @@ export class GhostDriver {
    */
   poseAt(liveRenderTime: number): GhostPose | null {
     const w = this.world;
-    if (!w || !this.recording || w.status === "idle") return null;
+    if (!w || !this.isReady(liveRenderTime)) return null;
     const a = clamp01(1 - (w.time - liveRenderTime) / FIXED_DT);
     return {
       x: lerp(w.prevX, w.x, a),

@@ -157,7 +157,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
       const g = useGame.getState();
       if (g.phase === "running") {
         g.setPhase("paused");
-        audio.pauseMusic();
       } else if (g.phase === "paused") {
         input.tilt.recalibrate();
         g.setPhase("running");
@@ -173,7 +172,6 @@ export function GameProvider({ children }: { children: ReactNode }) {
       useGame.getState().setPhase("title");
       useGame.getState().setOutcome(null);
       useGame.getState().setLesson(null);
-      audio.pauseMusic();
     };
 
     return {
@@ -580,26 +578,39 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const { input, audio } = bundle;
     input.attach(document.body);
     const offUnlock = audio.attachUnlock(document);
+    const offPhase = useGame.subscribe((state, previous) => {
+      if (state.phase === previous.phase) return;
+      if (state.phase !== "running" && state.phase !== "crashing") audio.pauseMusic();
+    });
     // Losing the window also pauses: releasing controls on blur should not
     // leave the craft flying unattended behind another window.
     const onBlur = () => {
       if (useGame.getState().phase === "running") bundle.togglePause();
+      audio.setBackgrounded(true);
     };
+    const onFocus = () => audio.setBackgrounded(document.visibilityState === "hidden");
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") onBlur();
+      const hidden = document.visibilityState === "hidden";
+      if (hidden) onBlur();
+      audio.setBackgrounded(hidden || !document.hasFocus());
     };
+    onVisibility();
     const onUiClick = (event: MouseEvent) => {
       if (event.target instanceof Element && event.target.closest("button")) audio.uiClick();
     };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
     document.addEventListener("click", onUiClick);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("click", onUiClick);
       offUnlock();
+      offPhase();
       input.dispose();
+      audio.dispose();
     };
   }, [bundle]);
 

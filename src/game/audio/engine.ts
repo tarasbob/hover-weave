@@ -71,6 +71,84 @@ export class AudioEngine {
   private musicActive = false;
   private initPromise: Promise<void> | null = null;
   private mediaKicked = false;
+  private generation = 0;
+  private backgrounded = false;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private resources: { dispose(): unknown }[] = [];
+  private mixEntries: [string, Tone.Gain][] = [];
+  private mixElapsed = 0;
+  private bassFrequency = Number.NaN;
+
+  private track<T extends { dispose(): unknown }>(resource: T): T {
+    this.resources.push(resource);
+    return resource;
+  }
+
+  private stemAudible(name: string): boolean {
+    // A fading stem remains scheduled until its envelope reaches silence.
+    return this.gains[name].gain.value > 0.01;
+  }
+
+  private clearIdleTimer(): void {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
+  /** Let reverb and UI clicks finish, then stop processing the idle graph. */
+  private sleepWhenIdle(): void {
+    this.clearIdleTimer();
+    if (this.musicActive && (this.musicVol > 0 || this.sfxVol > 0)) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      this.suspend();
+    }, 4000);
+  }
+
+  private suspend(): void {
+    if (!this.ready && !this.initPromise) return;
+    const context = Tone.getContext().rawContext as AudioContext;
+    if (context.state === "running" && "suspend" in context) {
+      void context.suspend().catch(() => undefined);
+    }
+  }
+
+  private resume(): Promise<void> {
+    return Tone.start().then(() => {
+      if (this.backgrounded) this.suspend();
+    });
+  }
+
+  setBackgrounded(backgrounded: boolean): void {
+    this.backgrounded = backgrounded;
+    if (backgrounded) {
+      this.clearIdleTimer();
+      this.suspend();
+    }
+    // Resume only on the next gesture. Returning to a paused tab should be silent.
+  }
+
+  /** Tear down every source, effect, send and transport event on unmount. */
+  dispose(): void {
+    this.generation++;
+    this.clearIdleTimer();
+    if (this.resources.length > 0) Tone.getTransport().stop();
+    for (const sequence of this.seqs) sequence.dispose();
+    this.seqs.length = 0;
+    for (let i = this.resources.length - 1; i >= 0; i--) this.resources[i].dispose();
+    this.resources.length = 0;
+    this.suspend();
+    this.ready = false;
+    this.started = false;
+    this.musicActive = false;
+    this.initPromise = null;
+    this.gains = {};
+    this.mixEntries = [];
+    this.mixElapsed = 0;
+    this.bassFrequency = Number.NaN;
+    this.chordIndex = 0;
+    this.section = 0;
+    this.currentChord = this.chordsA[0];
+  }
 
   /**
    * Two alternating 8-bar sections in D minor. A broods (i VI III VII),
@@ -106,13 +184,15 @@ export class AudioEngine {
   attachUnlock(doc: Document): () => void {
     let unlocked = false;
     const unlock = () => {
-      if (unlocked) return;
+      if (this.backgrounded || (this.musicVol <= 0 && this.sfxVol <= 0)) return;
+      if (unlocked && Tone.getContext().state === "running") return;
       this.kickMediaSession();
       // Resume must be issued synchronously inside the gesture handler.
-      void Tone.start().then(() => {
+      void this.resume().then(() => {
         if (Tone.getContext().state === "running") unlocked = true;
-      });
-      void this.init();
+        if (this.ready) this.sleepWhenIdle();
+      }).catch(() => undefined);
+      void this.init().catch(() => undefined);
     };
     const onVisibility = () => {
       if (doc.visibilityState === "visible" && Tone.getContext().state !== "running") {
@@ -152,114 +232,122 @@ export class AudioEngine {
 
   init(): Promise<void> {
     if (this.ready) return Promise.resolve();
-    if (!this.initPromise) this.initPromise = this.initialize();
+    if (!this.initPromise) {
+      const pending = this.initialize(this.generation);
+      this.initPromise = pending;
+      void pending.catch(() => {
+        if (this.initPromise === pending) this.dispose();
+      });
+    }
     return this.initPromise;
   }
 
-  private async initialize(): Promise<void> {
-    await Tone.start();
+  private async initialize(generation: number): Promise<void> {
+    await this.resume();
+    if (generation !== this.generation) return;
     const ctx = Tone.getContext();
     ctx.lookAhead = 0.05;
 
     // --- Master chain -----------------------------------------------------
-    const limiter = new Tone.Limiter(-1).toDestination();
-    const comp = new Tone.Compressor({
+    const limiter = this.track(new Tone.Limiter(-1)).toDestination();
+    const comp = this.track(new Tone.Compressor({
       threshold: -18, ratio: 3, attack: 0.015, release: 0.18,
-    }).connect(limiter);
-    this.musicFilter = new Tone.Filter(9000, "lowpass", -12).connect(comp);
-    const widener = new Tone.StereoWidener(0.3).connect(this.musicFilter);
-    this.musicBus = new Tone.Gain(this.musicVol).connect(widener);
+    })).connect(limiter);
+    this.musicFilter = this.track(new Tone.Filter(9000, "lowpass", -12)).connect(comp);
+    const widener = this.track(new Tone.StereoWidener(0.3)).connect(this.musicFilter);
+    this.musicBus = this.track(new Tone.Gain(this.musicVol)).connect(widener);
     // Pad/arp/lead and the shared FX returns ride the duck, so every kick
     // pumps the ambient bed out of its way — the classic synthwave breath.
-    this.duck = new Tone.Gain(1).connect(this.musicBus);
-    this.sfxBus = new Tone.Gain(this.sfxVol).connect(comp);
+    this.duck = this.track(new Tone.Gain(1)).connect(this.musicBus);
+    this.sfxBus = this.track(new Tone.Gain(this.sfxVol)).connect(comp);
 
     // Shared space: one plate-ish reverb and one ping-pong echo as sends.
-    this.reverb = new Tone.Reverb({ decay: 3.5, preDelay: 0.02 });
+    this.reverb = this.track(new Tone.Reverb({ decay: 3.5, preDelay: 0.02 }));
     this.reverb.wet.value = 1;
     this.reverb.connect(this.duck);
-    this.delaySend = new Tone.PingPongDelay({ delayTime: "8n.", feedback: 0.3, wet: 1 });
+    this.delaySend = this.track(new Tone.PingPongDelay({ delayTime: "8n.", feedback: 0.3, wet: 1 }));
     this.delaySend.connect(this.duck);
-    const sfxRevSend = new Tone.Gain(0.12).connect(this.reverb);
+    const sfxRevSend = this.track(new Tone.Gain(0.12)).connect(this.reverb);
     this.sfxBus.connect(sfxRevSend);
 
     // --- Stems ------------------------------------------------------------
     for (const name of Object.keys(this.targets)) {
       const bed = name === "pad" || name === "arp" || name === "lead";
-      this.gains[name] = new Tone.Gain(name === "pad" ? 0.9 : 0).connect(
+      this.gains[name] = this.track(new Tone.Gain(name === "pad" ? 0.9 : 0)).connect(
         bed ? this.duck : this.musicBus,
       );
     }
+    this.mixEntries = Object.entries(this.gains);
 
-    this.padSynth = new Tone.PolySynth(Tone.AMSynth, {
+    this.padSynth = this.track(new Tone.PolySynth(Tone.AMSynth, {
       harmonicity: 1.5,
       envelope: { attack: 1.6, decay: 0.4, sustain: 0.8, release: 2.6 },
       modulationEnvelope: { attack: 2, decay: 0.5, sustain: 0.6, release: 2 },
       volume: -12,
-    });
-    const padChorus = new Tone.Chorus({ frequency: 0.6, delayTime: 3.5, depth: 0.5, wet: 0.5 })
+    }));
+    const padChorus = this.track(new Tone.Chorus({ frequency: 0.6, delayTime: 3.5, depth: 0.5, wet: 0.5 }))
       .connect(this.gains.pad)
       .start();
     this.padSynth.connect(padChorus);
-    const padRevSend = new Tone.Gain(0.35).connect(this.reverb);
+    const padRevSend = this.track(new Tone.Gain(0.35)).connect(this.reverb);
     this.gains.pad.connect(padRevSend);
 
-    this.bassSynth = new Tone.MonoSynth({
+    this.bassSynth = this.track(new Tone.MonoSynth({
       oscillator: { type: "fatsawtooth", count: 3, spread: 24 },
       filter: { type: "lowpass", rolloff: -24, Q: 2 },
       envelope: { attack: 0.004, decay: 0.18, sustain: 0.35, release: 0.12 },
       filterEnvelope: { attack: 0.004, decay: 0.14, sustain: 0.3, release: 0.1, baseFrequency: 90, octaves: 2.6 },
       volume: -9,
-    }).connect(this.gains.bass);
+    })).connect(this.gains.bass);
 
-    this.kick = new Tone.MembraneSynth({
+    this.kick = this.track(new Tone.MembraneSynth({
       pitchDecay: 0.05,
       octaves: 10,
       envelope: { attack: 0.001, decay: 0.4, sustain: 0 },
       volume: -4,
-    }).connect(this.gains.kick);
+    })).connect(this.gains.kick);
 
-    this.snare = new Tone.NoiseSynth({
+    this.snare = this.track(new Tone.NoiseSynth({
       noise: { type: "white" },
       envelope: { attack: 0.001, decay: 0.13, sustain: 0 },
       volume: -13,
-    });
-    const snareFilter = new Tone.Filter(1800, "bandpass", -12).connect(this.gains.snare);
+    }));
+    const snareFilter = this.track(new Tone.Filter(1800, "bandpass", -12)).connect(this.gains.snare);
     snareFilter.Q.value = 0.8;
     this.snare.connect(snareFilter);
-    const snareRevSend = new Tone.Gain(0.25).connect(this.reverb);
+    const snareRevSend = this.track(new Tone.Gain(0.25)).connect(this.reverb);
     this.gains.snare.connect(snareRevSend);
 
-    this.hat = new Tone.NoiseSynth({
+    this.hat = this.track(new Tone.NoiseSynth({
       noise: { type: "white" },
       envelope: { attack: 0.001, decay: 0.045, sustain: 0 },
       volume: -19,
-    });
-    const hatFilter = new Tone.Filter(9500, "highpass").connect(this.gains.hat);
+    }));
+    const hatFilter = this.track(new Tone.Filter(9500, "highpass")).connect(this.gains.hat);
     this.hat.connect(hatFilter);
-    this.openHat = new Tone.NoiseSynth({
+    this.openHat = this.track(new Tone.NoiseSynth({
       noise: { type: "white" },
       envelope: { attack: 0.001, decay: 0.35, sustain: 0 },
       volume: -22,
-    }).connect(hatFilter);
+    })).connect(hatFilter);
 
     // Section-boundary swell, musical (rides the duck), not an SFX.
-    const sweepFilter = new Tone.Filter(900, "bandpass").connect(this.duck);
-    this.sweep = new Tone.NoiseSynth({
+    const sweepFilter = this.track(new Tone.Filter(900, "bandpass")).connect(this.duck);
+    this.sweep = this.track(new Tone.NoiseSynth({
       noise: { type: "pink" },
       envelope: { attack: 1.7, decay: 0.5, sustain: 0 },
       volume: -18,
-    }).connect(sweepFilter);
+    })).connect(sweepFilter);
 
-    this.arpSynth = new Tone.Synth({
+    this.arpSynth = this.track(new Tone.Synth({
       oscillator: { type: "triangle8" },
       envelope: { attack: 0.004, decay: 0.12, sustain: 0.08, release: 0.14 },
       volume: -12,
-    }).connect(this.gains.arp);
-    const arpDelaySend = new Tone.Gain(0.5).connect(this.delaySend);
+    })).connect(this.gains.arp);
+    const arpDelaySend = this.track(new Tone.Gain(0.5)).connect(this.delaySend);
     this.gains.arp.connect(arpDelaySend);
 
-    this.leadSynth = new Tone.DuoSynth({
+    this.leadSynth = this.track(new Tone.DuoSynth({
       voice0: { oscillator: { type: "sawtooth" }, envelope: { attack: 0.06, decay: 0.2, sustain: 0.5, release: 0.4 } },
       voice1: { oscillator: { type: "square" }, envelope: { attack: 0.08, decay: 0.2, sustain: 0.4, release: 0.4 } },
       harmonicity: 1.01,
@@ -267,8 +355,8 @@ export class AudioEngine {
       vibratoRate: 5,
       portamento: 0.05,
       volume: -15,
-    }).connect(this.gains.lead);
-    const leadRevSend = new Tone.Gain(0.4).connect(this.reverb);
+    })).connect(this.gains.lead);
+    const leadRevSend = this.track(new Tone.Gain(0.4)).connect(this.reverb);
     this.gains.lead.connect(leadRevSend);
 
     // --- Sequencing ------------------------------------------------------
@@ -276,6 +364,7 @@ export class AudioEngine {
     // events at the same transport tick, and monophonic synths throw on
     // non-increasing start times. One dropped note beats a dead loop.
     const safe = (fn: (time: number) => void) => (time: number) => {
+      if (this.backgrounded || this.musicVol <= 0) return;
       try {
         fn(time);
       } catch {
@@ -314,7 +403,7 @@ export class AudioEngine {
       new Tone.Loop(safe((time) => {
         const hit = bassPattern[bassStep % 16];
         bassStep++;
-        if (!hit) return;
+        if (!hit || !this.stemAudible("bass")) return;
         const root = Tone.Frequency(this.currentChord[0]).transpose(hit === 2 ? 0 : -12);
         const accent = (bassStep - 1) % 16 === 0 || hit === 2;
         this.bassSynth.triggerAttackRelease(root.toNote(), "16n", time, accent ? 0.95 : 0.7);
@@ -324,6 +413,7 @@ export class AudioEngine {
     // Kick: four on the floor; each hit ducks the ambient bed.
     this.seqs.push(
       new Tone.Loop(safe((time) => {
+        if (!this.stemAudible("kick")) return;
         this.kick.triggerAttackRelease("C1", "8n", time);
         const g = this.duck.gain;
         g.cancelScheduledValues(time);
@@ -335,6 +425,7 @@ export class AudioEngine {
     // Snare on 2 and 4.
     this.seqs.push(
       new Tone.Loop(safe((time) => {
+        if (!this.stemAudible("snare")) return;
         this.snare.triggerAttackRelease("16n", time, 0.9);
       }), "2n").start("4n"),
     );
@@ -345,6 +436,7 @@ export class AudioEngine {
       new Tone.Loop(safe((time) => {
         const step = hatStep % 4;
         hatStep++;
+        if (!this.stemAudible("hat")) return;
         if (this.tier >= 5) {
           const vel = step === 2 ? 0.85 : 0.4 + Math.random() * 0.15;
           this.hat.triggerAttackRelease("32n", time, vel);
@@ -357,19 +449,21 @@ export class AudioEngine {
     // Open hat breathing on the "and" of beat 4.
     this.seqs.push(
       new Tone.Loop(safe((time) => {
+        if (!this.stemAudible("hat")) return;
         this.openHat.triggerAttackRelease("8n", time, 0.5);
       }), "1m").start("0:3:2"),
     );
 
     // Arp: 16ths cycling chord tones, accents every beat, echo send.
     let arpStep = 0;
+    const arpShape = [0, 1, 2, 3, 2, 1, 2, 0];
     this.seqs.push(
       new Tone.Loop(safe((time) => {
-        const shape = [0, 1, 2, 3, 2, 1, 2, 0];
-        const idx = shape[arpStep % shape.length];
+        const step = arpStep++;
+        if (!this.stemAudible("arp")) return;
+        const idx = arpShape[step % arpShape.length];
         const note = Tone.Frequency(this.currentChord[idx]).transpose(12).toNote();
-        this.arpSynth.triggerAttackRelease(note, "16n", time, arpStep % 4 === 0 ? 0.9 : 0.55);
-        arpStep++;
+        this.arpSynth.triggerAttackRelease(note, "16n", time, step % 4 === 0 ? 0.9 : 0.55);
       }), "16n").start(0),
     );
 
@@ -384,7 +478,7 @@ export class AudioEngine {
       new Tone.Loop(safe((time) => {
         const pos = leadStep % 8;
         leadStep++;
-        if (pos >= 6) return; // rest, let the echo answer
+        if (pos >= 6 || !this.stemAudible("lead")) return; // rest, let the echo answer
         const phrase = phrases[Math.floor(leadStep / 16) % phrases.length];
         const note = Tone.Frequency(this.currentChord[phrase[pos % 4]]).transpose(24).toNote();
         this.leadSynth.triggerAttackRelease(note, "4n", time, pos === 0 ? 0.9 : 0.7);
@@ -392,116 +486,137 @@ export class AudioEngine {
     );
 
     // --- SFX -------------------------------------------------------------
-    this.whooshPanner = new Tone.Panner(0).connect(this.sfxBus);
-    this.whooshFilter = new Tone.Filter(1200, "bandpass", -12).connect(this.whooshPanner);
+    this.whooshPanner = this.track(new Tone.Panner(0)).connect(this.sfxBus);
+    this.whooshFilter = this.track(new Tone.Filter(1200, "bandpass", -12)).connect(this.whooshPanner);
     this.whooshFilter.Q.value = 1.4;
-    this.whoosh = new Tone.NoiseSynth({
+    this.whoosh = this.track(new Tone.NoiseSynth({
       noise: { type: "pink" },
       envelope: { attack: 0.005, decay: 0.16, sustain: 0 },
       volume: -8,
-    }).connect(this.whooshFilter);
+    })).connect(this.whooshFilter);
 
     // Tonal zip layered on the whoosh: grade decides the pitch.
-    this.zip = new Tone.Synth({
+    this.zip = this.track(new Tone.Synth({
       oscillator: { type: "sine" },
       envelope: { attack: 0.002, decay: 0.09, sustain: 0, release: 0.05 },
       volume: -14,
-    }).connect(this.whooshPanner);
+    })).connect(this.whooshPanner);
 
-    this.pluck = new Tone.Synth({
+    this.pluck = this.track(new Tone.Synth({
       oscillator: { type: "sine" },
       envelope: { attack: 0.001, decay: 0.14, sustain: 0, release: 0.08 },
       volume: -8,
-    });
-    const pluckShimmer = new Tone.FeedbackDelay("16n", 0.25).connect(this.sfxBus);
+    }));
+    const pluckShimmer = this.track(new Tone.FeedbackDelay("16n", 0.25)).connect(this.sfxBus);
     pluckShimmer.wet.value = 0.25;
     this.pluck.connect(pluckShimmer);
 
-    this.chime = new Tone.PolySynth(Tone.FMSynth, {
+    this.chime = this.track(new Tone.PolySynth(Tone.FMSynth, {
       harmonicity: 3.01,
       modulationIndex: 8,
       envelope: { attack: 0.002, decay: 0.5, sustain: 0, release: 0.4 },
       volume: -12,
-    }).connect(this.sfxBus);
+    })).connect(this.sfxBus);
 
-    this.impact = new Tone.MembraneSynth({
+    this.impact = this.track(new Tone.MembraneSynth({
       pitchDecay: 0.09,
       octaves: 8,
       envelope: { attack: 0.001, decay: 0.6, sustain: 0 },
       volume: -2,
-    }).connect(this.sfxBus);
+    })).connect(this.sfxBus);
 
-    this.subDrop = new Tone.Synth({
+    this.subDrop = this.track(new Tone.Synth({
       oscillator: { type: "sine" },
       envelope: { attack: 0.01, decay: 1.1, sustain: 0, release: 0.3 },
       volume: -4,
-    }).connect(this.sfxBus);
+    })).connect(this.sfxBus);
 
-    this.crashNoise = new Tone.NoiseSynth({
+    this.crashNoise = this.track(new Tone.NoiseSynth({
       noise: { type: "brown" },
       envelope: { attack: 0.002, decay: 0.9, sustain: 0 },
       volume: -4,
-    }).connect(this.sfxBus);
+    })).connect(this.sfxBus);
 
-    this.riserFilter = new Tone.Filter(400, "bandpass").connect(this.sfxBus);
-    this.riser = new Tone.NoiseSynth({
+    this.riserFilter = this.track(new Tone.Filter(400, "bandpass")).connect(this.sfxBus);
+    this.riser = this.track(new Tone.NoiseSynth({
       noise: { type: "white" },
       envelope: { attack: 0.25, decay: 0.4, sustain: 0 },
       volume: -14,
-    }).connect(this.riserFilter);
+    })).connect(this.riserFilter);
 
     // Sustained boost bed between boostStart and boostEnd.
-    this.boostLoopFilter = new Tone.Filter(900, "bandpass").connect(this.sfxBus);
+    this.boostLoopFilter = this.track(new Tone.Filter(900, "bandpass")).connect(this.sfxBus);
     this.boostLoopFilter.Q.value = 1.2;
-    this.boostNoise = new Tone.NoiseSynth({
+    this.boostNoise = this.track(new Tone.NoiseSynth({
       noise: { type: "pink" },
       envelope: { attack: 0.35, decay: 0.1, sustain: 0.5, release: 0.5 },
       volume: -16,
-    }).connect(this.boostLoopFilter);
+    })).connect(this.boostLoopFilter);
 
-    this.thunderFilter = new Tone.Filter(220, "lowpass").connect(this.sfxBus);
-    this.thunder = new Tone.NoiseSynth({
+    this.thunderFilter = this.track(new Tone.Filter(220, "lowpass")).connect(this.sfxBus);
+    this.thunder = this.track(new Tone.NoiseSynth({
       noise: { type: "brown" },
       envelope: { attack: 0.4, decay: 2.4, sustain: 0 },
       volume: -6,
-    }).connect(this.thunderFilter);
+    })).connect(this.thunderFilter);
 
     await this.reverb.ready;
+    if (generation !== this.generation) return;
 
     this.ready = true;
     if (this.musicActive) this.startMusic();
+    else this.sleepWhenIdle();
+    if (this.backgrounded) this.suspend();
   }
 
   setVolumes(music: number, sfx: number): void {
+    if (music === this.musicVol && sfx === this.sfxVol) return;
     this.musicVol = music;
     this.sfxVol = sfx;
     if (!this.ready) return;
     const target = this.musicActive ? music : music * 0.35;
     this.musicBus.gain.rampTo(this.muted ? 0 : target, 0.1);
     this.sfxBus.gain.rampTo(this.muted ? 0 : sfx, 0.1);
+    if (this.musicActive && !this.backgrounded && (music > 0 || sfx > 0)) {
+      void this.resume().catch(() => undefined);
+    }
+    this.sleepWhenIdle();
   }
 
   startMusic(): void {
     this.musicActive = true;
+    this.mixElapsed = 0;
+    this.clearIdleTimer();
     if (!this.ready) return;
+    if (!this.backgrounded && (this.musicVol > 0 || this.sfxVol > 0)) {
+      void this.resume().catch(() => undefined);
+    }
     const t = Tone.getTransport();
     if (t.state !== "started") t.start("+0.05");
     this.started = true;
     this.musicFilter.frequency.cancelScheduledValues(Tone.now());
     this.musicFilter.frequency.rampTo(9000, 0.4);
     this.musicBus.gain.rampTo(this.musicVol, 0.5);
+    this.sleepWhenIdle();
   }
 
   pauseMusic(): void {
     this.musicActive = false;
     if (!this.ready) return;
+    Tone.getTransport().pause();
+    this.boostNoise.triggerRelease();
     this.musicFilter.frequency.rampTo(500, 0.3);
     this.musicBus.gain.rampTo(this.musicVol * 0.35, 0.3);
+    this.sleepWhenIdle();
   }
 
   /** Per-frame adaptive mixing. */
   update(world: SimWorld, dt: number): void {
-    if (!this.ready || !this.started || !this.musicActive) return;
+    if (!this.ready || !this.started || !this.musicActive || this.backgrounded || this.musicVol <= 0) return;
+    this.mixElapsed += dt;
+    if (this.mixElapsed < 1 / 30) return;
+    dt = this.mixElapsed;
+    this.mixElapsed = 0;
     const tier = world.flowTier;
     const speed = world.speedNorm;
     this.tier = tier;
@@ -514,7 +629,7 @@ export class AudioEngine {
     this.targets.arp = tier >= 2 ? clamp01(0.4 + tier * 0.15) : 0;
     this.targets.lead = tier >= 4 ? 0.85 : 0;
 
-    for (const [name, gain] of Object.entries(this.gains)) {
+    for (const [name, gain] of this.mixEntries) {
       const cur = gain.gain.value;
       const target = this.targets[name];
       if (Math.abs(cur - target) > 0.01) {
@@ -525,7 +640,11 @@ export class AudioEngine {
     // Flow brightens the bass, speed opens the master filter, boost cranks it.
     // Tempo never moves — the transport is pinned to the beat grid, and
     // intensity lives in the stem mix and the graze melody instead.
-    this.bassSynth.filterEnvelope.baseFrequency = 80 + tier * 18 + speed * 120;
+    const bassFrequency = 80 + tier * 18 + speed * 120;
+    if (!Number.isFinite(this.bassFrequency) || Math.abs(bassFrequency - this.bassFrequency) >= 1) {
+      this.bassSynth.filterEnvelope.baseFrequency = bassFrequency;
+      this.bassFrequency = bassFrequency;
+    }
     const cutoff = 1400 + (speed * 0.75 + world.boostCharge * 0.25) * 12000;
     this.musicFilter.frequency.value = damp(this.musicFilter.frequency.value as number, cutoff, 3, dt);
   }
@@ -535,7 +654,11 @@ export class AudioEngine {
   // start times; a silently dropped one-shot is the right failure mode.
 
   private oneShot(fn: () => void): void {
-    if (!this.ready) return;
+    if (!this.ready || this.backgrounded || this.sfxVol <= 0) return;
+    if (!this.musicActive) {
+      void this.resume().catch(() => undefined);
+      this.sleepWhenIdle();
+    }
     try {
       fn();
     } catch {

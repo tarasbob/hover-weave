@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useState, useSyncExternalStore } from "react";
 import { useGameBundle } from "@/game/GameController";
 import { useSettings } from "@/game/state/settings";
 import {
@@ -99,10 +99,20 @@ export function MobileSetup({ compact = false }: { compact?: boolean }) {
   const active = status === "ready" || status === "waiting" || status === "requesting";
 
   useEffect(() => {
-    if (status !== "ready" || compact) return;
-    const timer = setInterval(() => setPreview(input.tilt.poll(performance.now())), 100);
-    return () => clearInterval(timer);
-  }, [compact, input, status]);
+    if (!mobile || status !== "ready" || compact) return;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const updateVisibility = () => {
+      clearInterval(timer);
+      if (document.visibilityState === "hidden") return;
+      timer = setInterval(() => setPreview(input.tilt.poll(performance.now())), 100);
+    };
+    updateVisibility();
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", updateVisibility);
+    };
+  }, [compact, input, mobile, status]);
 
   if (!mobile) return null;
 
@@ -164,7 +174,7 @@ export function MobileSetup({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function MobileBoost() {
+export const MobileBoost = memo(function MobileBoost() {
   const { input } = useGameBundle();
   const mobile = useTouchControls();
   useEffect(() => () => input.setBoostHeld(false), [input]);
@@ -186,4 +196,4 @@ export function MobileBoost() {
       onBlur={() => input.setBoostHeld(false)}
     >BOOST <span aria-hidden="true">↑</span></button>
   );
-}
+});

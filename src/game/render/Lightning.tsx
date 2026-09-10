@@ -7,6 +7,7 @@ import { float, mix, uniform } from "three/tsl";
 import { useGameBundle } from "../GameController";
 import { createRng } from "../core/rng";
 import { useSettings } from "../state/settings";
+import { updateInstanceRange } from "./instanceUpdates";
 
 interface BoltPoint {
   x: number;
@@ -114,7 +115,7 @@ export function Lightning() {
       mesh.setMatrixAt(count++, _matrix);
     }
     mesh.count = count;
-    mesh.instanceMatrix.needsUpdate = true;
+    updateInstanceRange(mesh.instanceMatrix, count);
   });
 
   return <primitive object={mesh} />;

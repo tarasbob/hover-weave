@@ -1117,18 +1117,16 @@ export class SimWorld {
 
   /** Resolve each authored fork once the craft crosses its decision row. */
   private resolveRouteChoices(): void {
-    const due = new Set<string>();
-    for (const route of this.routeGates) {
-      if (!route.resolved && this.distance >= route.s) due.add(route.decisionId);
-    }
-    for (const decisionId of due) {
-      const routes = this.routeGates.filter(
-        (route) => !route.resolved && route.decisionId === decisionId,
-      );
-      if (routes.length === 0) continue;
-      let selected = routes[0];
+    for (const gate of this.routeGates) {
+      if (gate.resolved || this.distance < gate.s) continue;
+      const decisionId = gate.decisionId;
+      let selected = gate;
       let best = Infinity;
-      for (const route of routes) {
+      // Resolving every sibling makes later gates skip this decision. This
+      // preserves source order and ties without allocating a Set/array on
+      // every fixed step (including the many steps with no authored fork).
+      for (const route of this.routeGates) {
+        if (route.resolved || route.decisionId !== decisionId) continue;
         const normalized = Math.abs(this.x - route.x) / Math.max(0.25, route.half);
         if (normalized < best) {
           best = normalized;
@@ -1146,9 +1144,11 @@ export class SimWorld {
       this.stats.routeChoices.push(result);
       this.events.emit("routeChoice", result);
     }
-    this.routeGates = this.routeGates.filter(
-      (route) => !route.resolved || route.s > this.distance - 80,
-    );
+    let kept = 0;
+    for (const route of this.routeGates) {
+      if (!route.resolved || route.s > this.distance - 80) this.routeGates[kept++] = route;
+    }
+    this.routeGates.length = kept;
   }
 
   /** Emit one cross-sensory preview when a real challenge is 3–8 seconds out. */
@@ -1452,6 +1452,7 @@ export class SimWorld {
   private updatePickups(dt: number): void {
     const craftS = this.distance;
     const behind = craftS - TRACK.DESPAWN_BEHIND;
+    const interactionRadius = Math.max(ENERGY.MAGNET_RADIUS, ENERGY.COLLECT_RADIUS);
 
     for (const p of this.pickups) {
       if (!p.active) continue;
@@ -1461,6 +1462,9 @@ export class SimWorld {
       }
 
       const dS = p.s - craftS;
+      // Non-seeking pickups outside either interaction radius cannot change.
+      // Seeking shards keep following the craft even after it pulls ahead.
+      if (!p.seeking && Math.abs(dS) >= interactionRadius) continue;
       const dx = p.x - this.x;
       // Vertical gate (skyhook air shards): only separation beyond the
       // craft/pickup reach counts, so every grounded layout (shards at
